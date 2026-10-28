@@ -1,0 +1,110 @@
+# hl
+
+English | [日本語](README_ja.md)
+
+`hl` is a `cat` replacement that detects the file type and prints the file with syntax highlighting. It is written in Rust.
+
+- Detects the language from the file extension, the file name (`Makefile`, `Cargo.lock`, etc.), and the shebang.
+- Uses the same syntax definitions and themes as [bat](https://github.com/sharkdp/bat) (via [two-face](https://crates.io/crates/two-face)), so TOML, TypeScript, Dockerfile and many more are supported.
+- Writes the input unmodified when stdout is not a terminal, so aliasing `cat` to `hl` doesn't change what pipes and redirects produce.
+
+## Requirements
+
+- A Rust toolchain (Rust 1.85 or later, for edition 2024)
+- `less` for the pager option (`-p`). If `$PAGER` is set, that pager is used instead.
+- A terminal with 24-bit color support (Windows Terminal, iTerm2, GNOME Terminal, WezTerm, etc.)
+
+## Installation
+
+```sh
+git clone https://github.com/codemajin/hl.git
+cd hl
+cargo install --path .
+```
+
+By default this installs `hl` to `~/.cargo/bin/hl`. Make sure `~/.cargo/bin` is on your `PATH`.
+
+To install somewhere else, pass `--root`. The binary goes to `<root>/bin/`.
+
+```sh
+cargo install --path . --root ~/.local      # → ~/.local/bin/hl
+```
+
+To update, pull the latest changes and run the same command again. It overwrites the existing binary.
+
+### Uninstallation
+
+```sh
+cargo uninstall hl                  # add the same --root if you used one
+```
+
+## Usage
+
+```sh
+hl src/main.rs Cargo.toml        # highlight with automatic language detection
+hl -n file.py                    # number lines (continuous across files)
+cat script | hl -l bash          # read stdin with an explicit language
+hl -t Nord file.rs               # choose a theme
+hl -p big.rs                     # view through a pager
+hl --list-themes                 # list themes
+hl --list-languages              # list languages and their extensions
+```
+
+### Options
+
+| Option | Description |
+| --- | --- |
+| `-n`, `--number` | Number output lines. Like `cat -n`, numbering continues across files |
+| `-l`, `--language <LANG>` | Use this language instead of auto-detection, given as a name or an extension (e.g. `rust`, `py`) |
+| `-t`, `--theme <THEME>` | Color theme. Defaults to `base16-ocean.dark` |
+| `-p`, `--paging` | Show output in a pager (`$PAGER`, or `less -RFX` if unset). Exits right away if the output fits on one screen |
+| `--color <WHEN>` | When to use colors: `auto`, `always`, or `never`. The default `auto` colors output only when stdout is a terminal |
+| `--list-themes` | List available themes |
+| `--list-languages` | List supported languages |
+
+With no file, or when the file is `-`, `hl` reads from standard input.
+
+### Environment variables
+
+| Variable | Description |
+| --- | --- |
+| `HL_THEME` | Default theme. `-t` takes precedence |
+| `PAGER` | Pager used by `-p` |
+
+### Behavior details
+
+- The language is determined in this order: `-l`, extension, file name, then the first line (shebang, etc.). If none match, the file is printed as plain text.
+- If the first 8 KB of a file contain a NUL byte, the file is treated as binary and printed as-is without highlighting.
+- If a file can't be opened, `hl` prints `hl: <path>: <reason>` to stderr, processes the remaining files, and exits with status 1.
+- If the output is closed early, as in `hl file | head`, `hl` exits successfully without an error.
+
+## Using it as `cat`
+
+Add an alias to your shell configuration file (`~/.bashrc`, `~/.zshrc`, etc.):
+
+```sh
+alias cat='hl'
+```
+
+To fix the theme, also set `HL_THEME`:
+
+```sh
+export HL_THEME='Monokai Extended'
+```
+
+To run the real `cat` without going through the alias, use `\cat` or `command cat`.
+
+## Development
+
+```sh
+cargo build
+cargo test          # integration tests in tests/cli.rs
+cargo clippy
+```
+
+| File | Role |
+| --- | --- |
+| `src/main.rs` | Entry point: input dispatch, output selection, error handling |
+| `src/cli.rs` | Command-line argument definitions (clap) |
+| `src/highlight.rs` | Language detection and highlighted output (syntect) |
+| `src/pager.rs` | Starting the pager and waiting for it to exit |
