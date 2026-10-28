@@ -722,3 +722,33 @@ fn keeps_the_text_with_256_colors() {
     assert!(has_escape(&out));
     assert_eq!(strip_ansi(&out), content);
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn reports_write_errors_without_blaming_the_input() {
+    let full = fs::File::create("/dev/full").unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_hl"))
+        .args(["src/main.rs", "Cargo.toml"])
+        .stdout(full)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "hl: write error: No space left on device\n"
+    );
+}
+
+#[test]
+fn stops_quietly_when_the_listing_pipe_closes() {
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_hl"))
+        .arg("--list-languages")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+}

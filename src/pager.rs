@@ -5,8 +5,12 @@ use std::{
 };
 
 /// A running pager process whose stdin receives our output.
+///
+/// Dropping it closes the stdin and waits for the pager, so the shell prompt
+/// never comes back while the pager still owns the terminal.
 pub struct Pager {
     child: Child,
+    stdin: Option<ChildStdin>,
 }
 
 impl Pager {
@@ -20,23 +24,36 @@ impl Pager {
             }
             _ => ("less".to_string(), vec!["-RFX".to_string()]),
         };
-        let child = Command::new(program)
+        let mut child = Command::new(program)
             .args(args)
             .stdin(Stdio::piped())
             .spawn()?;
-        Ok(Self { child })
+        let stdin = child.stdin.take();
+        Ok(Self { child, stdin })
     }
 
     pub fn stdin(&mut self) -> &mut ChildStdin {
-        self.child.stdin.as_mut().expect("pager stdin is piped")
+        self.stdin.as_mut().expect("pager stdin is piped")
     }
 
-    /// Closes the pager's stdin and waits for the user to quit it.
+    /// Closes the pager's stdin and waits for the user to quit it, reporting
+    /// a failure to wait that `Drop` would have to ignore.
     pub fn finish(mut self) -> io::Result<()> {
-        if let Some(mut stdin) = self.child.stdin.take() {
-            let _ = stdin.flush();
-        }
+        self.close_stdin();
         self.child.wait()?;
         Ok(())
+    }
+
+    fn close_stdin(&mut self) {
+        if let Some(mut stdin) = self.stdin.take() {
+            let _ = stdin.flush();
+        }
+    }
+}
+
+impl Drop for Pager {
+    fn drop(&mut self) {
+        self.close_stdin();
+        let _ = self.child.wait();
     }
 }

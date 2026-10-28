@@ -12,7 +12,7 @@ use std::{
     process::ExitCode,
 };
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use clap::Parser;
 use cli::{Args, ColorWhen};
 use encoding::{Bom, UTF8_BOM, Utf16Decoder, is_utf8_prefix, sniff_bom};
@@ -31,6 +31,10 @@ fn main() -> ExitCode {
     let args = Args::parse();
     match run(&args) {
         Ok(code) => code,
+        // A closed pipe (`hl ... | head`) is a normal way to stop reading.
+        Err(err) if err.downcast_ref::<io::Error>().is_some_and(is_broken_pipe) => {
+            ExitCode::SUCCESS
+        }
         Err(err) => {
             eprintln!("hl: {err}");
             ExitCode::FAILURE
@@ -75,10 +79,10 @@ fn run(args: &Args) -> Result<ExitCode> {
         None
     };
     let stdout = io::stdout();
-    let mut out: BufWriter<Box<dyn Write>> = BufWriter::new(match pager.as_mut() {
-        Some(p) => Box::new(p.stdin()),
+    let mut out = TrackedWriter::new(BufWriter::new(match pager.as_mut() {
+        Some(p) => Box::new(p.stdin()) as Box<dyn Write>,
         None => Box::new(stdout.lock()),
-    });
+    }));
 
     let inputs = if args.files.is_empty() {
         vec![PathBuf::from("-")]
@@ -89,6 +93,7 @@ fn run(args: &Args) -> Result<ExitCode> {
     let limits = args.limits();
     let mut lines = LineState::new(args.numbering(), args.squeeze_blank);
     let mut failed = false;
+    let mut write_error = None;
     for input in &inputs {
         let result = print_input(
             input,
@@ -101,7 +106,11 @@ fn run(args: &Args) -> Result<ExitCode> {
         );
         match result {
             Ok(()) => {}
-            Err(e) if e.kind() == io::ErrorKind::BrokenPipe => break,
+            // The output is gone, so there is no point in reading more input.
+            Err(e) if out.failed() => {
+                write_error = Some(e);
+                break;
+            }
             Err(e) => {
                 eprintln!("hl: {}: {}", input.display(), describe(&e));
                 failed = true;
@@ -109,9 +118,14 @@ fn run(args: &Args) -> Result<ExitCode> {
         }
     }
 
-    match out.flush() {
-        Err(e) if e.kind() != io::ErrorKind::BrokenPipe => return Err(e.into()),
-        _ => {}
+    let flushed = match write_error {
+        Some(e) => Err(e),
+        None => out.flush(),
+    };
+    if let Err(e) = flushed
+        && !is_broken_pipe(&e)
+    {
+        bail!("write error: {}", describe(&e));
     }
     drop(out);
     if let Some(p) = pager {
@@ -122,6 +136,47 @@ fn run(args: &Args) -> Result<ExitCode> {
     } else {
         ExitCode::SUCCESS
     })
+}
+
+/// Remembers whether writing failed, so that an error coming out of
+/// `print_input` can be told apart from an error reading the input.
+struct TrackedWriter<W> {
+    inner: W,
+    failed: bool,
+}
+
+impl<W: Write> TrackedWriter<W> {
+    fn new(inner: W) -> Self {
+        Self {
+            inner,
+            failed: false,
+        }
+    }
+
+    fn failed(&self) -> bool {
+        self.failed
+    }
+
+    fn track<T>(&mut self, result: io::Result<T>) -> io::Result<T> {
+        if let Err(e) = &result
+            && e.kind() != io::ErrorKind::Interrupted
+        {
+            self.failed = true;
+        }
+        result
+    }
+}
+
+impl<W: Write> Write for TrackedWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let result = self.inner.write(buf);
+        self.track(result)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        let result = self.inner.flush();
+        self.track(result)
+    }
 }
 
 fn print_input(
@@ -178,6 +233,10 @@ fn choose_syntax<'a>(
     let head = head.strip_prefix(UTF8_BOM).unwrap_or(head);
     let first_line = head.split(|&b| b == b'\n').next().unwrap_or_default();
     Ok(hl.detect(path, &String::from_utf8_lossy(first_line)))
+}
+
+fn is_broken_pipe(err: &io::Error) -> bool {
+    err.kind() == io::ErrorKind::BrokenPipe
 }
 
 /// Strips the "(os error N)" suffix to match coreutils-style messages.
