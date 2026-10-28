@@ -451,3 +451,91 @@ fn parses_size_units() {
             .stderr(predicate::str::contains("--max-size"));
     }
 }
+
+/// "// 日本語" in Shift_JIS and EUC-JP, which are not valid UTF-8.
+const SJIS_COMMENT: &[u8] = b"// \x93\xfa\x96\x7b\x8c\xea\n";
+const EUC_JP_COMMENT: &[u8] = b"// \xc6\xfc\xcb\xdc\xb8\xec\n";
+
+#[test]
+fn prints_non_utf8_files_unchanged() {
+    for (name, comment) in [("sjis.rs", SJIS_COMMENT), ("eucjp.rs", EUC_JP_COMMENT)] {
+        let path = tempdir().join(name);
+        let content = [comment, b"fn main() {}\n"].concat();
+        fs::write(&path, &content).unwrap();
+        hl().args(["--color", "always"])
+            .arg(&path)
+            .assert()
+            .success()
+            .stdout(content);
+    }
+}
+
+#[test]
+fn stops_highlighting_at_a_non_utf8_line() {
+    let path = tempdir().join("late-sjis.rs");
+    // Past the first 8 KB, so only the line-by-line check can catch it.
+    let mut content = "fn main() {}\n\n\n".repeat(1000).into_bytes();
+    content.extend_from_slice(SJIS_COMMENT);
+    content.extend_from_slice(b"\n\nfn after() {}\n");
+    fs::write(&path, &content).unwrap();
+    let files = [path];
+    for opts in [&[][..], &["-n"], &["-sb"]] {
+        let out = hl_output("always", opts, &files);
+        assert!(has_escape(&out), "hl {opts:?} should highlight the first lines");
+        assert!(out.ends_with(b"fn after() {}\n"), "hl {opts:?} should not color the rest");
+        assert_eq!(strip_ansi(&out), cat_output(opts, &files), "hl {opts:?} differs from cat");
+    }
+}
+
+fn utf16_with_bom(text: &str, big_endian: bool) -> Vec<u8> {
+    std::iter::once(0xFEFF)
+        .chain(text.encode_utf16())
+        .flat_map(|u| if big_endian { u.to_be_bytes() } else { u.to_le_bytes() })
+        .collect()
+}
+
+#[test]
+fn highlights_utf16_as_utf8() {
+    let text = "// 日本語 😀\nfn main() {}\n";
+    for big_endian in [false, true] {
+        let dir = tempdir();
+        let utf16 = [dir.join(format!("utf16-{big_endian}.rs"))];
+        fs::write(&utf16[0], utf16_with_bom(text, big_endian)).unwrap();
+        let utf8 = [dir.join(format!("utf8-{big_endian}.rs"))];
+        fs::write(&utf8[0], text).unwrap();
+        assert_eq!(hl_output("always", &[], &utf16), hl_output("always", &[], &utf8));
+        let numbered = hl_output("always", &["-n"], &utf16);
+        assert_eq!(strip_ansi(&numbered), cat_output(&["-n"], &utf8));
+    }
+}
+
+#[test]
+fn passes_utf16_through_without_color() {
+    let path = tempdir().join("utf16-plain.rs");
+    let content = utf16_with_bom("fn main() {}\n", false);
+    fs::write(&path, &content).unwrap();
+    hl().arg(&path).assert().success().stdout(content);
+}
+
+#[test]
+fn replaces_broken_utf16_with_replacement_characters() {
+    let path = [tempdir().join("broken-utf16.txt")];
+    // "a", a lone high surrogate, "b", then an odd trailing byte.
+    fs::write(&path[0], b"\xff\xfea\x00\x00\xd8b\x00\n\x00x").unwrap();
+    let out = hl_output("always", &[], &path);
+    assert_eq!(strip_ansi(&out), "a\u{FFFD}b\n\u{FFFD}".as_bytes());
+}
+
+#[test]
+fn keeps_utf8_bom_and_detects_the_shebang_after_it() {
+    let dir = tempdir();
+    let script = "#!/bin/sh\necho hi\n";
+    let plain = [dir.join("script")];
+    fs::write(&plain[0], script).unwrap();
+    let with_bom = [dir.join("script-bom")];
+    fs::write(&with_bom[0], [b"\xEF\xBB\xBF", script.as_bytes()].concat()).unwrap();
+    let expected = hl_output("always", &[], &plain);
+    assert_eq!(expected, hl_output("always", &["-l", "sh"], &plain), "the shebang should select sh");
+    let out = hl_output("always", &[], &with_bom);
+    assert_eq!(out, [b"\xEF\xBB\xBF", expected.as_slice()].concat());
+}

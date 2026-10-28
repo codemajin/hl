@@ -8,6 +8,7 @@ use syntect::util::as_24_bit_terminal_escaped;
 use two_face::theme::LazyThemeSet;
 
 use crate::cli::DEFAULT_THEME;
+use crate::encoding::UTF8_BOM;
 use crate::lines::{LineState, Visibility, write_visible};
 
 const RESET: &str = "\x1b[0m";
@@ -82,6 +83,7 @@ impl Highlighter {
     /// Once the input exceeds `limits.max_size` or a line exceeds
     /// `limits.max_line`, the rest is copied as is: syntect's state carries
     /// over between lines, so highlighting cannot resume after a skipped line.
+    /// A line that is not valid UTF-8 switches to plain output the same way.
     pub fn write(
         &self,
         reader: &mut impl BufRead,
@@ -106,19 +108,30 @@ impl Highlighter {
             }
             total += n as u64;
             let too_long = !buf.ends_with(b"\n") && n as u64 > max_line;
-            if too_long || limits.exceeds_size(total) {
+            // Input that is not UTF-8 (Shift_JIS, ...) is copied unchanged
+            // rather than replacing its bytes with U+FFFD.
+            let text = std::str::from_utf8(&buf).ok();
+            let Some(mut line) = text.filter(|_| !too_long && !limits.exceeds_size(total)) else {
                 if lines.begin_line(&buf, out)? {
                     out.write_all(&buf)?;
                 }
                 return write_plain(reader, out, lines, Visibility::default());
-            }
+            };
             let print = lines.begin_line(&buf, out)?;
-            let line = String::from_utf8_lossy(&buf);
+            if total == n as u64
+                && let Some(rest) = line.strip_prefix('\u{FEFF}')
+            {
+                // Keep the BOM in the output, but out of syntect's way.
+                if print {
+                    out.write_all(UTF8_BOM)?;
+                }
+                line = rest;
+            }
             let newline = if line.ends_with('\n') { "\n" } else { "" };
             // Highlight including the newline so syntect's state stays correct,
             // but print the newline after the reset sequence.
             let ranges = hl
-                .highlight_line(&line, &self.syntaxes)
+                .highlight_line(line, &self.syntaxes)
                 .map_err(io::Error::other)?;
             if !print {
                 continue;

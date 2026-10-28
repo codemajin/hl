@@ -1,4 +1,5 @@
 mod cli;
+mod encoding;
 mod highlight;
 mod lines;
 mod pager;
@@ -10,8 +11,10 @@ use std::process::ExitCode;
 
 use anyhow::{Result, anyhow};
 use clap::Parser;
+use syntect::parsing::SyntaxReference;
 
 use cli::{Args, ColorWhen};
+use encoding::{Bom, UTF8_BOM, Utf16Decoder, is_utf8_prefix, sniff_bom};
 use highlight::{Highlighter, Limits, write_plain};
 use lines::{LineState, Visibility};
 use pager::Pager;
@@ -118,7 +121,7 @@ fn print_input(
     path: &Path,
     out: &mut impl Write,
     highlighter: Option<&Highlighter>,
-    forced_syntax: Option<&syntect::parsing::SyntaxReference>,
+    forced_syntax: Option<&SyntaxReference>,
     lines: &mut LineState,
     vis: Visibility,
     limits: Limits,
@@ -137,16 +140,37 @@ fn print_input(
     let Some(hl) = highlighter.filter(|_| !too_large) else {
         return write_plain(&mut reader, out, lines, vis);
     };
+    let path = (!is_stdin).then_some(path);
     let head = reader.fill_buf()?;
-    if head.iter().take(PEEK_LEN).any(|&b| b == 0) {
+    if let Some(Bom::Utf16 { big_endian }) = sniff_bom(head) {
+        // Terminals expect UTF-8, so UTF-16 is converted for highlighting.
+        reader.consume(2);
+        let mut decoded = BufReader::new(Utf16Decoder::new(&mut reader, big_endian));
+        let syntax = choose_syntax(hl, forced_syntax, &mut decoded, path)?;
+        return hl.write(&mut decoded, out, syntax, lines, limits);
+    }
+    let peek = &head[..head.len().min(PEEK_LEN)];
+    if peek.contains(&0) || !is_utf8_prefix(peek) {
         return write_plain(&mut reader, out, lines, vis);
     }
-    let syntax = forced_syntax.unwrap_or_else(|| {
-        let first_line = head.split(|&b| b == b'\n').next().unwrap_or_default();
-        let first_line = String::from_utf8_lossy(first_line);
-        hl.detect((!is_stdin).then_some(path), &first_line)
-    });
+    let syntax = choose_syntax(hl, forced_syntax, &mut reader, path)?;
     hl.write(&mut reader, out, syntax, lines, limits)
+}
+
+/// Uses the forced syntax, or detects one from the path and the first line.
+fn choose_syntax<'a>(
+    hl: &'a Highlighter,
+    forced: Option<&'a SyntaxReference>,
+    reader: &mut impl BufRead,
+    path: Option<&Path>,
+) -> io::Result<&'a SyntaxReference> {
+    if let Some(syntax) = forced {
+        return Ok(syntax);
+    }
+    let head = reader.fill_buf()?;
+    let head = head.strip_prefix(UTF8_BOM).unwrap_or(head);
+    let first_line = head.split(|&b| b == b'\n').next().unwrap_or_default();
+    Ok(hl.detect(path, &String::from_utf8_lossy(first_line)))
 }
 
 /// Strips the "(os error N)" suffix to match coreutils-style messages.
