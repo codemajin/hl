@@ -130,3 +130,18 @@ cargo fmt --check   # フォーマットの確認（rustfmt.toml）
 | `src/highlight.rs` | 言語判定とハイライト出力（syntect） |
 | `src/lines.rs` | 行番号、空行の圧縮、`cat -v`/`-E`/`-T` の表記 |
 | `src/pager.rs` | ページャの起動と終了待ち |
+
+### テストカバレッジ
+
+カバレッジの計測には [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov) を使います。結合テストが子プロセスとして起動する `hl` バイナリも計測の対象になります。最初に一度だけインストールしてください。
+
+```sh
+rustup component add llvm-tools-preview
+cargo install cargo-llvm-cov --locked
+```
+
+```sh
+cargo llvm-cov          # テストを実行し、ファイルごとのサマリを表示する
+cargo llvm-cov --html   # HTML レポートを target/llvm-cov/html/index.html に出力する
+                        # （--open を付けるとブラウザで開く）
+```

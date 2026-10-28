@@ -130,3 +130,18 @@ cargo fmt --check   # formatting (rustfmt.toml)
 | `src/highlight.rs` | Language detection and highlighted output (syntect) |
 | `src/lines.rs` | Line numbering, blank-line squeezing, and `cat -v`/`-E`/`-T` notation |
 | `src/pager.rs` | Starting the pager and waiting for it to exit |
+
+### Test coverage
+
+Coverage is measured with [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov). It also covers the `hl` binary that the integration tests start as a child process. Install it once:
+
+```sh
+rustup component add llvm-tools-preview
+cargo install cargo-llvm-cov --locked
+```
+
+```sh
+cargo llvm-cov          # run the tests and print a per-file summary
+cargo llvm-cov --html   # write an HTML report to target/llvm-cov/html/index.html
+                        # (add --open to open it in a browser)
+```
