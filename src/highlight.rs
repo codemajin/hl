@@ -8,6 +8,7 @@ use syntect::util::as_24_bit_terminal_escaped;
 use two_face::theme::LazyThemeSet;
 
 use crate::cli::DEFAULT_THEME;
+use crate::color::{Depth, as_256_terminal_escaped};
 use crate::encoding::UTF8_BOM;
 use crate::lines::{LineState, Visibility, write_visible};
 
@@ -32,12 +33,13 @@ impl Limits {
 pub struct Highlighter {
     syntaxes: SyntaxSet,
     theme: Theme,
+    depth: Depth,
 }
 
 impl Highlighter {
     /// An unknown theme is not fatal: it warns and falls back to the default,
     /// so a typo in `HL_THEME` never hides the file contents.
-    pub fn new(theme_name: &str) -> Self {
+    pub fn new(theme_name: &str, depth: Depth) -> Self {
         let themes = LazyThemeSet::from(two_face::theme::extra());
         let theme = resolve_theme(&themes, theme_name)
             .unwrap_or_else(|| {
@@ -50,6 +52,7 @@ impl Highlighter {
         Self {
             syntaxes: two_face::syntax::extra_newlines(),
             theme,
+            depth,
         }
     }
 
@@ -136,7 +139,10 @@ impl Highlighter {
             if !print {
                 continue;
             }
-            let escaped = as_24_bit_terminal_escaped(&ranges, false);
+            let escaped = match self.depth {
+                Depth::TrueColor => as_24_bit_terminal_escaped(&ranges, false),
+                Depth::Ansi256 => as_256_terminal_escaped(&ranges),
+            };
             let escaped = escaped.strip_suffix('\n').unwrap_or(&escaped);
             write!(out, "{escaped}{RESET}{newline}")?;
         }

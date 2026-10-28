@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
 
+use crate::color::{self, Depth};
 use crate::highlight::Limits;
 use crate::lines::{Numbering, Visibility};
 
@@ -12,6 +13,15 @@ pub enum ColorWhen {
     Auto,
     Always,
     Never,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ColorDepth {
+    Auto,
+    #[value(name = "truecolor", alias = "24bit")]
+    TrueColor,
+    #[value(name = "256")]
+    Ansi256,
 }
 
 /// cat with syntax highlighting.
@@ -86,6 +96,11 @@ pub struct Args {
     #[arg(long, value_enum, value_name = "WHEN", default_value_t = ColorWhen::Auto)]
     pub color: ColorWhen,
 
+    /// Color depth: `auto` uses truecolor only when the terminal advertises it
+    /// (COLORTERM, TERM, WT_SESSION) and 256 colors otherwise.
+    #[arg(long, env = "HL_COLOR_DEPTH", value_enum, value_name = "DEPTH", default_value_t = ColorDepth::Auto)]
+    pub color_depth: ColorDepth,
+
     /// List available themes and exit.
     #[arg(long)]
     pub list_themes: bool,
@@ -115,6 +130,15 @@ impl Args {
                 || self.show_nonprinting_tabs,
             ends: self.show_ends || self.show_all || self.show_nonprinting_ends,
             tabs: self.show_tabs || self.show_all || self.show_nonprinting_tabs,
+        }
+    }
+
+    /// The color depth, with `auto` resolved from the environment.
+    pub fn depth(&self) -> Depth {
+        match self.color_depth {
+            ColorDepth::Auto => color::detect_from_env(),
+            ColorDepth::TrueColor => Depth::TrueColor,
+            ColorDepth::Ansi256 => Depth::Ansi256,
         }
     }
 

@@ -12,7 +12,7 @@ English | [日本語](README_ja.md)
 
 - A Rust toolchain (Rust 1.85 or later, for edition 2024)
 - `less` for the pager option (`-p`). If `$PAGER` is set, that pager is used instead.
-- A terminal with 24-bit color support (Windows Terminal, iTerm2, GNOME Terminal, WezTerm, etc.)
+- A terminal with 24-bit color (Windows Terminal, iTerm2, GNOME Terminal, WezTerm, etc.) or 256 color support
 
 ## Installation
 
@@ -71,6 +71,7 @@ hl --list-languages              # list languages and their extensions
 | `--max-line-length <LEN>` | Stop highlighting at the first line longer than this many bytes (excluding the newline). Default `16K`; `0` removes the limit |
 | `-p`, `--paging` | Show output in a pager (`$PAGER`, or `less -RFX` if unset). Exits right away if the output fits on one screen |
 | `--color <WHEN>` | When to use colors: `auto`, `always`, or `never`. The default `auto` colors output only when stdout is a terminal |
+| `--color-depth <DEPTH>` | Color depth: `auto`, `truecolor` (alias `24bit`), or `256`. The default `auto` uses 24-bit color when `COLORTERM` is `truecolor` or `24bit`, `TERM` ends in `-direct`, or `WT_SESSION` is set (Windows Terminal), and approximates colors to the 256 color palette otherwise |
 | `--list-themes` | List available themes |
 | `--list-languages` | List supported languages |
 
@@ -83,6 +84,7 @@ With no file, or when the file is `-`, `hl` reads from standard input.
 | `HL_THEME` | Default theme. `--theme` takes precedence |
 | `HL_MAX_SIZE` | Default for `--max-size` |
 | `HL_MAX_LINE_LENGTH` | Default for `--max-line-length` |
+| `HL_COLOR_DEPTH` | Default for `--color-depth` |
 | `PAGER` | Pager used by `-p` |
 
 ### Behavior details

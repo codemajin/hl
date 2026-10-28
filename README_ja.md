@@ -12,7 +12,7 @@
 
 - Rust ツールチェーン（edition 2024 に対応した Rust 1.85 以降）
 - ページャ機能（`-p`）を使う場合は `less`。環境変数 `$PAGER` を設定していればそちらを使います。
-- 24bit カラーに対応した端末（Windows Terminal、iTerm2、GNOME Terminal、WezTerm など）
+- 24bit カラー（Windows Terminal、iTerm2、GNOME Terminal、WezTerm など）か 256 色に対応した端末
 
 ## インストール
 
@@ -71,6 +71,7 @@ hl --list-languages              # 対応言語と拡張子の一覧
 | `--max-line-length <LEN>` | これより長い行（改行を除いたバイト数）が出てきたら、その行から先をハイライトせずに出力します。既定は `16K` です。`0` で上限をなくします |
 | `-p`, `--paging` | ページャで表示します（`$PAGER`、未設定なら `less -RFX`）。1 画面に収まる場合はそのまま終了します |
 | `--color <WHEN>` | 色を付ける条件を `auto`、`always`、`never` から選びます。既定の `auto` では、出力先が端末のときだけ色を付けます |
+| `--color-depth <DEPTH>` | 色深度を `auto`、`truecolor`（別名 `24bit`）、`256` から選びます。既定の `auto` では、`COLORTERM` が `truecolor` か `24bit` のとき、`TERM` が `-direct` で終わるとき、`WT_SESSION` が設定されているとき（Windows Terminal）に 24bit カラーを使い、それ以外では 256 色に近い色に置き換えて表示します |
 | `--list-themes` | 使えるテーマを一覧表示します |
 | `--list-languages` | 対応している言語を一覧表示します |
 
@@ -83,6 +84,7 @@ hl --list-languages              # 対応言語と拡張子の一覧
 | `HL_THEME` | 既定のテーマ。`--theme` を指定した場合はそちらが優先されます |
 | `HL_MAX_SIZE` | `--max-size` の既定値 |
 | `HL_MAX_LINE_LENGTH` | `--max-line-length` の既定値 |
+| `HL_COLOR_DEPTH` | `--color-depth` の既定値 |
 | `PAGER` | `-p` で使うページャ |
 
 ### 動作の詳細

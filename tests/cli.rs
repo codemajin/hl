@@ -9,7 +9,11 @@ fn hl() -> Command {
     let mut cmd = Command::cargo_bin("hl").unwrap();
     cmd.env_remove("HL_THEME")
         .env_remove("HL_MAX_SIZE")
-        .env_remove("HL_MAX_LINE_LENGTH");
+        .env_remove("HL_MAX_LINE_LENGTH")
+        .env_remove("HL_COLOR_DEPTH")
+        .env_remove("COLORTERM")
+        .env_remove("WT_SESSION")
+        .env("TERM", "xterm-256color");
     cmd
 }
 
@@ -573,4 +577,78 @@ fn keeps_utf8_bom_and_detects_the_shebang_after_it() {
     );
     let out = hl_output("always", &[], &with_bom);
     assert_eq!(out, [b"\xEF\xBB\xBF", expected.as_slice()].concat());
+}
+
+const TRUECOLOR: &str = "\x1b[38;2;";
+const ANSI256: &str = "\x1b[38;5;";
+
+/// Asserts that `cmd` colors Cargo.toml with `expected` escapes only.
+fn assert_depth(cmd: &mut Command, expected: &str) {
+    let other = if expected == TRUECOLOR { ANSI256 } else { TRUECOLOR };
+    cmd.args(["--color", "always", "Cargo.toml"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(expected).and(predicate::str::contains(other).not()));
+}
+
+#[test]
+fn uses_truecolor_when_colorterm_advertises_it() {
+    assert_depth(hl().env("COLORTERM", "truecolor"), TRUECOLOR);
+    assert_depth(hl().env("COLORTERM", "24bit"), TRUECOLOR);
+}
+
+#[test]
+fn uses_truecolor_for_direct_term_and_windows_terminal() {
+    assert_depth(hl().env("TERM", "xterm-direct"), TRUECOLOR);
+    assert_depth(hl().env("WT_SESSION", "1"), TRUECOLOR);
+}
+
+#[test]
+fn falls_back_to_256_colors() {
+    assert_depth(&mut hl(), ANSI256);
+    assert_depth(hl().env_remove("TERM"), ANSI256);
+    assert_depth(hl().env("WT_SESSION", ""), ANSI256);
+}
+
+#[test]
+fn color_depth_option_overrides_detection() {
+    assert_depth(
+        hl().env("COLORTERM", "truecolor").args(["--color-depth", "256"]),
+        ANSI256,
+    );
+    assert_depth(hl().args(["--color-depth", "truecolor"]), TRUECOLOR);
+    assert_depth(hl().args(["--color-depth", "24bit"]), TRUECOLOR);
+    assert_depth(
+        hl().env("COLORTERM", "truecolor").args(["--color-depth", "auto"]),
+        TRUECOLOR,
+    );
+}
+
+#[test]
+fn color_depth_can_be_set_from_env() {
+    assert_depth(
+        hl().env("COLORTERM", "truecolor").env("HL_COLOR_DEPTH", "256"),
+        ANSI256,
+    );
+    assert_depth(
+        hl().env("HL_COLOR_DEPTH", "256")
+            .args(["--color-depth", "truecolor"]),
+        TRUECOLOR,
+    );
+}
+
+#[test]
+fn rejects_unknown_color_depth() {
+    hl().args(["--color-depth", "16", "Cargo.toml"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid value"));
+}
+
+#[test]
+fn keeps_the_text_with_256_colors() {
+    let content = fs::read("src/main.rs").unwrap();
+    let out = colored_stdout(hl().args(["--color", "always", "--color-depth", "256", "src/main.rs"]));
+    assert!(has_escape(&out));
+    assert_eq!(strip_ansi(&out), content);
 }

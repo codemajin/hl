@@ -1,4 +1,5 @@
 mod cli;
+mod color;
 mod encoding;
 mod highlight;
 mod lines;
@@ -48,7 +49,7 @@ fn run(args: &Args) -> Result<ExitCode> {
             ColorWhen::Auto => tty,
         };
     let highlighter = if color || args.list_languages || args.language.is_some() {
-        Some(Highlighter::new(&args.theme))
+        Some(Highlighter::new(&args.theme, args.depth()))
     } else {
         None
     };
