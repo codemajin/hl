@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
 
+use crate::highlight::Limits;
 use crate::lines::{Numbering, Visibility};
 
 pub const DEFAULT_THEME: &str = "base16-ocean.dark";
@@ -69,6 +70,14 @@ pub struct Args {
     #[arg(long, env = "HL_THEME", default_value = DEFAULT_THEME)]
     pub theme: String,
 
+    /// Stop highlighting inputs larger than SIZE (K/M/G suffixes; 0 = no limit).
+    #[arg(long, env = "HL_MAX_SIZE", value_name = "SIZE", default_value = "512K", value_parser = parse_size)]
+    pub max_size: u64,
+
+    /// Stop highlighting at the first line longer than LEN bytes (K/M/G suffixes; 0 = no limit).
+    #[arg(long, env = "HL_MAX_LINE_LENGTH", value_name = "LEN", default_value = "16K", value_parser = parse_size)]
+    pub max_line_length: u64,
+
     /// Send output through a pager ($PAGER, or `less -RFX`).
     #[arg(short = 'p', long)]
     pub paging: bool,
@@ -108,4 +117,32 @@ impl Args {
             tabs: self.show_tabs || self.show_all || self.show_nonprinting_tabs,
         }
     }
+
+    /// The highlighting limits, with 0 meaning no limit.
+    pub fn limits(&self) -> Limits {
+        Limits {
+            max_size: (self.max_size > 0).then_some(self.max_size),
+            max_line: (self.max_line_length > 0).then_some(self.max_line_length),
+        }
+    }
+}
+
+/// Parses a byte count such as `512`, `16K`, `2m` or `1G` (powers of 1024).
+fn parse_size(s: &str) -> Result<u64, String> {
+    let (digits, unit) = match s.char_indices().find(|(_, c)| !c.is_ascii_digit()) {
+        Some((i, _)) => s.split_at(i),
+        None => (s, ""),
+    };
+    let shift = match unit.to_ascii_lowercase().as_str() {
+        "" => 0,
+        "k" => 10,
+        "m" => 20,
+        "g" => 30,
+        _ => return Err(format!("invalid unit '{unit}' (use K, M or G)")),
+    };
+    let n: u64 = digits
+        .parse()
+        .map_err(|_| format!("'{s}' is not a size (e.g. 512K)"))?;
+    n.checked_mul(1 << shift)
+        .ok_or_else(|| format!("'{s}' is too large"))
 }

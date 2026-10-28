@@ -1,4 +1,4 @@
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::path::Path;
 
 use syntect::easy::HighlightLines;
@@ -11,6 +11,22 @@ use crate::cli::DEFAULT_THEME;
 use crate::lines::{LineState, Visibility, write_visible};
 
 const RESET: &str = "\x1b[0m";
+
+/// Inputs beyond these limits are printed without highlighting, because
+/// syntect gets very slow on huge files and very long lines.
+#[derive(Debug, Clone, Copy)]
+pub struct Limits {
+    /// Total bytes of one input.
+    pub max_size: Option<u64>,
+    /// Bytes of one line, excluding the newline.
+    pub max_line: Option<u64>,
+}
+
+impl Limits {
+    pub fn exceeds_size(self, len: u64) -> bool {
+        self.max_size.is_some_and(|max| len > max)
+    }
+}
 
 pub struct Highlighter {
     syntaxes: SyntaxSet,
@@ -62,19 +78,39 @@ impl Highlighter {
     }
 
     /// Writes `reader` highlighted with `syntax`, one line at a time.
+    ///
+    /// Once the input exceeds `limits.max_size` or a line exceeds
+    /// `limits.max_line`, the rest is copied as is: syntect's state carries
+    /// over between lines, so highlighting cannot resume after a skipped line.
     pub fn write(
         &self,
         reader: &mut impl BufRead,
         out: &mut impl Write,
         syntax: &SyntaxReference,
         lines: &mut LineState,
+        limits: Limits,
     ) -> io::Result<()> {
         let mut hl = HighlightLines::new(syntax, &self.theme);
+        let max_line = limits.max_line.unwrap_or(u64::MAX);
+        let mut total: u64 = 0;
         let mut buf = Vec::new();
         loop {
             buf.clear();
-            if reader.read_until(b'\n', &mut buf)? == 0 {
+            // Reading at most one byte past the limit keeps a huge line out of memory.
+            let n = reader
+                .by_ref()
+                .take(max_line.saturating_add(1))
+                .read_until(b'\n', &mut buf)?;
+            if n == 0 {
                 return Ok(());
+            }
+            total += n as u64;
+            let too_long = !buf.ends_with(b"\n") && n as u64 > max_line;
+            if too_long || limits.exceeds_size(total) {
+                if lines.begin_line(&buf, out)? {
+                    out.write_all(&buf)?;
+                }
+                return write_plain(reader, out, lines, Visibility::default());
             }
             let print = lines.begin_line(&buf, out)?;
             let line = String::from_utf8_lossy(&buf);

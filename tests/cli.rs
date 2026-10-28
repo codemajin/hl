@@ -7,7 +7,9 @@ const ESC: &str = "\x1b[";
 
 fn hl() -> Command {
     let mut cmd = Command::cargo_bin("hl").unwrap();
-    cmd.env_remove("HL_THEME");
+    cmd.env_remove("HL_THEME")
+        .env_remove("HL_MAX_SIZE")
+        .env_remove("HL_MAX_LINE_LENGTH");
     cmd
 }
 
@@ -311,4 +313,141 @@ fn ignores_unknown_theme_without_color() {
         .assert()
         .success()
         .stdout(content);
+}
+
+fn has_escape(bytes: &[u8]) -> bool {
+    bytes.windows(ESC.len()).any(|w| w == ESC.as_bytes())
+}
+
+/// A JS file with a short line, a `long`-byte line and another short line.
+/// Returns the path, the head that should stay highlighted and the tail
+/// (from the long line on) that should be printed as is.
+fn long_line_fixture(name: &str, long: usize) -> (std::path::PathBuf, Vec<u8>, Vec<u8>) {
+    let head = b"let a = 1;\n".to_vec();
+    let mut tail = "x".repeat(long).into_bytes();
+    tail.extend_from_slice(b"\nlet b = 2;\n");
+    let path = tempdir().join(name);
+    fs::write(&path, [head.as_slice(), &tail].concat()).unwrap();
+    (path, head, tail)
+}
+
+fn assert_plain_from_long_line(out: &[u8], head: &[u8], tail: &[u8]) {
+    assert!(out.ends_with(tail), "the long line and later should be printed as is");
+    let colored = &out[..out.len() - tail.len()];
+    assert!(has_escape(colored), "lines before the long line should be highlighted");
+    assert_eq!(strip_ansi(colored), head);
+}
+
+#[test]
+fn prints_large_file_without_highlighting() {
+    let path = tempdir().join("large.rs");
+    let content = "fn main() {}\n".repeat(100).into_bytes();
+    fs::write(&path, &content).unwrap();
+    hl().args(["--color", "always", "--max-size", "1K"])
+        .arg(&path)
+        .assert()
+        .success()
+        .stdout(content);
+}
+
+#[test]
+fn stops_highlighting_large_stdin_at_the_limit() {
+    let line = "fn main() {}\n";
+    let input = line.repeat(100);
+    let out = colored_stdout(
+        hl().args(["--color", "always", "-l", "rust", "--max-size", "1K"])
+            .write_stdin(input.clone()),
+    );
+    // The line that crosses 1024 bytes and everything after it are plain.
+    let highlighted_lines = 1024 / line.len();
+    let tail = &input.as_bytes()[highlighted_lines * line.len()..];
+    assert!(out.ends_with(tail));
+    let colored = &out[..out.len() - tail.len()];
+    assert!(has_escape(colored));
+    assert_eq!(strip_ansi(colored), line.repeat(highlighted_lines).as_bytes());
+}
+
+#[test]
+fn stops_highlighting_at_a_long_line() {
+    let (path, head, tail) = long_line_fixture("long.js", 100);
+    let out = colored_stdout(
+        hl().args(["--color", "always", "--max-line-length", "64"])
+            .arg(&path),
+    );
+    assert_plain_from_long_line(&out, &head, &tail);
+}
+
+#[test]
+fn highlights_a_line_exactly_at_the_limit() {
+    let (path, _, _) = long_line_fixture("exact.js", 64);
+    let out = colored_stdout(
+        hl().args(["--color", "always", "--max-line-length", "64"])
+            .arg(&path),
+    );
+    assert!(out.ends_with(b"\x1b[0m\n"), "the last line should be highlighted");
+}
+
+#[test]
+fn limits_line_length_by_default() {
+    let (path, head, tail) = long_line_fixture("default.js", 20 * 1024);
+    let out = colored_stdout(hl().args(["--color", "always"]).arg(&path));
+    assert_plain_from_long_line(&out, &head, &tail);
+}
+
+#[test]
+fn zero_disables_the_limits() {
+    let (path, _, _) = long_line_fixture("unlimited.js", 100);
+    let out = colored_stdout(
+        hl().args(["--color", "always", "--max-size", "0", "--max-line-length", "0"])
+            .arg(&path),
+    );
+    assert!(out.ends_with(b"\x1b[0m\n"), "the last line should be highlighted");
+}
+
+#[test]
+fn reads_limits_from_env() {
+    let (path, head, tail) = long_line_fixture("env.js", 100);
+    let out = colored_stdout(
+        hl().env("HL_MAX_LINE_LENGTH", "64")
+            .args(["--color", "always"])
+            .arg(&path),
+    );
+    assert_plain_from_long_line(&out, &head, &tail);
+
+    let content = fs::read(&path).unwrap();
+    hl().env("HL_MAX_SIZE", "64")
+        .args(["--color", "always"])
+        .arg(&path)
+        .assert()
+        .success()
+        .stdout(content);
+}
+
+#[test]
+fn keeps_numbering_and_squeezing_across_the_switch() {
+    let path = tempdir().join("switch.js");
+    let mut content = b"let a = 1;\n\n\n".to_vec();
+    content.extend_from_slice("x".repeat(100).as_bytes());
+    content.extend_from_slice(b"\n\n\nlet b = 2;\nno newline");
+    fs::write(&path, content).unwrap();
+    let files = [path];
+    for opts in [&["-n"][..], &["-b"], &["-s"], &["-sn"]] {
+        let out = hl_output("always", &[&["--max-line-length", "64"][..], opts].concat(), &files);
+        assert!(has_escape(&out), "hl {opts:?} should highlight the first line");
+        assert_eq!(strip_ansi(&out), cat_output(opts, &files), "hl {opts:?} differs from cat");
+    }
+}
+
+#[test]
+fn parses_size_units() {
+    for size in ["1024", "1K", "2m", "1G"] {
+        hl().args(["--max-size", size, "Cargo.toml"]).assert().success();
+    }
+    for size in ["abc", "1T", "-1", "", "99999999999G"] {
+        hl().arg(format!("--max-size={size}"))
+            .arg("Cargo.toml")
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("--max-size"));
+    }
 }

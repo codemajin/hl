@@ -12,7 +12,7 @@ use anyhow::{Result, anyhow};
 use clap::Parser;
 
 use cli::{Args, ColorWhen};
-use highlight::{Highlighter, write_plain};
+use highlight::{Highlighter, Limits, write_plain};
 use lines::{LineState, Visibility};
 use pager::Pager;
 
@@ -80,10 +80,19 @@ fn run(args: &Args) -> Result<ExitCode> {
         args.files.clone()
     };
 
+    let limits = args.limits();
     let mut lines = LineState::new(args.numbering(), args.squeeze_blank);
     let mut failed = false;
     for input in &inputs {
-        let result = print_input(input, &mut out, highlighter, forced_syntax, &mut lines, vis);
+        let result = print_input(
+            input,
+            &mut out,
+            highlighter,
+            forced_syntax,
+            &mut lines,
+            vis,
+            limits,
+        );
         match result {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::BrokenPipe => break,
@@ -112,16 +121,20 @@ fn print_input(
     forced_syntax: Option<&syntect::parsing::SyntaxReference>,
     lines: &mut LineState,
     vis: Visibility,
+    limits: Limits,
 ) -> io::Result<()> {
     let is_stdin = path.as_os_str() == "-";
+    let mut too_large = false;
     let source: Box<dyn io::Read> = if is_stdin {
         Box::new(io::stdin().lock())
     } else {
-        Box::new(File::open(path)?)
+        let file = File::open(path)?;
+        too_large = limits.exceeds_size(file.metadata()?.len());
+        Box::new(file)
     };
     let mut reader = BufReader::with_capacity(64 * 1024, source);
 
-    let Some(hl) = highlighter else {
+    let Some(hl) = highlighter.filter(|_| !too_large) else {
         return write_plain(&mut reader, out, lines, vis);
     };
     let head = reader.fill_buf()?;
@@ -133,7 +146,7 @@ fn print_input(
         let first_line = String::from_utf8_lossy(first_line);
         hl.detect((!is_stdin).then_some(path), &first_line)
     });
-    hl.write(&mut reader, out, syntax, lines)
+    hl.write(&mut reader, out, syntax, lines, limits)
 }
 
 /// Strips the "(os error N)" suffix to match coreutils-style messages.

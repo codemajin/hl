@@ -67,6 +67,8 @@ hl --list-languages              # list languages and their extensions
 | `-u` | Accepted for `cat` compatibility and ignored |
 | `-l`, `--language <LANG>` | Use this language instead of auto-detection, given as a name or an extension (e.g. `rust`, `py`) |
 | `--theme <THEME>` | Color theme (case-insensitive). Defaults to `base16-ocean.dark`, which is also used with a warning if the theme is not found |
+| `--max-size <SIZE>` | Print inputs larger than this without highlighting. Default `512K`. Accepts `K`, `M` and `G` (powers of 1024); `0` removes the limit |
+| `--max-line-length <LEN>` | Stop highlighting at the first line longer than this many bytes (excluding the newline). Default `16K`; `0` removes the limit |
 | `-p`, `--paging` | Show output in a pager (`$PAGER`, or `less -RFX` if unset). Exits right away if the output fits on one screen |
 | `--color <WHEN>` | When to use colors: `auto`, `always`, or `never`. The default `auto` colors output only when stdout is a terminal |
 | `--list-themes` | List available themes |
@@ -79,12 +81,15 @@ With no file, or when the file is `-`, `hl` reads from standard input.
 | Variable | Description |
 | --- | --- |
 | `HL_THEME` | Default theme. `--theme` takes precedence |
+| `HL_MAX_SIZE` | Default for `--max-size` |
+| `HL_MAX_LINE_LENGTH` | Default for `--max-line-length` |
 | `PAGER` | Pager used by `-p` |
 
 ### Behavior details
 
 - The language is determined in this order: `-l`, extension, file name, then the first line (shebang, etc.). If none match, the file is printed as plain text.
 - If the first 8 KB of a file contain a NUL byte, the file is treated as binary and printed as-is without highlighting.
+- Highlighting only manages a few hundred KB per second, so hl limits it to stay fast on huge files and minified JS/CSS. A file larger than `--max-size` is not highlighted at all; for input of unknown size such as stdin, highlighting stops once the limit is reached. When a line longer than `--max-line-length` appears, highlighting stops from that line on. In both cases hl prints the same bytes as `cat`, without a warning.
 - With `-v`, `-E`, `-T` (or `-A`, `-e`, `-t`), output is not highlighted, so it is identical to `cat`'s. `-n`, `-b` and `-s` work together with highlighting.
 - If a file can't be opened, `hl` prints `hl: <path>: <reason>` to stderr, processes the remaining files, and exits with status 1.
 - If the output is closed early, as in `hl file | head`, `hl` exits successfully without an error.
