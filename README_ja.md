@@ -11,7 +11,7 @@
 ## 必要なもの
 
 - Rust ツールチェーン（edition 2024 に対応した Rust 1.85 以降）
-- ページャ機能（`-p`）を使う場合は `less`。環境変数 `$PAGER` を設定していればそちらを使います。
+- ページャ機能（`--paging`、`-p`）を使う場合は `less`。環境変数 `$PAGER` を設定していればそちらを使います。
 - 24bit カラー（Windows Terminal、iTerm2、GNOME Terminal、WezTerm など）か 256 色に対応した端末
 
 ## インストール
@@ -45,7 +45,8 @@ hl src/main.rs Cargo.toml        # 言語を自動判定してハイライトす
 hl -n file.py                    # 行番号付き（複数ファイルでも通し番号）
 cat script | hl -l bash          # stdin から読み、言語を明示する
 hl --theme Nord file.rs          # テーマを指定する
-hl -p big.rs                     # ページャで表示する
+hl --paging=auto big.rs          # 1 画面に収まらないときだけページャで表示する
+hl -p big.rs                     # 常にページャで表示する
 hl -A file.txt                   # cat -A と同じく、タブや行末、制御文字を見えるようにする
 hl --list-themes                 # テーマの一覧
 hl --list-languages              # 対応言語と拡張子の一覧
@@ -69,7 +70,8 @@ hl --list-languages              # 対応言語と拡張子の一覧
 | `--theme <THEME>` | テーマを指定します（大文字・小文字は区別しません）。既定は `base16-ocean.dark` です。見つからないテーマ名を指定した場合は警告を出し、既定のテーマで表示します |
 | `--max-size <SIZE>` | これより大きい入力はハイライトせずに出力します。既定は `512K` です。`K`、`M`、`G`（1024 倍）の単位が使えます。`0` で上限をなくします |
 | `--max-line-length <LEN>` | これより長い行（改行を除いたバイト数）が出てきたら、その行から先をハイライトせずに出力します。既定は `16K` です。`0` で上限をなくします |
-| `-p`, `--paging` | ページャで表示します（`$PAGER`、未設定なら `less -RFX`）。1 画面に収まる場合はそのまま終了します |
+| `--paging <WHEN>` | ページャを使うかどうか。`auto`、`always`、`never`（既定）から選びます。`auto` では、出力が 1 画面に収まらないときだけページャで表示します。ページャは `$PAGER`、未設定なら `less -RFX`（`auto`）か `less -RX`（`always`）です。標準出力が端末でなければページャは起動しません |
+| `-p` | `--paging=always` と同じ |
 | `--color <WHEN>` | 色を付ける条件を `auto`、`always`、`never` から選びます。既定の `auto` では、出力先が端末のときだけ色を付けます |
 | `--color-depth <DEPTH>` | 色深度を `auto`、`truecolor`（別名 `24bit`）、`256` から選びます。既定の `auto` では、`COLORTERM` が `truecolor` か `24bit` のとき、`TERM` が `-direct` で終わるとき、`WT_SESSION` が設定されているとき（Windows Terminal）に 24bit カラーを使い、それ以外では 256 色に近い色に置き換えて表示します |
 | `--list-themes` | 使えるテーマを一覧表示します |
@@ -85,7 +87,7 @@ hl --list-languages              # 対応言語と拡張子の一覧
 | `HL_MAX_SIZE` | `--max-size` の既定値 |
 | `HL_MAX_LINE_LENGTH` | `--max-line-length` の既定値 |
 | `HL_COLOR_DEPTH` | `--color-depth` の既定値 |
-| `PAGER` | `-p` で使うページャ |
+| `PAGER` | `--paging` と `-p` で使うページャ |
 
 ### 動作の詳細
 

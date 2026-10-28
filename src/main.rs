@@ -14,7 +14,7 @@ use std::{
 
 use anyhow::{Result, anyhow, bail};
 use clap::Parser;
-use cli::{Args, ColorWhen};
+use cli::{Args, ColorWhen, PagingWhen};
 use encoding::{Bom, UTF8_BOM, Utf16Decoder, is_utf8_prefix, sniff_bom};
 use highlight::{DEFAULT_THEME, Highlighter, Limits, find_language, find_theme, write_plain};
 use lines::{LineState, Visibility};
@@ -73,10 +73,14 @@ fn run(args: &Args) -> Result<ExitCode> {
         .filter(|_| color)
         .map(|syntaxes| Highlighter::new(syntaxes, load_theme(&args.theme), args.depth()));
 
-    let mut pager = if args.paging && tty {
-        Some(Pager::spawn().map_err(|e| anyhow!("failed to start pager: {e}"))?)
-    } else {
-        None
+    // Without a terminal there is nobody to page for, as with `--color=auto`.
+    let mut pager = match args.paging() {
+        PagingWhen::Never => None,
+        _ if !tty => None,
+        when => Some(
+            Pager::spawn(when == PagingWhen::Auto)
+                .map_err(|e| anyhow!("failed to start pager: {e}"))?,
+        ),
     };
     let stdout = io::stdout();
     let mut out = TrackedWriter::new(BufWriter::new(match pager.as_mut() {

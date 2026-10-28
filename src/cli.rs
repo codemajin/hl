@@ -16,6 +16,13 @@ pub enum ColorWhen {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PagingWhen {
+    Auto,
+    Always,
+    Never,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum ColorDepth {
     Auto,
     #[value(name = "truecolor", alias = "24bit")]
@@ -88,9 +95,14 @@ pub struct Args {
     #[arg(long, env = "HL_MAX_LINE_LENGTH", value_name = "LEN", default_value = "16K", value_parser = parse_size)]
     pub max_line_length: u64,
 
-    /// Send output through a pager ($PAGER, or `less -RFX`).
-    #[arg(short = 'p', long)]
-    pub paging: bool,
+    /// When to send output through a pager ($PAGER, or `less`): `auto` pages
+    /// only when the output does not fit on one screen.
+    #[arg(long, value_enum, value_name = "WHEN", default_value_t = PagingWhen::Never, overrides_with = "page")]
+    paging: PagingWhen,
+
+    /// Same as --paging=always.
+    #[arg(short = 'p', overrides_with = "paging")]
+    page: bool,
 
     /// When to use colors.
     #[arg(long, value_enum, value_name = "WHEN", default_value_t = ColorWhen::Auto)]
@@ -130,6 +142,15 @@ impl Args {
                 || self.show_nonprinting_tabs,
             ends: self.show_ends || self.show_all || self.show_nonprinting_ends,
             tabs: self.show_tabs || self.show_all || self.show_nonprinting_tabs,
+        }
+    }
+
+    /// When to page, with -p expanded.
+    pub fn paging(&self) -> PagingWhen {
+        if self.page {
+            PagingWhen::Always
+        } else {
+            self.paging
         }
     }
 

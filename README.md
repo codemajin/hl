@@ -11,7 +11,7 @@ English | [日本語](README_ja.md)
 ## Requirements
 
 - A Rust toolchain (Rust 1.85 or later, for edition 2024)
-- `less` for the pager option (`-p`). If `$PAGER` is set, that pager is used instead.
+- `less` for the pager options (`--paging`, `-p`). If `$PAGER` is set, that pager is used instead.
 - A terminal with 24-bit color (Windows Terminal, iTerm2, GNOME Terminal, WezTerm, etc.) or 256 color support
 
 ## Installation
@@ -45,7 +45,8 @@ hl src/main.rs Cargo.toml        # highlight with automatic language detection
 hl -n file.py                    # number lines (continuous across files)
 cat script | hl -l bash          # read stdin with an explicit language
 hl --theme Nord file.rs          # choose a theme
-hl -p big.rs                     # view through a pager
+hl --paging=auto big.rs          # use a pager only if the output does not fit on one screen
+hl -p big.rs                     # always view through a pager
 hl -A file.txt                   # show tabs, line ends and control characters, like cat -A
 hl --list-themes                 # list themes
 hl --list-languages              # list languages and their extensions
@@ -69,7 +70,8 @@ hl --list-languages              # list languages and their extensions
 | `--theme <THEME>` | Color theme (case-insensitive). Defaults to `base16-ocean.dark`, which is also used with a warning if the theme is not found |
 | `--max-size <SIZE>` | Print inputs larger than this without highlighting. Default `512K`. Accepts `K`, `M` and `G` (powers of 1024); `0` removes the limit |
 | `--max-line-length <LEN>` | Stop highlighting at the first line longer than this many bytes (excluding the newline). Default `16K`; `0` removes the limit |
-| `-p`, `--paging` | Show output in a pager (`$PAGER`, or `less -RFX` if unset). Exits right away if the output fits on one screen |
+| `--paging <WHEN>` | When to show output in a pager: `auto`, `always`, or `never` (default). `auto` pages only when the output does not fit on one screen. The pager is `$PAGER`, or `less -RFX` (`auto`) / `less -RX` (`always`) if unset. No pager is started when stdout is not a terminal |
+| `-p` | Same as `--paging=always` |
 | `--color <WHEN>` | When to use colors: `auto`, `always`, or `never`. The default `auto` colors output only when stdout is a terminal |
 | `--color-depth <DEPTH>` | Color depth: `auto`, `truecolor` (alias `24bit`), or `256`. The default `auto` uses 24-bit color when `COLORTERM` is `truecolor` or `24bit`, `TERM` ends in `-direct`, or `WT_SESSION` is set (Windows Terminal), and approximates colors to the 256 color palette otherwise |
 | `--list-themes` | List available themes |
@@ -85,7 +87,7 @@ With no file, or when the file is `-`, `hl` reads from standard input.
 | `HL_MAX_SIZE` | Default for `--max-size` |
 | `HL_MAX_LINE_LENGTH` | Default for `--max-line-length` |
 | `HL_COLOR_DEPTH` | Default for `--color-depth` |
-| `PAGER` | Pager used by `-p` |
+| `PAGER` | Pager used by `--paging` and `-p` |
 
 ### Behavior details
 

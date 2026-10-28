@@ -772,3 +772,40 @@ fn stops_quietly_when_the_listing_pipe_closes() {
     assert!(output.status.success());
     assert_eq!(String::from_utf8_lossy(&output.stderr), "");
 }
+
+#[test]
+fn never_starts_a_pager_without_a_terminal() {
+    let dir = tempdir();
+    let marker = dir.path().join("paged");
+    let pager = format!("touch {}", marker.display());
+    let content = fs::read("Cargo.toml").unwrap();
+    for opts in [&["-p"][..], &["--paging=always"], &["--paging=auto"]] {
+        hl().args(opts)
+            .arg("Cargo.toml")
+            .env("PAGER", &pager)
+            .assert()
+            .success()
+            .stdout(content.clone());
+        assert!(!marker.exists(), "pager started with {opts:?}");
+    }
+}
+
+#[test]
+fn accepts_p_together_with_paging() {
+    let content = fs::read("Cargo.toml").unwrap();
+    for opts in [["-p", "--paging=never"], ["--paging=never", "-p"]] {
+        hl().args(opts)
+            .arg("Cargo.toml")
+            .assert()
+            .success()
+            .stdout(content.clone());
+    }
+}
+
+#[test]
+fn rejects_unknown_paging_mode() {
+    hl().args(["--paging=sometimes", "Cargo.toml"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid value 'sometimes'"));
+}

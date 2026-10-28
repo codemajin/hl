@@ -14,15 +14,20 @@ pub struct Pager {
 }
 
 impl Pager {
-    /// Starts `$PAGER`, falling back to `less -RFX`.
-    pub fn spawn() -> io::Result<Self> {
+    /// Starts `$PAGER`, falling back to `less -RX`. With `quit_if_one_screen`
+    /// the fallback is `less -RFX`, which exits at once when the output fits
+    /// on one screen; `$PAGER` is run as given either way.
+    pub fn spawn(quit_if_one_screen: bool) -> io::Result<Self> {
         let (program, args) = match env::var("PAGER") {
             Ok(pager) if !pager.trim().is_empty() => {
                 let mut parts = pager.split_whitespace().map(String::from);
                 let program = parts.next().unwrap_or_default();
                 (program, parts.collect())
             }
-            _ => ("less".to_string(), vec!["-RFX".to_string()]),
+            _ => {
+                let flags = if quit_if_one_screen { "-RFX" } else { "-RX" };
+                ("less".to_string(), vec![flags.to_string()])
+            }
         };
         let mut child = Command::new(program)
             .args(args)
