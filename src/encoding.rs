@@ -92,10 +92,14 @@ impl<R: Read> Read for Utf16Decoder<R> {
             self.pos = 0;
             let start = self.raw.len();
             self.raw.resize(start + CHUNK, 0);
-            let read = self.inner.read(&mut self.raw[start..]);
-            let n = *read.as_ref().unwrap_or(&0);
+            let n = match self.inner.read(&mut self.raw[start..]) {
+                Ok(n) => n,
+                Err(e) => {
+                    self.raw.truncate(start);
+                    return Err(e);
+                }
+            };
             self.raw.truncate(start + n);
-            read?;
             if n == 0 && self.raw.is_empty() {
                 return Ok(0);
             }
@@ -105,5 +109,80 @@ impl<R: Read> Read for Utf16Decoder<R> {
         buf[..n].copy_from_slice(&self.out[self.pos..self.pos + n]);
         self.pos += n;
         Ok(n)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Returns one byte per `read`, so every unit is split across reads.
+    struct OneByte<'a>(&'a [u8]);
+
+    impl Read for OneByte<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let n = self.0.len().min(1).min(buf.len());
+            buf[..n].copy_from_slice(&self.0[..n]);
+            self.0 = &self.0[n..];
+            Ok(n)
+        }
+    }
+
+    fn utf16(text: &str, big_endian: bool) -> Vec<u8> {
+        text.encode_utf16()
+            .flat_map(|u| {
+                if big_endian {
+                    u.to_be_bytes()
+                } else {
+                    u.to_le_bytes()
+                }
+            })
+            .collect()
+    }
+
+    fn decode(input: impl Read, big_endian: bool) -> String {
+        let mut out = String::new();
+        Utf16Decoder::new(input, big_endian)
+            .read_to_string(&mut out)
+            .unwrap();
+        out
+    }
+
+    const TEXT: &str = "fn main() {} // 😀 日本語\n";
+
+    #[test]
+    fn decodes_whole_chunks() {
+        for big_endian in [false, true] {
+            assert_eq!(decode(&utf16(TEXT, big_endian)[..], big_endian), TEXT);
+        }
+    }
+
+    #[test]
+    fn decodes_units_and_surrogate_pairs_split_across_reads() {
+        for big_endian in [false, true] {
+            let bytes = utf16(TEXT, big_endian);
+            assert_eq!(decode(OneByte(&bytes), big_endian), TEXT);
+        }
+    }
+
+    #[test]
+    fn replaces_a_trailing_high_surrogate() {
+        let mut bytes = utf16("a", false);
+        bytes.extend_from_slice(&0xD83Du16.to_le_bytes());
+        assert_eq!(decode(OneByte(&bytes), false), "a\u{FFFD}");
+    }
+
+    #[test]
+    fn replaces_a_trailing_odd_byte() {
+        let mut bytes = utf16("a", false);
+        bytes.push(b'b');
+        assert_eq!(decode(OneByte(&bytes), false), "a\u{FFFD}");
+    }
+
+    #[test]
+    fn replaces_an_unpaired_low_surrogate() {
+        let mut bytes = 0xDE00u16.to_le_bytes().to_vec();
+        bytes.extend(utf16("a", false));
+        assert_eq!(decode(&bytes[..], false), "\u{FFFD}a");
     }
 }
