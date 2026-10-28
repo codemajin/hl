@@ -66,7 +66,7 @@ hl --list-languages              # list languages and their extensions
 | `-t` | Same as `-vT` |
 | `-u` | Accepted for `cat` compatibility and ignored |
 | `-l`, `--language <LANG>` | Use this language instead of auto-detection, given as a name or an extension (e.g. `rust`, `py`) |
-| `--theme <THEME>` | Color theme. Defaults to `base16-ocean.dark` |
+| `--theme <THEME>` | Color theme (case-insensitive). Defaults to `base16-ocean.dark`, which is also used with a warning if the theme is not found |
 | `-p`, `--paging` | Show output in a pager (`$PAGER`, or `less -RFX` if unset). Exits right away if the output fits on one screen |
 | `--color <WHEN>` | When to use colors: `auto`, `always`, or `never`. The default `auto` colors output only when stdout is a terminal |
 | `--list-themes` | List available themes |

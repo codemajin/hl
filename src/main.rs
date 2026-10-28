@@ -45,7 +45,7 @@ fn run(args: &Args) -> Result<ExitCode> {
             ColorWhen::Auto => tty,
         };
     let highlighter = if color || args.list_languages || args.language.is_some() {
-        Some(Highlighter::new(&args.theme)?)
+        Some(Highlighter::new(&args.theme))
     } else {
         None
     };

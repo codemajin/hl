@@ -268,3 +268,47 @@ fn theme_has_no_short_option() {
         .failure()
         .stderr(predicate::str::contains("hl: Nord: No such file or directory"));
 }
+
+fn colored_stdout(cmd: &mut Command) -> Vec<u8> {
+    cmd.assert().success().get_output().stdout.clone()
+}
+
+#[test]
+fn falls_back_on_unknown_theme() {
+    let expected = colored_stdout(hl().args(["--color", "always", "Cargo.toml"]));
+    hl().args(["--color", "always", "--theme", "NoSuchTheme", "Cargo.toml"])
+        .assert()
+        .success()
+        .stderr("hl: unknown theme 'NoSuchTheme', falling back to base16-ocean.dark (see --list-themes)\n")
+        .stdout(expected);
+}
+
+#[test]
+fn falls_back_on_unknown_theme_from_env() {
+    let expected = colored_stdout(hl().args(["--color", "always", "Cargo.toml"]));
+    hl().env("HL_THEME", "NoSuchTheme")
+        .args(["--color", "always", "Cargo.toml"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("unknown theme 'NoSuchTheme'"))
+        .stdout(expected);
+}
+
+#[test]
+fn matches_theme_case_insensitively() {
+    let expected = colored_stdout(hl().args(["--color", "always", "--theme", "Nord", "Cargo.toml"]));
+    hl().args(["--color", "always", "--theme", "nord", "Cargo.toml"])
+        .assert()
+        .success()
+        .stderr("")
+        .stdout(expected);
+}
+
+#[test]
+fn ignores_unknown_theme_without_color() {
+    let content = fs::read("src/main.rs").unwrap();
+    hl().args(["--theme", "NoSuchTheme", "src/main.rs"])
+        .assert()
+        .success()
+        .stdout(content);
+}

@@ -1,13 +1,13 @@
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 
-use anyhow::{Result, anyhow};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::Theme;
 use syntect::parsing::{SyntaxReference, SyntaxSet};
 use syntect::util::as_24_bit_terminal_escaped;
 use two_face::theme::LazyThemeSet;
 
+use crate::cli::DEFAULT_THEME;
 use crate::lines::{LineState, Visibility, write_visible};
 
 const RESET: &str = "\x1b[0m";
@@ -18,16 +18,22 @@ pub struct Highlighter {
 }
 
 impl Highlighter {
-    pub fn new(theme_name: &str) -> Result<Self> {
+    /// An unknown theme is not fatal: it warns and falls back to the default,
+    /// so a typo in `HL_THEME` never hides the file contents.
+    pub fn new(theme_name: &str) -> Self {
         let themes = LazyThemeSet::from(two_face::theme::extra());
-        let theme = themes
-            .get(theme_name)
-            .ok_or_else(|| anyhow!("unknown theme '{theme_name}' (see --list-themes)"))?
+        let theme = resolve_theme(&themes, theme_name)
+            .unwrap_or_else(|| {
+                eprintln!(
+                    "hl: unknown theme '{theme_name}', falling back to {DEFAULT_THEME} (see --list-themes)"
+                );
+                themes.get(DEFAULT_THEME).expect("default theme is bundled")
+            })
             .clone();
-        Ok(Self {
+        Self {
             syntaxes: two_face::syntax::extra_newlines(),
             theme,
-        })
+        }
     }
 
     pub fn syntaxes(&self) -> &SyntaxSet {
@@ -85,6 +91,19 @@ impl Highlighter {
             let escaped = escaped.strip_suffix('\n').unwrap_or(&escaped);
             write!(out, "{escaped}{RESET}{newline}")?;
         }
+    }
+}
+
+/// Looks a theme up by exact name, then case-insensitively as long as the
+/// match is unambiguous (so `nord` finds `Nord`).
+fn resolve_theme<'a>(themes: &'a LazyThemeSet, name: &str) -> Option<&'a Theme> {
+    if let Some(theme) = themes.get(name) {
+        return Some(theme);
+    }
+    let mut matches = themes.theme_names().filter(|n| n.eq_ignore_ascii_case(name));
+    match (matches.next(), matches.next()) {
+        (Some(found), None) => themes.get(found),
+        _ => None,
     }
 }
 
