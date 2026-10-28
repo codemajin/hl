@@ -43,6 +43,7 @@ cargo uninstall hl                  # add the same --root if you used one
 ```sh
 hl src/main.rs Cargo.toml        # highlight with automatic language detection
 hl -n file.py                    # number lines (continuous across files)
+hl --header src/*.rs             # print a header with the file name before each file
 cat script | hl -l bash          # read stdin with an explicit language
 hl --theme Nord file.rs          # choose a theme
 hl --paging=auto big.rs          # use a pager only if the output does not fit on one screen
@@ -59,6 +60,7 @@ hl --list-languages              # list languages and their extensions
 | `-n`, `--number` | Number output lines. Like `cat -n`, numbering continues across files |
 | `-b`, `--number-nonblank` | Number non-empty output lines. Overrides `-n` |
 | `-s`, `--squeeze-blank` | Squeeze repeated empty lines into one |
+| `--header` | Print a `==> FILE <==` header before each input |
 | `-v`, `--show-nonprinting` | Show control characters and bytes 128 and above in `^` and `M-` notation (except newline and tab) |
 | `-E`, `--show-ends` | Print `$` at the end of each line |
 | `-T`, `--show-tabs` | Print tabs as `^I` |
@@ -97,6 +99,7 @@ With no file, or when the file is `-`, `hl` reads from standard input.
 - UTF-16 files with a BOM are converted to UTF-8 and highlighted when output is colored. Without color they are printed as-is. A UTF-8 BOM is kept in the output and ignored for language detection.
 - Highlighting only manages a few hundred KB per second, so hl limits it to stay fast on huge files and minified JS/CSS. A file larger than `--max-size` is not highlighted at all; for input of unknown size such as stdin, highlighting stops once the limit is reached. When a line longer than `--max-line-length` appears, highlighting stops from that line on. In both cases hl prints the same bytes as `cat`, without a warning.
 - With `-v`, `-E`, `-T` (or `-A`, `-e`, `-t`), output is not highlighted, so it is identical to `cat`'s. `-n`, `-b` and `-s` work together with highlighting.
+- With `--header`, each input, including a single file, starts with a `==> FILE <==` line (`==> standard input <==` for stdin), with a blank line between files. The header is bold when output is colored. Header lines are not numbered by `-n` or `-b`, and numbering continues across files as usual. A file that can't be opened gets no header. Without `--header`, the output is the same as `cat`'s.
 - If a file can't be opened, `hl` prints `hl: <path>: <reason>` to stderr, processes the remaining files, and exits with status 1.
 - If the output is closed early, as in `hl file | head`, `hl` exits successfully without an error.
 

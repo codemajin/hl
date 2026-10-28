@@ -809,3 +809,119 @@ fn rejects_unknown_paging_mode() {
         .failure()
         .stderr(predicate::str::contains("invalid value 'sometimes'"));
 }
+
+/// Writes `files` (name, content) into `dir` and returns their paths.
+fn write_files(dir: &Path, files: &[(&str, &str)]) -> Vec<std::path::PathBuf> {
+    files
+        .iter()
+        .map(|(name, content)| {
+            let path = dir.join(name);
+            fs::write(&path, content).unwrap();
+            path
+        })
+        .collect()
+}
+
+#[test]
+fn prints_a_header_before_each_file() {
+    let dir = tempdir();
+    let files = write_files(dir.path(), &[("a.txt", "one\ntwo\n"), ("b.txt", "three\n")]);
+    hl().arg("--header")
+        .args(&files)
+        .assert()
+        .success()
+        .stdout(format!(
+            "==> {} <==\none\ntwo\n\n==> {} <==\nthree\n",
+            files[0].display(),
+            files[1].display()
+        ));
+}
+
+#[test]
+fn prints_a_header_for_a_single_input_and_stdin() {
+    let dir = tempdir();
+    let files = write_files(dir.path(), &[("a.txt", "one\n")]);
+    hl().args(["--header", "-"])
+        .args(&files)
+        .write_stdin("abc\n")
+        .assert()
+        .success()
+        .stdout(format!(
+            "==> standard input <==\nabc\n\n==> {} <==\none\n",
+            files[0].display()
+        ));
+}
+
+#[test]
+fn numbers_lines_across_headers() {
+    let dir = tempdir();
+    let files = write_files(dir.path(), &[("a.txt", "one\n\n"), ("b.txt", "two\n")]);
+    hl().args(["--header", "-n"])
+        .args(&files)
+        .assert()
+        .success()
+        .stdout(format!(
+            "==> {} <==\n     1\tone\n     2\t\n\n==> {} <==\n     3\ttwo\n",
+            files[0].display(),
+            files[1].display()
+        ));
+}
+
+#[test]
+fn starts_a_header_on_a_new_line() {
+    let dir = tempdir();
+    let files = write_files(dir.path(), &[("a.txt", "one"), ("b.txt", "two\n")]);
+    hl().args(["--header", "-n"])
+        .args(&files)
+        .assert()
+        .success()
+        .stdout(format!(
+            "==> {} <==\n     1\tone\n\n==> {} <==\n     2\ttwo\n",
+            files[0].display(),
+            files[1].display()
+        ));
+}
+
+#[test]
+fn does_not_squeeze_across_a_header() {
+    let dir = tempdir();
+    let files = write_files(dir.path(), &[("a.txt", "one\n\n\n"), ("b.txt", "\ntwo\n")]);
+    hl().args(["--header", "-s"])
+        .args(&files)
+        .assert()
+        .success()
+        .stdout(format!(
+            "==> {} <==\none\n\n\n==> {} <==\n\ntwo\n",
+            files[0].display(),
+            files[1].display()
+        ));
+}
+
+#[test]
+fn prints_no_header_for_a_missing_file() {
+    let dir = tempdir();
+    let files = write_files(dir.path(), &[("ok.txt", "hello\n")]);
+    hl().arg("--header")
+        .arg(dir.path().join("missing.txt"))
+        .args(&files)
+        .assert()
+        .failure()
+        .stdout(format!("==> {} <==\nhello\n", files[0].display()))
+        .stderr(predicate::str::contains("No such file or directory"));
+}
+
+#[test]
+fn makes_the_header_bold_only_with_color() {
+    hl().args(["--header", "--color", "always", "Cargo.toml"])
+        .assert()
+        .success()
+        .stdout(predicate::str::starts_with(
+            "\x1b[1m==> Cargo.toml <==\x1b[0m\n",
+        ));
+    let mut expected = b"==> Cargo.toml <==\n".to_vec();
+    expected.extend(fs::read("Cargo.toml").unwrap());
+    hl().args(["--header", "--color", "never", "Cargo.toml"])
+        .assert()
+        .success()
+        .stdout(expected);
+}

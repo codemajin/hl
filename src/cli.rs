@@ -51,6 +51,10 @@ pub struct Args {
     #[arg(short = 's', long)]
     pub squeeze_blank: bool,
 
+    /// Print a `==> FILE <==` header before each input.
+    #[arg(long)]
+    pub header: bool,
+
     /// Equivalent to -vET.
     #[arg(short = 'A', long)]
     pub show_all: bool,

@@ -96,18 +96,25 @@ fn run(args: &Args) -> Result<ExitCode> {
 
     let limits = args.limits();
     let mut lines = LineState::new(args.numbering(), args.squeeze_blank);
+    let mut headers = args.header.then(|| Headers::new(color));
     let mut failed = false;
     let mut write_error = None;
     for input in &inputs {
-        let result = print_input(
-            input,
-            &mut out,
-            highlighter.as_ref(),
-            forced_syntax,
-            &mut lines,
-            vis,
-            limits,
-        );
+        // A file that cannot be opened gets no header, like with `head`.
+        let result = open_input(input, limits).and_then(|source| {
+            if let Some(headers) = headers.as_mut() {
+                headers.write(input, &mut out, &mut lines)?;
+            }
+            print_input(
+                source,
+                &mut out,
+                highlighter.as_ref(),
+                forced_syntax,
+                &mut lines,
+                vis,
+                limits,
+            )
+        });
         match result {
             Ok(()) => {}
             // The output is gone, so there is no point in reading more input.
@@ -183,8 +190,73 @@ impl<W: Write> Write for TrackedWriter<W> {
     }
 }
 
+/// `==> FILE <==` lines written before each input with `--header`.
+struct Headers {
+    bold: bool,
+    printed: bool,
+}
+
+impl Headers {
+    fn new(bold: bool) -> Self {
+        Self {
+            bold,
+            printed: false,
+        }
+    }
+
+    fn write(
+        &mut self,
+        path: &Path,
+        out: &mut impl Write,
+        lines: &mut LineState,
+    ) -> io::Result<()> {
+        lines.separate(out)?;
+        if self.printed {
+            out.write_all(b"\n")?;
+        }
+        self.printed = true;
+        let name = if is_stdin(path) {
+            "standard input".into()
+        } else {
+            path.display().to_string()
+        };
+        if self.bold {
+            writeln!(out, "\x1b[1m==> {name} <==\x1b[0m")
+        } else {
+            writeln!(out, "==> {name} <==")
+        }
+    }
+}
+
+/// An opened input. `path` is `None` for stdin.
+struct Input<'a> {
+    source: Box<dyn io::Read>,
+    path: Option<&'a Path>,
+    too_large: bool,
+}
+
+fn is_stdin(path: &Path) -> bool {
+    path.as_os_str() == "-"
+}
+
+fn open_input(path: &Path, limits: Limits) -> io::Result<Input<'_>> {
+    if is_stdin(path) {
+        return Ok(Input {
+            source: Box::new(io::stdin().lock()),
+            path: None,
+            too_large: false,
+        });
+    }
+    let file = File::open(path)?;
+    Ok(Input {
+        too_large: limits.exceeds_size(file.metadata()?.len()),
+        source: Box::new(file),
+        path: Some(path),
+    })
+}
+
 fn print_input(
-    path: &Path,
+    input: Input,
     out: &mut impl Write,
     highlighter: Option<&Highlighter>,
     forced_syntax: Option<&SyntaxReference>,
@@ -192,21 +264,16 @@ fn print_input(
     vis: Visibility,
     limits: Limits,
 ) -> io::Result<()> {
-    let is_stdin = path.as_os_str() == "-";
-    let mut too_large = false;
-    let source: Box<dyn io::Read> = if is_stdin {
-        Box::new(io::stdin().lock())
-    } else {
-        let file = File::open(path)?;
-        too_large = limits.exceeds_size(file.metadata()?.len());
-        Box::new(file)
-    };
+    let Input {
+        source,
+        path,
+        too_large,
+    } = input;
     let mut reader = BufReader::with_capacity(64 * 1024, source);
 
     let Some(hl) = highlighter.filter(|_| !too_large) else {
         return write_plain(&mut reader, out, lines, vis);
     };
-    let path = (!is_stdin).then_some(path);
     let head = reader.fill_buf()?;
     if let Some(Bom::Utf16 { big_endian }) = sniff_bom(head) {
         // Terminals expect UTF-8, so UTF-16 is converted for highlighting.

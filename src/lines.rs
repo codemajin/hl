@@ -73,6 +73,18 @@ impl LineState {
         }
         Ok(true)
     }
+
+    /// Ends an unfinished line before something that is not part of the
+    /// input (a header), so that it starts on its own line and squeezing
+    /// does not reach across it.
+    pub fn separate(&mut self, out: &mut impl Write) -> io::Result<()> {
+        if !self.at_line_start {
+            out.write_all(b"\n")?;
+        }
+        self.at_line_start = true;
+        self.prev_blank = false;
+        Ok(())
+    }
 }
 
 /// Writes one line using `cat -v` / `-E` / `-T` notation.
