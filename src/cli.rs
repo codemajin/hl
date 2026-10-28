@@ -2,9 +2,11 @@ use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
 
-use crate::color::{self, Depth};
-use crate::highlight::Limits;
-use crate::lines::{Numbering, Visibility};
+use crate::{
+    color::{self, Depth},
+    highlight::Limits,
+    lines::{Numbering, Visibility},
+};
 
 pub const DEFAULT_THEME: &str = "base16-ocean.dark";
 

@@ -25,8 +25,8 @@ pub fn detect_from_env() -> Depth {
 /// garbles the output. Windows Terminal supports it but sets no `COLORTERM`,
 /// so `WT_SESSION` counts too.
 pub fn detect(colorterm: Option<&str>, term: Option<&str>, wt_session: bool) -> Depth {
-    let colorterm =
-        colorterm.is_some_and(|c| c.eq_ignore_ascii_case("truecolor") || c.eq_ignore_ascii_case("24bit"));
+    let colorterm = colorterm
+        .is_some_and(|c| c.eq_ignore_ascii_case("truecolor") || c.eq_ignore_ascii_case("24bit"));
     let term = term.is_some_and(|t| t.ends_with("-direct"));
     if colorterm || term || wt_session {
         Depth::TrueColor

@@ -107,7 +107,11 @@ pub fn write_visible(line: &[u8], vis: Visibility, out: &mut impl Write) -> io::
 }
 
 fn write_nonprinting(b: u8, out: &mut impl Write) -> io::Result<()> {
-    let (meta, c) = if b >= 0x80 { (true, b - 0x80) } else { (false, b) };
+    let (meta, c) = if b >= 0x80 {
+        (true, b - 0x80)
+    } else {
+        (false, b)
+    };
     if meta {
         out.write_all(b"M-")?;
     }

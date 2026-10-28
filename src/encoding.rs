@@ -74,7 +74,8 @@ impl<R: Read> Utf16Decoder<R> {
         let mut utf8 = [0; 4];
         for c in char::decode_utf16(units.iter().copied()) {
             let c = c.unwrap_or(char::REPLACEMENT_CHARACTER);
-            self.out.extend_from_slice(c.encode_utf8(&mut utf8).as_bytes());
+            self.out
+                .extend_from_slice(c.encode_utf8(&mut utf8).as_bytes());
         }
         self.raw.drain(..units.len() * 2);
         if eof && !self.raw.is_empty() {

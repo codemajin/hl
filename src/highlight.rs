@@ -1,16 +1,22 @@
-use std::io::{self, BufRead, Read, Write};
-use std::path::Path;
+use std::{
+    io::{self, BufRead, Read, Write},
+    path::Path,
+};
 
-use syntect::easy::HighlightLines;
-use syntect::highlighting::Theme;
-use syntect::parsing::{SyntaxReference, SyntaxSet};
-use syntect::util::as_24_bit_terminal_escaped;
+use syntect::{
+    easy::HighlightLines,
+    highlighting::Theme,
+    parsing::{SyntaxReference, SyntaxSet},
+    util::as_24_bit_terminal_escaped,
+};
 use two_face::theme::LazyThemeSet;
 
-use crate::cli::DEFAULT_THEME;
-use crate::color::{Depth, as_256_terminal_escaped};
-use crate::encoding::UTF8_BOM;
-use crate::lines::{LineState, Visibility, write_visible};
+use crate::{
+    cli::DEFAULT_THEME,
+    color::{Depth, as_256_terminal_escaped},
+    encoding::UTF8_BOM,
+    lines::{LineState, Visibility, write_visible},
+};
 
 const RESET: &str = "\x1b[0m";
 
@@ -155,7 +161,9 @@ fn resolve_theme<'a>(themes: &'a LazyThemeSet, name: &str) -> Option<&'a Theme> 
     if let Some(theme) = themes.get(name) {
         return Some(theme);
     }
-    let mut matches = themes.theme_names().filter(|n| n.eq_ignore_ascii_case(name));
+    let mut matches = themes
+        .theme_names()
+        .filter(|n| n.eq_ignore_ascii_case(name));
     match (matches.next(), matches.next()) {
         (Some(found), None) => themes.get(found),
         _ => None,

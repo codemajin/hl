@@ -1,1 +1,33 @@
-max_width = 110
+# rustfmt configuration
+#
+# Docs: https://rust-lang.github.io/rustfmt/
+#
+# The "Stable" section works with every toolchain. The "Unstable" section is
+# applied only by nightly rustfmt; stable rustfmt prints a warning and skips
+# those options, so the code may be formatted a little differently there.
+
+# --- Stable -----------------------------------------------------------------
+
+# Match the `edition` in Cargo.toml so that running `rustfmt` directly gives
+# the same result as `cargo fmt`.
+edition       = "2024"
+# Rust Style Guide edition (RFC 3338). Taken from `edition` when unset, but
+# set here so the style does not depend on how rustfmt is called.
+style_edition = "2024"
+
+max_width                = 100   # Line width of the Rust Style Guide (the default)
+newline_style            = "Unix"
+use_field_init_shorthand = true  # `S { x: x }` -> `S { x }`
+use_try_shorthand        = true  # `try!(x)` -> `x?`
+
+# --- Unstable (nightly only) ------------------------------------------------
+
+imports_granularity = "Crate"            # Merge imports from the same crate: `use std::{fmt, io};`
+group_imports       = "StdExternalCrate" # Group as std/core/alloc, external crates, then local
+
+wrap_comments               = true # Wrap comments longer than `comment_width`
+comment_width               = 100  # Same as `max_width` (the default is 80)
+format_code_in_doc_comments = true # Format Rust code blocks in doc comments
+normalize_doc_attributes    = true # `#[doc = "..."]` -> `///`
+
+reorder_impl_items = true # In impl blocks, put `type` and `const` before functions

@@ -1,6 +1,8 @@
-use std::env;
-use std::io::{self, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::{
+    env,
+    io::{self, Write},
+    process::{Child, ChildStdin, Command, Stdio},
+};
 
 /// A running pager process whose stdin receives our output.
 pub struct Pager {
@@ -18,7 +20,10 @@ impl Pager {
             }
             _ => ("less".to_string(), vec!["-RFX".to_string()]),
         };
-        let child = Command::new(program).args(args).stdin(Stdio::piped()).spawn()?;
+        let child = Command::new(program)
+            .args(args)
+            .stdin(Stdio::piped())
+            .spawn()?;
         Ok(Self { child })
     }
 

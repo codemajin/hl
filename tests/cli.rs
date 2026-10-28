@@ -96,7 +96,10 @@ fn highlights_stdin_with_explicit_language() {
         .output()
         .unwrap()
         .stdout;
-    assert_ne!(plain, rust, "rust highlighting should differ from plain text");
+    assert_ne!(
+        plain, rust,
+        "rust highlighting should differ from plain text"
+    );
 }
 
 #[test]
@@ -276,7 +279,9 @@ fn theme_has_no_short_option() {
     hl().args(["-t", "Nord"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("hl: Nord: No such file or directory"));
+        .stderr(predicate::str::contains(
+            "hl: Nord: No such file or directory",
+        ));
 }
 
 fn colored_stdout(cmd: &mut Command) -> Vec<u8> {
@@ -306,7 +311,8 @@ fn falls_back_on_unknown_theme_from_env() {
 
 #[test]
 fn matches_theme_case_insensitively() {
-    let expected = colored_stdout(hl().args(["--color", "always", "--theme", "Nord", "Cargo.toml"]));
+    let expected =
+        colored_stdout(hl().args(["--color", "always", "--theme", "Nord", "Cargo.toml"]));
     hl().args(["--color", "always", "--theme", "nord", "Cargo.toml"])
         .assert()
         .success()
@@ -378,7 +384,10 @@ fn stops_highlighting_large_stdin_at_the_limit() {
     assert!(out.ends_with(tail));
     let colored = &out[..out.len() - tail.len()];
     assert!(has_escape(colored));
-    assert_eq!(strip_ansi(colored), line.repeat(highlighted_lines).as_bytes());
+    assert_eq!(
+        strip_ansi(colored),
+        line.repeat(highlighted_lines).as_bytes()
+    );
 }
 
 #[test]
@@ -398,7 +407,10 @@ fn highlights_a_line_exactly_at_the_limit() {
         hl().args(["--color", "always", "--max-line-length", "64"])
             .arg(&path),
     );
-    assert!(out.ends_with(b"\x1b[0m\n"), "the last line should be highlighted");
+    assert!(
+        out.ends_with(b"\x1b[0m\n"),
+        "the last line should be highlighted"
+    );
 }
 
 #[test]
@@ -412,10 +424,20 @@ fn limits_line_length_by_default() {
 fn zero_disables_the_limits() {
     let (path, _, _) = long_line_fixture("unlimited.js", 100);
     let out = colored_stdout(
-        hl().args(["--color", "always", "--max-size", "0", "--max-line-length", "0"])
-            .arg(&path),
+        hl().args([
+            "--color",
+            "always",
+            "--max-size",
+            "0",
+            "--max-line-length",
+            "0",
+        ])
+        .arg(&path),
     );
-    assert!(out.ends_with(b"\x1b[0m\n"), "the last line should be highlighted");
+    assert!(
+        out.ends_with(b"\x1b[0m\n"),
+        "the last line should be highlighted"
+    );
 }
 
 #[test]
@@ -451,7 +473,10 @@ fn keeps_numbering_and_squeezing_across_the_switch() {
             &[&["--max-line-length", "64"][..], opts].concat(),
             &files,
         );
-        assert!(has_escape(&out), "hl {opts:?} should highlight the first line");
+        assert!(
+            has_escape(&out),
+            "hl {opts:?} should highlight the first line"
+        );
         assert_eq!(
             strip_ansi(&out),
             cat_output(opts, &files),
@@ -463,7 +488,9 @@ fn keeps_numbering_and_squeezing_across_the_switch() {
 #[test]
 fn parses_size_units() {
     for size in ["1024", "1K", "2m", "1G"] {
-        hl().args(["--max-size", size, "Cargo.toml"]).assert().success();
+        hl().args(["--max-size", size, "Cargo.toml"])
+            .assert()
+            .success();
     }
     for size in ["abc", "1T", "-1", "", "99999999999G"] {
         hl().arg(format!("--max-size={size}"))
@@ -503,7 +530,10 @@ fn stops_highlighting_at_a_non_utf8_line() {
     let files = [path];
     for opts in [&[][..], &["-n"], &["-sb"]] {
         let out = hl_output("always", opts, &files);
-        assert!(has_escape(&out), "hl {opts:?} should highlight the first lines");
+        assert!(
+            has_escape(&out),
+            "hl {opts:?} should highlight the first lines"
+        );
         assert!(
             out.ends_with(b"fn after() {}\n"),
             "hl {opts:?} should not color the rest"
@@ -538,7 +568,10 @@ fn highlights_utf16_as_utf8() {
         fs::write(&utf16[0], utf16_with_bom(text, big_endian)).unwrap();
         let utf8 = [dir.join(format!("utf8-{big_endian}.rs"))];
         fs::write(&utf8[0], text).unwrap();
-        assert_eq!(hl_output("always", &[], &utf16), hl_output("always", &[], &utf8));
+        assert_eq!(
+            hl_output("always", &[], &utf16),
+            hl_output("always", &[], &utf8)
+        );
         let numbered = hl_output("always", &["-n"], &utf16);
         assert_eq!(strip_ansi(&numbered), cat_output(&["-n"], &utf8));
     }
@@ -584,7 +617,11 @@ const ANSI256: &str = "\x1b[38;5;";
 
 /// Asserts that `cmd` colors Cargo.toml with `expected` escapes only.
 fn assert_depth(cmd: &mut Command, expected: &str) {
-    let other = if expected == TRUECOLOR { ANSI256 } else { TRUECOLOR };
+    let other = if expected == TRUECOLOR {
+        ANSI256
+    } else {
+        TRUECOLOR
+    };
     cmd.args(["--color", "always", "Cargo.toml"])
         .assert()
         .success()
@@ -613,13 +650,15 @@ fn falls_back_to_256_colors() {
 #[test]
 fn color_depth_option_overrides_detection() {
     assert_depth(
-        hl().env("COLORTERM", "truecolor").args(["--color-depth", "256"]),
+        hl().env("COLORTERM", "truecolor")
+            .args(["--color-depth", "256"]),
         ANSI256,
     );
     assert_depth(hl().args(["--color-depth", "truecolor"]), TRUECOLOR);
     assert_depth(hl().args(["--color-depth", "24bit"]), TRUECOLOR);
     assert_depth(
-        hl().env("COLORTERM", "truecolor").args(["--color-depth", "auto"]),
+        hl().env("COLORTERM", "truecolor")
+            .args(["--color-depth", "auto"]),
         TRUECOLOR,
     );
 }
@@ -627,7 +666,8 @@ fn color_depth_option_overrides_detection() {
 #[test]
 fn color_depth_can_be_set_from_env() {
     assert_depth(
-        hl().env("COLORTERM", "truecolor").env("HL_COLOR_DEPTH", "256"),
+        hl().env("COLORTERM", "truecolor")
+            .env("HL_COLOR_DEPTH", "256"),
         ANSI256,
     );
     assert_depth(
@@ -648,7 +688,8 @@ fn rejects_unknown_color_depth() {
 #[test]
 fn keeps_the_text_with_256_colors() {
     let content = fs::read("src/main.rs").unwrap();
-    let out = colored_stdout(hl().args(["--color", "always", "--color-depth", "256", "src/main.rs"]));
+    let out =
+        colored_stdout(hl().args(["--color", "always", "--color-depth", "256", "src/main.rs"]));
     assert!(has_escape(&out));
     assert_eq!(strip_ansi(&out), content);
 }

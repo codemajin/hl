@@ -5,20 +5,21 @@ mod highlight;
 mod lines;
 mod pager;
 
-use std::fs::File;
-use std::io::{self, BufRead, BufReader, BufWriter, IsTerminal, Write};
-use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::{
+    fs::File,
+    io::{self, BufRead, BufReader, BufWriter, IsTerminal, Write},
+    path::{Path, PathBuf},
+    process::ExitCode,
+};
 
 use anyhow::{Result, anyhow};
 use clap::Parser;
-use syntect::parsing::SyntaxReference;
-
 use cli::{Args, ColorWhen};
 use encoding::{Bom, UTF8_BOM, Utf16Decoder, is_utf8_prefix, sniff_bom};
 use highlight::{Highlighter, Limits, write_plain};
 use lines::{LineState, Visibility};
 use pager::Pager;
+use syntect::parsing::SyntaxReference;
 
 /// How many leading bytes are inspected for binary detection.
 const PEEK_LEN: usize = 8 * 1024;
@@ -199,7 +200,12 @@ fn list_themes() -> Result<ExitCode> {
 }
 
 fn list_languages(hl: &Highlighter) -> Result<ExitCode> {
-    let mut syntaxes: Vec<_> = hl.syntaxes().syntaxes().iter().filter(|s| !s.hidden).collect();
+    let mut syntaxes: Vec<_> = hl
+        .syntaxes()
+        .syntaxes()
+        .iter()
+        .filter(|s| !s.hidden)
+        .collect();
     syntaxes.sort_unstable_by_key(|s| s.name.to_lowercase());
     let mut out = io::stdout().lock();
     for s in syntaxes {
