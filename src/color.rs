@@ -49,7 +49,10 @@ pub fn as_256_terminal_escaped(ranges: &[(Style, &str)]) -> String {
 /// Mixes a translucent foreground into the background, as syntect does.
 fn blend(fg: Color, bg: Color) -> Color {
     let a = u32::from(fg.a);
-    let mix = |f: u8, b: u8| ((u32::from(f) * a + u32::from(b) * (255 - a)) / 255) as u8;
+    let mix = |f: u8, b: u8| {
+        let mixed = (u32::from(f) * a + u32::from(b) * (255 - a)) / 255;
+        u8::try_from(mixed).expect("a weighted mean of two u8 fits in a u8")
+    };
     Color {
         r: mix(fg.r, bg.r),
         g: mix(fg.g, bg.g),
@@ -65,15 +68,16 @@ const CUBE_LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
 /// Indices 0-15 are left out because terminals give them their own colors.
 pub fn to_ansi256(r: u8, g: u8, b: u8) -> u8 {
     let nearest_level = |v: u8| {
-        (0..CUBE_LEVELS.len())
-            .min_by_key(|&i| CUBE_LEVELS[i].abs_diff(v))
-            .unwrap()
+        (0..6u8)
+            .min_by_key(|&i| CUBE_LEVELS[usize::from(i)].abs_diff(v))
+            .expect("CUBE_LEVELS is not empty")
     };
     let (ri, gi, bi) = (nearest_level(r), nearest_level(g), nearest_level(b));
-    let cube = (CUBE_LEVELS[ri], CUBE_LEVELS[gi], CUBE_LEVELS[bi]);
+    let level_of = |i: u8| CUBE_LEVELS[usize::from(i)];
+    let cube = (level_of(ri), level_of(gi), level_of(bi));
 
     let avg = (u32::from(r) + u32::from(g) + u32::from(b)) / 3;
-    let gray_index = ((avg as i32 - 3) / 10).clamp(0, 23) as u8;
+    let gray_index = u8::try_from((avg.saturating_sub(3) / 10).min(23)).expect("at most 23");
     let level = 8 + 10 * gray_index;
 
     let dist = |(cr, cg, cb): (u8, u8, u8)| {
@@ -83,7 +87,8 @@ pub fn to_ansi256(r: u8, g: u8, b: u8) -> u8 {
     if dist((level, level, level)) < dist(cube) {
         232 + gray_index
     } else {
-        (16 + 36 * ri + 6 * gi + bi) as u8
+        // At most 16 + 36 * 5 + 6 * 5 + 5 = 231.
+        16 + 36 * ri + 6 * gi + bi
     }
 }
 
