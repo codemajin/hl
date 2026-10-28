@@ -12,11 +12,12 @@ use syntect::{
 use two_face::theme::LazyThemeSet;
 
 use crate::{
-    cli::DEFAULT_THEME,
     color::{Depth, as_256_terminal_escaped},
     encoding::UTF8_BOM,
     lines::{LineState, Visibility, write_visible},
 };
+
+pub const DEFAULT_THEME: &str = "base16-ocean.dark";
 
 const RESET: &str = "\x1b[0m";
 
@@ -36,46 +37,24 @@ impl Limits {
     }
 }
 
-pub struct Highlighter {
-    syntaxes: SyntaxSet,
+pub struct Highlighter<'a> {
+    syntaxes: &'a SyntaxSet,
     theme: Theme,
     depth: Depth,
 }
 
-impl Highlighter {
-    /// An unknown theme is not fatal: it warns and falls back to the default,
-    /// so a typo in `HL_THEME` never hides the file contents.
-    pub fn new(theme_name: &str, depth: Depth) -> Self {
-        let themes = LazyThemeSet::from(two_face::theme::extra());
-        let theme = resolve_theme(&themes, theme_name)
-            .unwrap_or_else(|| {
-                eprintln!(
-                    "hl: unknown theme '{theme_name}', falling back to {DEFAULT_THEME} (see --list-themes)"
-                );
-                themes.get(DEFAULT_THEME).expect("default theme is bundled")
-            })
-            .clone();
+impl<'a> Highlighter<'a> {
+    pub fn new(syntaxes: &'a SyntaxSet, theme: Theme, depth: Depth) -> Self {
         Self {
-            syntaxes: two_face::syntax::extra_newlines(),
+            syntaxes,
             theme,
             depth,
         }
     }
 
-    pub fn syntaxes(&self) -> &SyntaxSet {
-        &self.syntaxes
-    }
-
-    /// Resolves an explicit `--language` value by name or extension.
-    pub fn find_language(&self, lang: &str) -> Option<&SyntaxReference> {
-        self.syntaxes
-            .find_syntax_by_token(lang)
-            .or_else(|| self.syntaxes.find_syntax_by_extension(lang))
-    }
-
     /// Detects the syntax from the file name (extension, then full name) and
     /// finally the first line (shebang, modelines). Falls back to plain text.
-    pub fn detect(&self, path: Option<&Path>, first_line: &str) -> &SyntaxReference {
+    pub fn detect(&self, path: Option<&Path>, first_line: &str) -> &'a SyntaxReference {
         let by_path = path.and_then(|p| {
             let ext = p.extension().and_then(|e| e.to_str());
             let name = p.file_name().and_then(|n| n.to_str());
@@ -140,7 +119,7 @@ impl Highlighter {
             // Highlight including the newline so syntect's state stays correct,
             // but print the newline after the reset sequence.
             let ranges = hl
-                .highlight_line(line, &self.syntaxes)
+                .highlight_line(line, self.syntaxes)
                 .map_err(io::Error::other)?;
             if !print {
                 continue;
@@ -155,9 +134,14 @@ impl Highlighter {
     }
 }
 
+/// The bundled themes, as listed by `--list-themes`.
+pub fn themes() -> LazyThemeSet {
+    LazyThemeSet::from(two_face::theme::extra())
+}
+
 /// Looks a theme up by exact name, then case-insensitively as long as the
 /// match is unambiguous (so `nord` finds `Nord`).
-fn resolve_theme<'a>(themes: &'a LazyThemeSet, name: &str) -> Option<&'a Theme> {
+pub fn find_theme<'a>(themes: &'a LazyThemeSet, name: &str) -> Option<&'a Theme> {
     if let Some(theme) = themes.get(name) {
         return Some(theme);
     }
@@ -168,6 +152,13 @@ fn resolve_theme<'a>(themes: &'a LazyThemeSet, name: &str) -> Option<&'a Theme> 
         (Some(found), None) => themes.get(found),
         _ => None,
     }
+}
+
+/// Resolves an explicit `--language` value by name or extension.
+pub fn find_language<'a>(syntaxes: &'a SyntaxSet, lang: &str) -> Option<&'a SyntaxReference> {
+    syntaxes
+        .find_syntax_by_token(lang)
+        .or_else(|| syntaxes.find_syntax_by_extension(lang))
 }
 
 /// Copies `reader` without highlighting, applying numbering, squeezing and

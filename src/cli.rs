@@ -4,11 +4,9 @@ use clap::{Parser, ValueEnum};
 
 use crate::{
     color::{self, Depth},
-    highlight::Limits,
+    highlight::{DEFAULT_THEME, Limits},
     lines::{Numbering, Visibility},
 };
-
-pub const DEFAULT_THEME: &str = "base16-ocean.dark";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum ColorWhen {

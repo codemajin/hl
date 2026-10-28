@@ -326,7 +326,36 @@ fn ignores_unknown_theme_without_color() {
     hl().args(["--theme", "NoSuchTheme", "src/main.rs"])
         .assert()
         .success()
+        .stderr("")
         .stdout(content);
+}
+
+#[test]
+fn ignores_unknown_theme_with_language_but_without_color() {
+    let content = fs::read("src/main.rs").unwrap();
+    hl().args([
+        "--theme",
+        "NoSuchTheme",
+        "-l",
+        "rust",
+        "--color",
+        "never",
+        "src/main.rs",
+    ])
+    .assert()
+    .success()
+    .stderr("")
+    .stdout(content);
+}
+
+#[test]
+fn lists_languages_without_loading_the_theme() {
+    hl().env("HL_THEME", "NoSuchTheme")
+        .arg("--list-languages")
+        .assert()
+        .success()
+        .stderr("")
+        .stdout(predicate::str::contains("Rust: rs"));
 }
 
 fn has_escape(bytes: &[u8]) -> bool {

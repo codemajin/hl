@@ -16,10 +16,13 @@ use anyhow::{Result, anyhow};
 use clap::Parser;
 use cli::{Args, ColorWhen};
 use encoding::{Bom, UTF8_BOM, Utf16Decoder, is_utf8_prefix, sniff_bom};
-use highlight::{Highlighter, Limits, write_plain};
+use highlight::{DEFAULT_THEME, Highlighter, Limits, find_language, find_theme, write_plain};
 use lines::{LineState, Visibility};
 use pager::Pager;
-use syntect::parsing::SyntaxReference;
+use syntect::{
+    highlighting::Theme,
+    parsing::{SyntaxReference, SyntaxSet},
+};
 
 /// How many leading bytes are inspected for binary detection.
 const PEEK_LEN: usize = 8 * 1024;
@@ -40,6 +43,10 @@ fn run(args: &Args) -> Result<ExitCode> {
         return list_themes();
     }
 
+    if args.list_languages {
+        return list_languages(&two_face::syntax::extra_newlines());
+    }
+
     let tty = io::stdout().is_terminal();
     let vis = args.visibility();
     // `cat -v` style output is never highlighted, so it matches cat exactly.
@@ -49,24 +56,18 @@ fn run(args: &Args) -> Result<ExitCode> {
             ColorWhen::Never => false,
             ColorWhen::Auto => tty,
         };
-    let highlighter = if color || args.list_languages || args.language.is_some() {
-        Some(Highlighter::new(&args.theme, args.depth()))
-    } else {
-        None
-    };
-
-    if args.list_languages {
-        return list_languages(highlighter.as_ref().expect("highlighter is built"));
-    }
-
-    let forced_syntax = match (&highlighter, &args.language) {
-        (Some(h), Some(lang)) => Some(
-            h.find_language(lang)
+    let syntaxes = (color || args.language.is_some()).then(two_face::syntax::extra_newlines);
+    let forced_syntax = match (&syntaxes, &args.language) {
+        (Some(syntaxes), Some(lang)) => Some(
+            find_language(syntaxes, lang)
                 .ok_or_else(|| anyhow!("unknown language '{lang}' (see --list-languages)"))?,
         ),
         _ => None,
     };
-    let highlighter = if color { highlighter.as_ref() } else { None };
+    let highlighter = syntaxes
+        .as_ref()
+        .filter(|_| color)
+        .map(|syntaxes| Highlighter::new(syntaxes, load_theme(&args.theme), args.depth()));
 
     let mut pager = if args.paging && tty {
         Some(Pager::spawn().map_err(|e| anyhow!("failed to start pager: {e}"))?)
@@ -92,7 +93,7 @@ fn run(args: &Args) -> Result<ExitCode> {
         let result = print_input(
             input,
             &mut out,
-            highlighter,
+            highlighter.as_ref(),
             forced_syntax,
             &mut lines,
             vis,
@@ -165,7 +166,7 @@ fn print_input(
 
 /// Uses the forced syntax, or detects one from the path and the first line.
 fn choose_syntax<'a>(
-    hl: &'a Highlighter,
+    hl: &Highlighter<'a>,
     forced: Option<&'a SyntaxReference>,
     reader: &mut impl BufRead,
     path: Option<&Path>,
@@ -188,8 +189,22 @@ fn describe(err: &io::Error) -> String {
     }
 }
 
+/// An unknown theme is not fatal: it warns and falls back to the default,
+/// so a typo in `HL_THEME` never hides the file contents.
+fn load_theme(name: &str) -> Theme {
+    let themes = highlight::themes();
+    find_theme(&themes, name)
+        .unwrap_or_else(|| {
+            eprintln!(
+                "hl: unknown theme '{name}', falling back to {DEFAULT_THEME} (see --list-themes)"
+            );
+            themes.get(DEFAULT_THEME).expect("default theme is bundled")
+        })
+        .clone()
+}
+
 fn list_themes() -> Result<ExitCode> {
-    let themes = two_face::theme::LazyThemeSet::from(two_face::theme::extra());
+    let themes = highlight::themes();
     let mut names: Vec<_> = themes.theme_names().collect();
     names.sort_unstable();
     let mut out = io::stdout().lock();
@@ -199,13 +214,8 @@ fn list_themes() -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn list_languages(hl: &Highlighter) -> Result<ExitCode> {
-    let mut syntaxes: Vec<_> = hl
-        .syntaxes()
-        .syntaxes()
-        .iter()
-        .filter(|s| !s.hidden)
-        .collect();
+fn list_languages(syntaxes: &SyntaxSet) -> Result<ExitCode> {
+    let mut syntaxes: Vec<_> = syntaxes.syntaxes().iter().filter(|s| !s.hidden).collect();
     syntaxes.sort_unstable_by_key(|s| s.name.to_lowercase());
     let mut out = io::stdout().lock();
     for s in syntaxes {
