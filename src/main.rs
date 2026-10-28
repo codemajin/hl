@@ -1,5 +1,6 @@
 mod cli;
 mod highlight;
+mod lines;
 mod pager;
 
 use std::fs::File;
@@ -12,6 +13,7 @@ use clap::Parser;
 
 use cli::{Args, ColorWhen};
 use highlight::{Highlighter, write_plain};
+use lines::{LineState, Visibility};
 use pager::Pager;
 
 /// How many leading bytes are inspected for binary detection.
@@ -34,11 +36,14 @@ fn run(args: &Args) -> Result<ExitCode> {
     }
 
     let tty = io::stdout().is_terminal();
-    let color = match args.color {
-        ColorWhen::Always => true,
-        ColorWhen::Never => false,
-        ColorWhen::Auto => tty,
-    };
+    let vis = args.visibility();
+    // `cat -v` style output is never highlighted, so it matches cat exactly.
+    let color = !vis.any()
+        && match args.color {
+            ColorWhen::Always => true,
+            ColorWhen::Never => false,
+            ColorWhen::Auto => tty,
+        };
     let highlighter = if color || args.list_languages || args.language.is_some() {
         Some(Highlighter::new(&args.theme)?)
     } else {
@@ -75,11 +80,10 @@ fn run(args: &Args) -> Result<ExitCode> {
         args.files.clone()
     };
 
-    let mut line_no = 0u64;
+    let mut lines = LineState::new(args.numbering(), args.squeeze_blank);
     let mut failed = false;
     for input in &inputs {
-        let numbering = args.number.then_some(&mut line_no);
-        let result = print_input(input, &mut out, highlighter, forced_syntax, numbering);
+        let result = print_input(input, &mut out, highlighter, forced_syntax, &mut lines, vis);
         match result {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::BrokenPipe => break,
@@ -106,7 +110,8 @@ fn print_input(
     out: &mut impl Write,
     highlighter: Option<&Highlighter>,
     forced_syntax: Option<&syntect::parsing::SyntaxReference>,
-    numbering: Option<&mut u64>,
+    lines: &mut LineState,
+    vis: Visibility,
 ) -> io::Result<()> {
     let is_stdin = path.as_os_str() == "-";
     let source: Box<dyn io::Read> = if is_stdin {
@@ -117,18 +122,18 @@ fn print_input(
     let mut reader = BufReader::with_capacity(64 * 1024, source);
 
     let Some(hl) = highlighter else {
-        return write_plain(&mut reader, out, numbering);
+        return write_plain(&mut reader, out, lines, vis);
     };
     let head = reader.fill_buf()?;
     if head.iter().take(PEEK_LEN).any(|&b| b == 0) {
-        return write_plain(&mut reader, out, numbering);
+        return write_plain(&mut reader, out, lines, vis);
     }
     let syntax = forced_syntax.unwrap_or_else(|| {
         let first_line = head.split(|&b| b == b'\n').next().unwrap_or_default();
         let first_line = String::from_utf8_lossy(first_line);
         hl.detect((!is_stdin).then_some(path), &first_line)
     });
-    hl.write(&mut reader, out, syntax, numbering)
+    hl.write(&mut reader, out, syntax, lines)
 }
 
 /// Strips the "(os error N)" suffix to match coreutils-style messages.

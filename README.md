@@ -44,8 +44,9 @@ cargo uninstall hl                  # add the same --root if you used one
 hl src/main.rs Cargo.toml        # highlight with automatic language detection
 hl -n file.py                    # number lines (continuous across files)
 cat script | hl -l bash          # read stdin with an explicit language
-hl -t Nord file.rs               # choose a theme
+hl --theme Nord file.rs          # choose a theme
 hl -p big.rs                     # view through a pager
+hl -A file.txt                   # show tabs, line ends and control characters, like cat -A
 hl --list-themes                 # list themes
 hl --list-languages              # list languages and their extensions
 ```
@@ -55,8 +56,17 @@ hl --list-languages              # list languages and their extensions
 | Option | Description |
 | --- | --- |
 | `-n`, `--number` | Number output lines. Like `cat -n`, numbering continues across files |
+| `-b`, `--number-nonblank` | Number non-empty output lines. Overrides `-n` |
+| `-s`, `--squeeze-blank` | Squeeze repeated empty lines into one |
+| `-v`, `--show-nonprinting` | Show control characters and bytes 128 and above in `^` and `M-` notation (except newline and tab) |
+| `-E`, `--show-ends` | Print `$` at the end of each line |
+| `-T`, `--show-tabs` | Print tabs as `^I` |
+| `-A`, `--show-all` | Same as `-vET` |
+| `-e` | Same as `-vE` |
+| `-t` | Same as `-vT` |
+| `-u` | Accepted for `cat` compatibility and ignored |
 | `-l`, `--language <LANG>` | Use this language instead of auto-detection, given as a name or an extension (e.g. `rust`, `py`) |
-| `-t`, `--theme <THEME>` | Color theme. Defaults to `base16-ocean.dark` |
+| `--theme <THEME>` | Color theme. Defaults to `base16-ocean.dark` |
 | `-p`, `--paging` | Show output in a pager (`$PAGER`, or `less -RFX` if unset). Exits right away if the output fits on one screen |
 | `--color <WHEN>` | When to use colors: `auto`, `always`, or `never`. The default `auto` colors output only when stdout is a terminal |
 | `--list-themes` | List available themes |
@@ -68,13 +78,14 @@ With no file, or when the file is `-`, `hl` reads from standard input.
 
 | Variable | Description |
 | --- | --- |
-| `HL_THEME` | Default theme. `-t` takes precedence |
+| `HL_THEME` | Default theme. `--theme` takes precedence |
 | `PAGER` | Pager used by `-p` |
 
 ### Behavior details
 
 - The language is determined in this order: `-l`, extension, file name, then the first line (shebang, etc.). If none match, the file is printed as plain text.
 - If the first 8 KB of a file contain a NUL byte, the file is treated as binary and printed as-is without highlighting.
+- With `-v`, `-E`, `-T` (or `-A`, `-e`, `-t`), output is not highlighted, so it is identical to `cat`'s. `-n`, `-b` and `-s` work together with highlighting.
 - If a file can't be opened, `hl` prints `hl: <path>: <reason>` to stderr, processes the remaining files, and exits with status 1.
 - If the output is closed early, as in `hl file | head`, `hl` exits successfully without an error.
 
@@ -107,4 +118,5 @@ cargo clippy
 | `src/main.rs` | Entry point: input dispatch, output selection, error handling |
 | `src/cli.rs` | Command-line argument definitions (clap) |
 | `src/highlight.rs` | Language detection and highlighted output (syntect) |
+| `src/lines.rs` | Line numbering, blank-line squeezing, and `cat -v`/`-E`/`-T` notation |
 | `src/pager.rs` | Starting the pager and waiting for it to exit |

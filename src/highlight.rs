@@ -8,6 +8,8 @@ use syntect::parsing::{SyntaxReference, SyntaxSet};
 use syntect::util::as_24_bit_terminal_escaped;
 use two_face::theme::LazyThemeSet;
 
+use crate::lines::{LineState, Visibility, write_visible};
+
 const RESET: &str = "\x1b[0m";
 
 pub struct Highlighter {
@@ -59,7 +61,7 @@ impl Highlighter {
         reader: &mut impl BufRead,
         out: &mut impl Write,
         syntax: &SyntaxReference,
-        mut numbering: Option<&mut u64>,
+        lines: &mut LineState,
     ) -> io::Result<()> {
         let mut hl = HighlightLines::new(syntax, &self.theme);
         let mut buf = Vec::new();
@@ -68,10 +70,7 @@ impl Highlighter {
             if reader.read_until(b'\n', &mut buf)? == 0 {
                 return Ok(());
             }
-            if let Some(n) = numbering.as_deref_mut() {
-                *n += 1;
-                write!(out, "{n:>6}\t")?;
-            }
+            let print = lines.begin_line(&buf, out)?;
             let line = String::from_utf8_lossy(&buf);
             let newline = if line.ends_with('\n') { "\n" } else { "" };
             // Highlight including the newline so syntect's state stays correct,
@@ -79,6 +78,9 @@ impl Highlighter {
             let ranges = hl
                 .highlight_line(&line, &self.syntaxes)
                 .map_err(io::Error::other)?;
+            if !print {
+                continue;
+            }
             let escaped = as_24_bit_terminal_escaped(&ranges, false);
             let escaped = escaped.strip_suffix('\n').unwrap_or(&escaped);
             write!(out, "{escaped}{RESET}{newline}")?;
@@ -86,24 +88,31 @@ impl Highlighter {
     }
 }
 
-/// Copies `reader` verbatim, optionally numbering lines.
+/// Copies `reader` without highlighting, applying numbering, squeezing and
+/// `cat -v` style notation as requested.
 pub fn write_plain(
     reader: &mut impl BufRead,
     out: &mut impl Write,
-    numbering: Option<&mut u64>,
+    lines: &mut LineState,
+    vis: Visibility,
 ) -> io::Result<()> {
-    let Some(n) = numbering else {
+    if lines.is_passthrough() && !vis.any() {
         io::copy(reader, out)?;
         return Ok(());
-    };
+    }
     let mut buf = Vec::new();
     loop {
         buf.clear();
         if reader.read_until(b'\n', &mut buf)? == 0 {
             return Ok(());
         }
-        *n += 1;
-        write!(out, "{n:>6}\t")?;
-        out.write_all(&buf)?;
+        if !lines.begin_line(&buf, out)? {
+            continue;
+        }
+        if vis.any() {
+            write_visible(&buf, vis, out)?;
+        } else {
+            out.write_all(&buf)?;
+        }
     }
 }
