@@ -2,6 +2,7 @@
 name = "hl"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
 description = "cat with syntax highlighting"
 
 [dependencies]
@@ -13,6 +14,7 @@ two-face = { version = "0.5.2", default-features = false, features = ["syntect-f
 [dev-dependencies]
 assert_cmd = "2.2.2"
 predicates = "3.1.4"
+tempfile = "3.27.0"
 
 [profile.release]
 lto = true

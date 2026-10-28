@@ -1,7 +1,8 @@
-use std::fs;
+use std::{fs, path::Path};
 
 use assert_cmd::Command;
 use predicates::prelude::*;
+use tempfile::TempDir;
 
 const ESC: &str = "\x1b[";
 
@@ -17,10 +18,12 @@ fn hl() -> Command {
     cmd
 }
 
-fn tempdir() -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("hl-test-{}", std::process::id()));
-    fs::create_dir_all(&dir).unwrap();
-    dir
+/// A directory for test files, removed when the returned value is dropped.
+fn tempdir() -> TempDir {
+    tempfile::Builder::new()
+        .prefix("hl-test-")
+        .tempdir()
+        .unwrap()
 }
 
 #[test]
@@ -48,8 +51,8 @@ fn never_colors_when_disabled() {
 #[test]
 fn numbers_lines_across_files() {
     let dir = tempdir();
-    let a = dir.join("a.txt");
-    let b = dir.join("b.txt");
+    let a = dir.path().join("a.txt");
+    let b = dir.path().join("b.txt");
     fs::write(&a, "one\ntwo\n").unwrap();
     fs::write(&b, "three\n").unwrap();
     hl().arg("-n")
@@ -62,9 +65,9 @@ fn numbers_lines_across_files() {
 #[test]
 fn reports_missing_file_and_continues() {
     let dir = tempdir();
-    let ok = dir.join("ok.txt");
+    let ok = dir.path().join("ok.txt");
     fs::write(&ok, "hello\n").unwrap();
-    hl().arg(dir.join("missing.txt"))
+    hl().arg(dir.path().join("missing.txt"))
         .arg(&ok)
         .assert()
         .failure()
@@ -114,7 +117,7 @@ fn rejects_unknown_language() {
 #[test]
 fn passes_binary_through_unmodified() {
     let dir = tempdir();
-    let bin = dir.join("data.bin");
+    let bin = dir.path().join("data.bin");
     let bytes = b"\x00\x01\x02hello\n\xff".to_vec();
     fs::write(&bin, &bytes).unwrap();
     hl().args(["--color", "always"])
@@ -143,8 +146,7 @@ fn lists_themes() {
 
 /// Writes two fixture files exercising the cases `cat` options care about.
 /// With `binary`, the first one also has control characters and high bytes.
-fn cat_fixtures(prefix: &str, binary: bool) -> Vec<std::path::PathBuf> {
-    let dir = tempdir();
+fn cat_fixtures(dir: &Path, prefix: &str, binary: bool) -> Vec<std::path::PathBuf> {
     let first = dir.join(format!("{prefix}-1.rs"));
     let second = dir.join(format!("{prefix}-2.txt"));
     let mut bytes = b"fn main() {\r\n\tlet x = 1;\n\n\n\n  \n".to_vec();
@@ -217,7 +219,8 @@ const CAT_OPTIONS: &[&[&str]] = &[
 
 #[test]
 fn matches_cat_options_without_color() {
-    let files = cat_fixtures("plain", true);
+    let dir = tempdir();
+    let files = cat_fixtures(dir.path(), "plain", true);
     for opts in CAT_OPTIONS {
         assert_eq!(
             hl_output("never", opts, &files),
@@ -229,7 +232,8 @@ fn matches_cat_options_without_color() {
 
 #[test]
 fn visualizing_options_disable_highlighting() {
-    let files = cat_fixtures("visual", true);
+    let dir = tempdir();
+    let files = cat_fixtures(dir.path(), "visual", true);
     for opts in [["-A"], ["-v"], ["-e"], ["-E"], ["-t"], ["-T"]] {
         assert_eq!(
             hl_output("always", &opts, &files),
@@ -241,11 +245,12 @@ fn visualizing_options_disable_highlighting() {
 
 #[test]
 fn squeeze_and_numbering_work_with_highlighting() {
-    let files = cat_fixtures("color", false);
+    let dir = tempdir();
+    let files = cat_fixtures(dir.path(), "color", false);
     for opts in [&["-s"][..], &["-b"], &["-sn"], &["-sb"], &["-n"]] {
         let out = hl_output("always", opts, &files);
         assert!(
-            out.windows(ESC.len()).any(|w| w == ESC.as_bytes()),
+            has_escape(&out),
             "hl --color always {opts:?} should be highlighted"
         );
         assert_eq!(
@@ -259,8 +264,8 @@ fn squeeze_and_numbering_work_with_highlighting() {
 #[test]
 fn numbering_continues_a_line_across_files() {
     let dir = tempdir();
-    let a = dir.join("partial-a.txt");
-    let b = dir.join("partial-b.txt");
+    let a = dir.path().join("partial-a.txt");
+    let b = dir.path().join("partial-b.txt");
     fs::write(&a, "a").unwrap();
     fs::write(&b, "\n\nb\n").unwrap();
     hl().arg("-n")
@@ -365,11 +370,15 @@ fn has_escape(bytes: &[u8]) -> bool {
 /// A JS file with a short line, a `long`-byte line and another short line.
 /// Returns the path, the head that should stay highlighted and the tail
 /// (from the long line on) that should be printed as is.
-fn long_line_fixture(name: &str, long: usize) -> (std::path::PathBuf, Vec<u8>, Vec<u8>) {
+fn long_line_fixture(
+    dir: &Path,
+    name: &str,
+    long: usize,
+) -> (std::path::PathBuf, Vec<u8>, Vec<u8>) {
     let head = b"let a = 1;\n".to_vec();
     let mut tail = "x".repeat(long).into_bytes();
     tail.extend_from_slice(b"\nlet b = 2;\n");
-    let path = tempdir().join(name);
+    let path = dir.join(name);
     fs::write(&path, [head.as_slice(), &tail].concat()).unwrap();
     (path, head, tail)
 }
@@ -389,7 +398,8 @@ fn assert_plain_from_long_line(out: &[u8], head: &[u8], tail: &[u8]) {
 
 #[test]
 fn prints_large_file_without_highlighting() {
-    let path = tempdir().join("large.rs");
+    let dir = tempdir();
+    let path = dir.path().join("large.rs");
     let content = "fn main() {}\n".repeat(100).into_bytes();
     fs::write(&path, &content).unwrap();
     hl().args(["--color", "always", "--max-size", "1K"])
@@ -421,7 +431,8 @@ fn stops_highlighting_large_stdin_at_the_limit() {
 
 #[test]
 fn stops_highlighting_at_a_long_line() {
-    let (path, head, tail) = long_line_fixture("long.js", 100);
+    let dir = tempdir();
+    let (path, head, tail) = long_line_fixture(dir.path(), "long.js", 100);
     let out = colored_stdout(
         hl().args(["--color", "always", "--max-line-length", "64"])
             .arg(&path),
@@ -431,7 +442,8 @@ fn stops_highlighting_at_a_long_line() {
 
 #[test]
 fn highlights_a_line_exactly_at_the_limit() {
-    let (path, _, _) = long_line_fixture("exact.js", 64);
+    let dir = tempdir();
+    let (path, _, _) = long_line_fixture(dir.path(), "exact.js", 64);
     let out = colored_stdout(
         hl().args(["--color", "always", "--max-line-length", "64"])
             .arg(&path),
@@ -444,14 +456,16 @@ fn highlights_a_line_exactly_at_the_limit() {
 
 #[test]
 fn limits_line_length_by_default() {
-    let (path, head, tail) = long_line_fixture("default.js", 20 * 1024);
+    let dir = tempdir();
+    let (path, head, tail) = long_line_fixture(dir.path(), "default.js", 20 * 1024);
     let out = colored_stdout(hl().args(["--color", "always"]).arg(&path));
     assert_plain_from_long_line(&out, &head, &tail);
 }
 
 #[test]
 fn zero_disables_the_limits() {
-    let (path, _, _) = long_line_fixture("unlimited.js", 100);
+    let dir = tempdir();
+    let (path, _, _) = long_line_fixture(dir.path(), "unlimited.js", 100);
     let out = colored_stdout(
         hl().args([
             "--color",
@@ -471,7 +485,8 @@ fn zero_disables_the_limits() {
 
 #[test]
 fn reads_limits_from_env() {
-    let (path, head, tail) = long_line_fixture("env.js", 100);
+    let dir = tempdir();
+    let (path, head, tail) = long_line_fixture(dir.path(), "env.js", 100);
     let out = colored_stdout(
         hl().env("HL_MAX_LINE_LENGTH", "64")
             .args(["--color", "always"])
@@ -490,7 +505,8 @@ fn reads_limits_from_env() {
 
 #[test]
 fn keeps_numbering_and_squeezing_across_the_switch() {
-    let path = tempdir().join("switch.js");
+    let dir = tempdir();
+    let path = dir.path().join("switch.js");
     let mut content = b"let a = 1;\n\n\n".to_vec();
     content.extend_from_slice("x".repeat(100).as_bytes());
     content.extend_from_slice(b"\n\n\nlet b = 2;\nno newline");
@@ -537,7 +553,8 @@ const EUC_JP_COMMENT: &[u8] = b"// \xc6\xfc\xcb\xdc\xb8\xec\n";
 #[test]
 fn prints_non_utf8_files_unchanged() {
     for (name, comment) in [("sjis.rs", SJIS_COMMENT), ("eucjp.rs", EUC_JP_COMMENT)] {
-        let path = tempdir().join(name);
+        let dir = tempdir();
+        let path = dir.path().join(name);
         let content = [comment, b"fn main() {}\n"].concat();
         fs::write(&path, &content).unwrap();
         hl().args(["--color", "always"])
@@ -550,7 +567,8 @@ fn prints_non_utf8_files_unchanged() {
 
 #[test]
 fn stops_highlighting_at_a_non_utf8_line() {
-    let path = tempdir().join("late-sjis.rs");
+    let dir = tempdir();
+    let path = dir.path().join("late-sjis.rs");
     // Past the first 8 KB, so only the line-by-line check can catch it.
     let mut content = "fn main() {}\n\n\n".repeat(1000).into_bytes();
     content.extend_from_slice(SJIS_COMMENT);
@@ -593,9 +611,9 @@ fn highlights_utf16_as_utf8() {
     let text = "// 日本語 😀\nfn main() {}\n";
     for big_endian in [false, true] {
         let dir = tempdir();
-        let utf16 = [dir.join(format!("utf16-{big_endian}.rs"))];
+        let utf16 = [dir.path().join(format!("utf16-{big_endian}.rs"))];
         fs::write(&utf16[0], utf16_with_bom(text, big_endian)).unwrap();
-        let utf8 = [dir.join(format!("utf8-{big_endian}.rs"))];
+        let utf8 = [dir.path().join(format!("utf8-{big_endian}.rs"))];
         fs::write(&utf8[0], text).unwrap();
         assert_eq!(
             hl_output("always", &[], &utf16),
@@ -608,7 +626,8 @@ fn highlights_utf16_as_utf8() {
 
 #[test]
 fn passes_utf16_through_without_color() {
-    let path = tempdir().join("utf16-plain.rs");
+    let dir = tempdir();
+    let path = dir.path().join("utf16-plain.rs");
     let content = utf16_with_bom("fn main() {}\n", false);
     fs::write(&path, &content).unwrap();
     hl().arg(&path).assert().success().stdout(content);
@@ -616,7 +635,8 @@ fn passes_utf16_through_without_color() {
 
 #[test]
 fn replaces_broken_utf16_with_replacement_characters() {
-    let path = [tempdir().join("broken-utf16.txt")];
+    let dir = tempdir();
+    let path = [dir.path().join("broken-utf16.txt")];
     // "a", a lone high surrogate, "b", then an odd trailing byte.
     fs::write(&path[0], b"\xff\xfea\x00\x00\xd8b\x00\n\x00x").unwrap();
     let out = hl_output("always", &[], &path);
@@ -627,9 +647,9 @@ fn replaces_broken_utf16_with_replacement_characters() {
 fn keeps_utf8_bom_and_detects_the_shebang_after_it() {
     let dir = tempdir();
     let script = "#!/bin/sh\necho hi\n";
-    let plain = [dir.join("script")];
+    let plain = [dir.path().join("script")];
     fs::write(&plain[0], script).unwrap();
-    let with_bom = [dir.join("script-bom")];
+    let with_bom = [dir.path().join("script-bom")];
     fs::write(&with_bom[0], [b"\xEF\xBB\xBF", script.as_bytes()].concat()).unwrap();
     let expected = hl_output("always", &[], &plain);
     assert_eq!(
