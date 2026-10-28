@@ -46,14 +46,26 @@ pub struct Utf16Decoder<R> {
 
 impl<R: Read> Utf16Decoder<R> {
     pub fn new(inner: R, big_endian: bool) -> Self {
-        Self { inner, big_endian, raw: Vec::new(), out: Vec::new(), pos: 0 }
+        Self {
+            inner,
+            big_endian,
+            raw: Vec::new(),
+            out: Vec::new(),
+            pos: 0,
+        }
     }
 
     fn decode(&mut self, eof: bool) {
         let (pairs, _) = self.raw.as_chunks::<2>();
         let mut units: Vec<u16> = pairs
             .iter()
-            .map(|&pair| if self.big_endian { u16::from_be_bytes(pair) } else { u16::from_le_bytes(pair) })
+            .map(|&pair| {
+                if self.big_endian {
+                    u16::from_be_bytes(pair)
+                } else {
+                    u16::from_le_bytes(pair)
+                }
+            })
             .collect();
         // A high surrogate at the end may be paired by the next chunk.
         if !eof && units.last().is_some_and(|u| (0xD800..0xDC00).contains(u)) {

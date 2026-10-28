@@ -118,6 +118,7 @@ To run the real `cat` without going through the alias, use `\cat` or `command ca
 cargo build
 cargo test          # integration tests in tests/cli.rs
 cargo clippy
+cargo fmt --check   # formatting (rustfmt.toml)
 ```
 
 | File | Role |

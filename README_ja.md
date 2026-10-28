@@ -118,6 +118,7 @@ export HL_THEME='Monokai Extended'
 cargo build
 cargo test          # tests/cli.rs の結合テスト
 cargo clippy
+cargo fmt --check   # フォーマットの確認（rustfmt.toml）
 ```
 
 | ファイル | 役割 |

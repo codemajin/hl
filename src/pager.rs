@@ -18,10 +18,7 @@ impl Pager {
             }
             _ => ("less".to_string(), vec!["-RFX".to_string()]),
         };
-        let child = Command::new(program)
-            .args(args)
-            .stdin(Stdio::piped())
-            .spawn()?;
+        let child = Command::new(program).args(args).stdin(Stdio::piped()).spawn()?;
         Ok(Self { child })
     }
 

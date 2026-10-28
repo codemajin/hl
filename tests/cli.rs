@@ -71,7 +71,11 @@ fn reports_missing_file_and_continues() {
 #[test]
 fn reads_stdin() {
     hl().write_stdin("abc\n").assert().success().stdout("abc\n");
-    hl().arg("-").write_stdin("abc\n").assert().success().stdout("abc\n");
+    hl().arg("-")
+        .write_stdin("abc\n")
+        .assert()
+        .success()
+        .stdout("abc\n");
 }
 
 #[test]
@@ -332,9 +336,15 @@ fn long_line_fixture(name: &str, long: usize) -> (std::path::PathBuf, Vec<u8>, V
 }
 
 fn assert_plain_from_long_line(out: &[u8], head: &[u8], tail: &[u8]) {
-    assert!(out.ends_with(tail), "the long line and later should be printed as is");
+    assert!(
+        out.ends_with(tail),
+        "the long line and later should be printed as is"
+    );
     let colored = &out[..out.len() - tail.len()];
-    assert!(has_escape(colored), "lines before the long line should be highlighted");
+    assert!(
+        has_escape(colored),
+        "lines before the long line should be highlighted"
+    );
     assert_eq!(strip_ansi(colored), head);
 }
 
@@ -432,9 +442,17 @@ fn keeps_numbering_and_squeezing_across_the_switch() {
     fs::write(&path, content).unwrap();
     let files = [path];
     for opts in [&["-n"][..], &["-b"], &["-s"], &["-sn"]] {
-        let out = hl_output("always", &[&["--max-line-length", "64"][..], opts].concat(), &files);
+        let out = hl_output(
+            "always",
+            &[&["--max-line-length", "64"][..], opts].concat(),
+            &files,
+        );
         assert!(has_escape(&out), "hl {opts:?} should highlight the first line");
-        assert_eq!(strip_ansi(&out), cat_output(opts, &files), "hl {opts:?} differs from cat");
+        assert_eq!(
+            strip_ansi(&out),
+            cat_output(opts, &files),
+            "hl {opts:?} differs from cat"
+        );
     }
 }
 
@@ -482,15 +500,28 @@ fn stops_highlighting_at_a_non_utf8_line() {
     for opts in [&[][..], &["-n"], &["-sb"]] {
         let out = hl_output("always", opts, &files);
         assert!(has_escape(&out), "hl {opts:?} should highlight the first lines");
-        assert!(out.ends_with(b"fn after() {}\n"), "hl {opts:?} should not color the rest");
-        assert_eq!(strip_ansi(&out), cat_output(opts, &files), "hl {opts:?} differs from cat");
+        assert!(
+            out.ends_with(b"fn after() {}\n"),
+            "hl {opts:?} should not color the rest"
+        );
+        assert_eq!(
+            strip_ansi(&out),
+            cat_output(opts, &files),
+            "hl {opts:?} differs from cat"
+        );
     }
 }
 
 fn utf16_with_bom(text: &str, big_endian: bool) -> Vec<u8> {
     std::iter::once(0xFEFF)
         .chain(text.encode_utf16())
-        .flat_map(|u| if big_endian { u.to_be_bytes() } else { u.to_le_bytes() })
+        .flat_map(|u| {
+            if big_endian {
+                u.to_be_bytes()
+            } else {
+                u.to_le_bytes()
+            }
+        })
         .collect()
 }
 
@@ -535,7 +566,11 @@ fn keeps_utf8_bom_and_detects_the_shebang_after_it() {
     let with_bom = [dir.join("script-bom")];
     fs::write(&with_bom[0], [b"\xEF\xBB\xBF", script.as_bytes()].concat()).unwrap();
     let expected = hl_output("always", &[], &plain);
-    assert_eq!(expected, hl_output("always", &["-l", "sh"], &plain), "the shebang should select sh");
+    assert_eq!(
+        expected,
+        hl_output("always", &["-l", "sh"], &plain),
+        "the shebang should select sh"
+    );
     let out = hl_output("always", &[], &with_bom);
     assert_eq!(out, [b"\xEF\xBB\xBF", expected.as_slice()].concat());
 }

@@ -114,7 +114,11 @@ fn run(args: &Args) -> Result<ExitCode> {
     if let Some(p) = pager {
         p.finish()?;
     }
-    Ok(if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS })
+    Ok(if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    })
 }
 
 fn print_input(
