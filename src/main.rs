@@ -95,7 +95,7 @@ fn run(args: &Args) -> Result<ExitCode> {
     };
 
     let limits = args.limits();
-    let mut lines = LineState::new(args.numbering(), args.squeeze_blank);
+    let mut lines = LineState::new(args.numbering(), args.squeeze_blank, args.line_range);
     let mut headers = args.header.then(|| Headers::new(color));
     let mut failed = false;
     let mut write_error = None;
@@ -105,6 +105,7 @@ fn run(args: &Args) -> Result<ExitCode> {
             if let Some(headers) = headers.as_mut() {
                 headers.write(input, &mut out, &mut lines)?;
             }
+            lines.start_input(&mut out)?;
             print_input(
                 source,
                 &mut out,

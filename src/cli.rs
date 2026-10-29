@@ -5,7 +5,7 @@ use clap::{Parser, ValueEnum};
 use crate::{
     color::{self, Depth},
     highlight::{DEFAULT_THEME, Limits},
-    lines::{Numbering, Visibility},
+    lines::{LineRange, Numbering, Visibility},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -50,6 +50,11 @@ pub struct Args {
     /// Suppress repeated empty output lines.
     #[arg(short = 's', long)]
     pub squeeze_blank: bool,
+
+    /// Print only lines N to M of each input (N:M, N:, :M or N). Earlier
+    /// lines are still read so that highlighting stays correct.
+    #[arg(short = 'r', long, value_name = "N:M", value_parser = parse_range)]
+    pub line_range: Option<LineRange>,
 
     /// Print a `==> FILE <==` header before each input.
     #[arg(long)]
@@ -194,4 +199,29 @@ fn parse_size(s: &str) -> Result<u64, String> {
         .map_err(|_| format!("'{s}' is not a size (e.g. 512K)"))?;
     n.checked_mul(1 << shift)
         .ok_or_else(|| format!("'{s}' is too large"))
+}
+
+/// Parses a line range such as `120:160`, `120:`, `:160` or `120`.
+fn parse_range(s: &str) -> Result<LineRange, String> {
+    let invalid = || format!("'{s}' is not a line range (e.g. 120:160)");
+    let line = |n: &str| match n.parse() {
+        Ok(0) => Err("line numbers start at 1".to_string()),
+        Ok(n) => Ok(n),
+        Err(_) => Err(invalid()),
+    };
+    let (start, end) = match s.split_once(':') {
+        Some(("", "")) => return Err(invalid()),
+        Some(bounds) => bounds,
+        None => (s, s),
+    };
+    let start = if start.is_empty() { 1 } else { line(start)? };
+    let end = if end.is_empty() {
+        None
+    } else {
+        Some(line(end)?)
+    };
+    if end.is_some_and(|end| end < start) {
+        return Err(format!("'{s}' ends before it starts"));
+    }
+    Ok(LineRange { start, end })
 }

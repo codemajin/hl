@@ -66,7 +66,9 @@ impl<'a> Highlighter<'a> {
             .unwrap_or_else(|| self.syntaxes.find_syntax_plain_text())
     }
 
-    /// Writes `reader` highlighted with `syntax`, one line at a time.
+    /// Writes `reader` highlighted with `syntax`, one line at a time. Lines
+    /// that are not printed (outside the line range, squeezed) are still
+    /// highlighted, so that the printed ones get the right colors.
     ///
     /// Once the input exceeds `limits.max_size` or a line exceeds
     /// `limits.max_line`, the rest is copied as is: syntect's state carries
@@ -85,6 +87,9 @@ impl<'a> Highlighter<'a> {
         let mut total: u64 = 0;
         let mut buf = Vec::new();
         loop {
+            if lines.is_done() {
+                return Ok(());
+            }
             buf.clear();
             // Reading at most one byte past the limit keeps a huge line out of memory.
             let n = reader
@@ -161,8 +166,8 @@ pub fn find_language<'a>(syntaxes: &'a SyntaxSet, lang: &str) -> Option<&'a Synt
         .or_else(|| syntaxes.find_syntax_by_extension(lang))
 }
 
-/// Copies `reader` without highlighting, applying numbering, squeezing and
-/// `cat -v` style notation as requested.
+/// Copies `reader` without highlighting, applying numbering, squeezing, the
+/// line range and `cat -v` style notation as requested.
 pub fn write_plain(
     reader: &mut impl BufRead,
     out: &mut impl Write,
@@ -175,6 +180,9 @@ pub fn write_plain(
     }
     let mut buf = Vec::new();
     loop {
+        if lines.is_done() {
+            return Ok(());
+        }
         buf.clear();
         if reader.read_until(b'\n', &mut buf)? == 0 {
             return Ok(());
