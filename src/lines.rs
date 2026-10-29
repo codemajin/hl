@@ -37,6 +37,15 @@ impl LineRange {
     }
 }
 
+/// Where the output is within the current line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Cursor {
+    /// Before the first byte of a line.
+    LineStart,
+    /// Inside a line, which is being printed or skipped.
+    InLine { printing: bool },
+}
+
 /// Line numbering and blank-line squeezing, carried across input files like
 /// `cat` does (a file without a trailing newline continues into the next one).
 ///
@@ -50,9 +59,7 @@ pub struct LineState {
     /// Lines started in the current input, counted only with a range.
     input_line: u64,
     prev_blank: bool,
-    at_line_start: bool,
-    /// Whether the current line is being printed.
-    printing: bool,
+    cursor: Cursor,
 }
 
 impl LineState {
@@ -64,8 +71,7 @@ impl LineState {
             line_no: 0,
             input_line: 0,
             prev_blank: false,
-            at_line_start: true,
-            printing: false,
+            cursor: Cursor::LineStart,
         }
     }
 
@@ -77,7 +83,7 @@ impl LineState {
     /// True when the rest of the current input is past the line range, so
     /// it does not need to be read.
     pub fn is_done(&self) -> bool {
-        self.at_line_start
+        self.cursor == Cursor::LineStart
             && self
                 .range
                 .and_then(|r| r.end)
@@ -100,11 +106,21 @@ impl LineState {
     /// Called with each chunk from `read_until(b'\n')`. Writes the line
     /// number if one is due and returns whether the line should be printed.
     pub fn begin_line(&mut self, line: &[u8], out: &mut impl Write) -> io::Result<bool> {
-        let starts_line = self.at_line_start;
-        self.at_line_start = line.ends_with(b"\n");
-        if !starts_line {
-            return Ok(self.printing);
-        }
+        let printing = match self.cursor {
+            Cursor::LineStart => self.start_line(line, out)?,
+            Cursor::InLine { printing } => printing,
+        };
+        self.cursor = if line.ends_with(b"\n") {
+            Cursor::LineStart
+        } else {
+            Cursor::InLine { printing }
+        };
+        Ok(printing)
+    }
+
+    /// Handles the first chunk of a line: writes the line number if one is
+    /// due and returns whether the line should be printed.
+    fn start_line(&mut self, line: &[u8], out: &mut impl Write) -> io::Result<bool> {
         let blank = line == b"\n";
         let numbered = match self.numbering {
             Numbering::None => false,
@@ -119,16 +135,13 @@ impl LineState {
                 self.line_no += 1;
             }
             if !range.contains(self.input_line) {
-                self.printing = false;
                 return Ok(false);
             }
         }
         if blank && self.squeeze && self.prev_blank {
-            self.printing = false;
             return Ok(false);
         }
         self.prev_blank = blank;
-        self.printing = true;
         if numbered {
             if self.range.is_none() {
                 self.line_no += 1;
@@ -142,10 +155,10 @@ impl LineState {
     /// input (a header), so that it starts on its own line and squeezing
     /// does not reach across it.
     pub fn separate(&mut self, out: &mut impl Write) -> io::Result<()> {
-        if !self.at_line_start && self.printing {
+        if self.cursor == (Cursor::InLine { printing: true }) {
             out.write_all(b"\n")?;
         }
-        self.at_line_start = true;
+        self.cursor = Cursor::LineStart;
         self.prev_blank = false;
         Ok(())
     }

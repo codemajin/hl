@@ -5,19 +5,19 @@ pub const UTF8_BOM: &[u8] = b"\xEF\xBB\xBF";
 /// How many bytes `Utf16Decoder` reads from the inner reader at a time.
 const CHUNK: usize = 64 * 1024;
 
+/// The byte order of UTF-16.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Bom {
-    Utf8,
-    Utf16 { big_endian: bool },
+pub enum Endian {
+    Little,
+    Big,
 }
 
-pub fn sniff_bom(head: &[u8]) -> Option<Bom> {
-    if head.starts_with(UTF8_BOM) {
-        Some(Bom::Utf8)
-    } else if head.starts_with(b"\xFF\xFE") {
-        Some(Bom::Utf16 { big_endian: false })
+/// The byte order given by a UTF-16 BOM at the start of `head`.
+pub fn utf16_bom(head: &[u8]) -> Option<Endian> {
+    if head.starts_with(b"\xFF\xFE") {
+        Some(Endian::Little)
     } else if head.starts_with(b"\xFE\xFF") {
-        Some(Bom::Utf16 { big_endian: true })
+        Some(Endian::Big)
     } else {
         None
     }
@@ -36,7 +36,7 @@ pub fn is_utf8_prefix(bytes: &[u8]) -> bool {
 /// Unpaired surrogates and a trailing odd byte become U+FFFD.
 pub struct Utf16Decoder<R> {
     inner: R,
-    big_endian: bool,
+    endian: Endian,
     /// Bytes read but not decoded yet: an odd byte or a high surrogate.
     raw: Vec<u8>,
     /// Decoded UTF-8 not returned yet, from `pos` on.
@@ -45,10 +45,10 @@ pub struct Utf16Decoder<R> {
 }
 
 impl<R: Read> Utf16Decoder<R> {
-    pub fn new(inner: R, big_endian: bool) -> Self {
+    pub fn new(inner: R, endian: Endian) -> Self {
         Self {
             inner,
-            big_endian,
+            endian,
             raw: Vec::new(),
             out: Vec::new(),
             pos: 0,
@@ -59,12 +59,9 @@ impl<R: Read> Utf16Decoder<R> {
         let (pairs, _) = self.raw.as_chunks::<2>();
         let mut units: Vec<u16> = pairs
             .iter()
-            .map(|&pair| {
-                if self.big_endian {
-                    u16::from_be_bytes(pair)
-                } else {
-                    u16::from_le_bytes(pair)
-                }
+            .map(|&pair| match self.endian {
+                Endian::Little => u16::from_le_bytes(pair),
+                Endian::Big => u16::from_be_bytes(pair),
             })
             .collect();
         // A high surrogate at the end may be paired by the next chunk.
@@ -128,21 +125,18 @@ mod tests {
         }
     }
 
-    fn utf16(text: &str, big_endian: bool) -> Vec<u8> {
+    fn utf16(text: &str, endian: Endian) -> Vec<u8> {
         text.encode_utf16()
-            .flat_map(|u| {
-                if big_endian {
-                    u.to_be_bytes()
-                } else {
-                    u.to_le_bytes()
-                }
+            .flat_map(|u| match endian {
+                Endian::Little => u.to_le_bytes(),
+                Endian::Big => u.to_be_bytes(),
             })
             .collect()
     }
 
-    fn decode(input: impl Read, big_endian: bool) -> String {
+    fn decode(input: impl Read, endian: Endian) -> String {
         let mut out = String::new();
-        Utf16Decoder::new(input, big_endian)
+        Utf16Decoder::new(input, endian)
             .read_to_string(&mut out)
             .unwrap();
         out
@@ -152,37 +146,37 @@ mod tests {
 
     #[test]
     fn decodes_whole_chunks() {
-        for big_endian in [false, true] {
-            assert_eq!(decode(&utf16(TEXT, big_endian)[..], big_endian), TEXT);
+        for endian in [Endian::Little, Endian::Big] {
+            assert_eq!(decode(&utf16(TEXT, endian)[..], endian), TEXT);
         }
     }
 
     #[test]
     fn decodes_units_and_surrogate_pairs_split_across_reads() {
-        for big_endian in [false, true] {
-            let bytes = utf16(TEXT, big_endian);
-            assert_eq!(decode(OneByte(&bytes), big_endian), TEXT);
+        for endian in [Endian::Little, Endian::Big] {
+            let bytes = utf16(TEXT, endian);
+            assert_eq!(decode(OneByte(&bytes), endian), TEXT);
         }
     }
 
     #[test]
     fn replaces_a_trailing_high_surrogate() {
-        let mut bytes = utf16("a", false);
+        let mut bytes = utf16("a", Endian::Little);
         bytes.extend_from_slice(&0xD83Du16.to_le_bytes());
-        assert_eq!(decode(OneByte(&bytes), false), "a\u{FFFD}");
+        assert_eq!(decode(OneByte(&bytes), Endian::Little), "a\u{FFFD}");
     }
 
     #[test]
     fn replaces_a_trailing_odd_byte() {
-        let mut bytes = utf16("a", false);
+        let mut bytes = utf16("a", Endian::Little);
         bytes.push(b'b');
-        assert_eq!(decode(OneByte(&bytes), false), "a\u{FFFD}");
+        assert_eq!(decode(OneByte(&bytes), Endian::Little), "a\u{FFFD}");
     }
 
     #[test]
     fn replaces_an_unpaired_low_surrogate() {
         let mut bytes = 0xDE00u16.to_le_bytes().to_vec();
-        bytes.extend(utf16("a", false));
-        assert_eq!(decode(&bytes[..], false), "\u{FFFD}a");
+        bytes.extend(utf16("a", Endian::Little));
+        assert_eq!(decode(&bytes[..], Endian::Little), "\u{FFFD}a");
     }
 }

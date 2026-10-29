@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
-use clap::{CommandFactory, FromArgMatches, Parser, ValueEnum};
+use clap::{Command, CommandFactory, FromArgMatches, Parser, ValueEnum};
+use toml::Value;
 
 use crate::{
     color::{self, Depth},
@@ -34,6 +35,7 @@ pub enum ColorDepth {
 
 /// cat with syntax highlighting.
 #[derive(Debug, Parser)]
+#[expect(clippy::struct_excessive_bools, reason = "clap flags")]
 #[command(name = "hl", version, about)]
 pub struct Args {
     /// Files to print. Reads stdin when omitted or when FILE is "-".
@@ -129,7 +131,7 @@ pub struct Args {
     pub color: ColorWhen,
 
     /// Color depth: `auto` uses truecolor only when the terminal advertises it
-    /// (COLORTERM, TERM, WT_SESSION) and 256 colors otherwise.
+    /// (`COLORTERM`, `TERM`, `WT_SESSION`) and 256 colors otherwise.
     #[arg(long, env = "HL_COLOR_DEPTH", value_enum, value_name = "DEPTH", default_value_t = ColorDepth::Auto)]
     pub color_depth: ColorDepth,
 
@@ -172,57 +174,76 @@ const MAP_SYNTAX_KEY: &str = "map-syntax";
 /// itself gives the precedence: command line, environment, config file,
 /// built-in default.
 pub fn parse() -> Args {
-    let mut cmd = Args::command();
-    let mut config_mappings = Vec::new();
-    if let Some(config) = Config::load() {
-        // Checks each value on its own, without the environment, so that a
-        // bad value is reported as coming from the config file.
-        let probe = Args::command().mut_args(|arg| arg.env(None));
-        for (key, value) in &config.values {
-            if key == MAP_SYNTAX_KEY {
-                config.warn(&format!("'{key}' must be an array of strings, ignoring it"));
-                continue;
-            }
-            if !CONFIG_KEYS.contains(&key.as_str()) {
-                config.warn(&format!("unknown key '{key}', ignoring it"));
-                continue;
-            }
-            let option = format!("--{key}={value}");
-            if probe.clone().try_get_matches_from(["hl", &option]).is_err() {
-                config.warn(&format!("invalid value '{value}' for '{key}', ignoring it"));
-                continue;
-            }
-            cmd = cmd.mut_arg(key.replace('-', "_"), |arg| {
-                arg.default_value(value.clone())
-            });
-        }
-        for (key, items) in &config.lists {
-            if key != MAP_SYNTAX_KEY {
-                if CONFIG_KEYS.contains(&key.as_str()) {
-                    config.warn(&format!(
-                        "'{key}' must be a string or an integer, ignoring it"
-                    ));
-                } else {
-                    config.warn(&format!("unknown key '{key}', ignoring it"));
-                }
-                continue;
-            }
-            for item in items {
-                match SyntaxMapping::parse(item) {
-                    Ok(mut mapping) => {
-                        mapping.origin = Some(config.path.clone());
-                        config_mappings.push(mapping);
-                    }
-                    Err(e) => config.warn(&format!(
-                        "invalid {MAP_SYNTAX_KEY} entry '{item}': {e}, ignoring it"
-                    )),
-                }
-            }
-        }
-    }
+    let (cmd, config_mappings) = match Config::load() {
+        Some(config) => apply_config(Args::command(), &config),
+        None => (Args::command(), Vec::new()),
+    };
     let mut args = Args::from_arg_matches_mut(&mut cmd.get_matches()).unwrap_or_else(|e| e.exit());
     args.config_mappings = config_mappings;
     args
+}
+
+/// Sets the config values as the defaults of `cmd` and returns the config
+/// mappings. A bad entry warns and is ignored.
+fn apply_config(mut cmd: Command, config: &Config) -> (Command, Vec<SyntaxMapping>) {
+    // Checks each value on its own, without the environment, so that a bad
+    // value is reported as coming from the config file.
+    let probe = Args::command().mut_args(|arg| arg.env(None));
+    let mut mappings = Vec::new();
+    for (key, value) in &config.entries {
+        let is_option = CONFIG_KEYS.contains(&key.as_str());
+        let value = match value {
+            Value::String(s) if is_option => s.clone(),
+            Value::Integer(n) if is_option => n.to_string(),
+            Value::Array(items) if key == MAP_SYNTAX_KEY && items.iter().all(Value::is_str) => {
+                let items = items.iter().filter_map(Value::as_str);
+                mappings.extend(items.filter_map(|item| parse_mapping(config, item)));
+                continue;
+            }
+            _ if key == MAP_SYNTAX_KEY => {
+                config.warn(&format!("'{key}' must be an array of strings, ignoring it"));
+                continue;
+            }
+            _ if is_option => {
+                config.warn(&format!(
+                    "'{key}' must be a string or an integer, ignoring it"
+                ));
+                continue;
+            }
+            _ => {
+                config.warn(&format!("unknown key '{key}', ignoring it"));
+                continue;
+            }
+        };
+        let option = format!("--{key}={value}");
+        if probe.clone().try_get_matches_from(["hl", &option]).is_err() {
+            config.warn(&format!("invalid value '{value}' for '{key}', ignoring it"));
+            continue;
+        }
+        cmd = cmd.mut_arg(arg_id(key), |arg| arg.default_value(value));
+    }
+    (cmd, mappings)
+}
+
+/// A `map-syntax` entry of the config file, or `None` with a warning.
+fn parse_mapping(config: &Config, item: &str) -> Option<SyntaxMapping> {
+    match SyntaxMapping::parse(item) {
+        Ok(mut mapping) => {
+            mapping.origin = Some(config.path.clone());
+            Some(mapping)
+        }
+        Err(e) => {
+            config.warn(&format!(
+                "invalid {MAP_SYNTAX_KEY} entry '{item}': {e}, ignoring it"
+            ));
+            None
+        }
+    }
+}
+
+/// The clap id of the option with the long name `key`.
+fn arg_id(key: &str) -> String {
+    key.replace('-', "_")
 }
 
 impl Args {
@@ -324,4 +345,28 @@ fn parse_range(s: &str) -> Result<LineRange, String> {
         return Err(format!("'{s}' ends before it starts"));
     }
     Ok(LineRange { start, end })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_is_consistent() {
+        Args::command().debug_assert();
+    }
+
+    /// `mut_arg` panics on an unknown id, so every config key must name an
+    /// option.
+    #[test]
+    fn config_keys_name_options() {
+        let cmd = Args::command();
+        for key in CONFIG_KEYS {
+            let id = arg_id(key);
+            assert!(
+                cmd.get_arguments().any(|arg| arg.get_id() == id.as_str()),
+                "no option for config key '{key}'"
+            );
+        }
+    }
 }

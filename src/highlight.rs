@@ -156,8 +156,9 @@ impl<'a> Highlighter<'a> {
             if n == 0 {
                 return Ok(());
             }
-            total += n as u64;
-            let too_long = !buf.ends_with(b"\n") && n as u64 > max_line;
+            let n = u64::try_from(n).expect("a line read into memory fits in u64");
+            total += n;
+            let too_long = !buf.ends_with(b"\n") && n > max_line;
             // Input that is not UTF-8 (Shift_JIS, ...) is copied unchanged
             // rather than replacing its bytes with U+FFFD.
             let text = std::str::from_utf8(&buf).ok();
@@ -168,7 +169,7 @@ impl<'a> Highlighter<'a> {
                 return write_plain(reader, out, lines, Visibility::default());
             };
             let print = lines.begin_line(&buf, out)?;
-            if total == n as u64
+            if total == n
                 && let Some(rest) = line.strip_prefix('\u{FEFF}')
             {
                 // Keep the BOM in the output, but out of syntect's way.

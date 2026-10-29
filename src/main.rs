@@ -2,6 +2,7 @@ mod assets;
 mod cli;
 mod color;
 mod config;
+mod diag;
 mod encoding;
 mod highlight;
 mod lines;
@@ -16,7 +17,8 @@ use std::{
 
 use anyhow::{Result, anyhow, bail};
 use cli::{Args, ColorWhen, PagingWhen};
-use encoding::{Bom, UTF8_BOM, Utf16Decoder, is_utf8_prefix, sniff_bom};
+use diag::describe;
+use encoding::{UTF8_BOM, Utf16Decoder, is_utf8_prefix, utf16_bom};
 use highlight::{Highlighter, Limits, SyntaxMapping, find_language, write_plain};
 use lines::{LineState, Visibility};
 use pager::Pager;
@@ -70,13 +72,17 @@ fn run(args: &Args) -> Result<ExitCode> {
     // command line, even when nothing gets highlighted.
     let syntaxes =
         (color || args.language.is_some() || !args.map_syntax.is_empty()).then(assets::syntaxes);
-    let forced_syntax = match (&syntaxes, &args.language) {
-        (Some(syntaxes), Some(lang)) => Some(
+    let forced = args
+        .language
+        .as_deref()
+        .map(|lang| {
+            let syntaxes = syntaxes
+                .as_ref()
+                .expect("syntaxes are loaded with --language");
             find_language(syntaxes, lang)
-                .ok_or_else(|| anyhow!("unknown language '{lang}' (see --list-languages)"))?,
-        ),
-        _ => None,
-    };
+                .ok_or_else(|| anyhow!("unknown language '{lang}' (see --list-languages)"))
+        })
+        .transpose()?;
     let mappings = match &syntaxes {
         Some(syntaxes) => resolve_mappings(syntaxes, args)?,
         None => Vec::new(),
@@ -85,20 +91,17 @@ fn run(args: &Args) -> Result<ExitCode> {
         let theme = assets::Themes::load().get_or_default(&args.theme);
         Highlighter::new(syntaxes, theme, args.depth(), mappings)
     });
-
-    // Without a terminal there is nobody to page for, as with `--color=auto`.
-    let mut pager = match args.paging() {
-        PagingWhen::Never => None,
-        _ if !tty => None,
-        when => Some(
-            Pager::spawn(when == PagingWhen::Auto)
-                .map_err(|e| anyhow!("failed to start pager: {e}"))?,
-        ),
+    let printer = Printer {
+        highlighter,
+        forced,
+        vis,
+        limits: args.limits(),
     };
-    let stdout = io::stdout();
+
+    let mut pager = start_pager(args.paging(), tty)?;
     let mut out = TrackedWriter::new(BufWriter::new(match pager.as_mut() {
         Some(p) => Box::new(p.stdin()) as Box<dyn Write>,
-        None => Box::new(stdout.lock()),
+        None => Box::new(io::stdout().lock()),
     }));
 
     let inputs = if args.files.is_empty() {
@@ -106,42 +109,9 @@ fn run(args: &Args) -> Result<ExitCode> {
     } else {
         args.files.clone()
     };
-
-    let limits = args.limits();
-    let mut lines = LineState::new(args.numbering(), args.squeeze_blank, args.line_range);
-    let mut headers = args.header.then(|| Headers::new(color));
-    let mut failed = false;
-    let mut write_error = None;
-    for input in &inputs {
-        // A file that cannot be opened gets no header, like with `head`.
-        let result = open_input(input, limits).and_then(|source| {
-            if let Some(headers) = headers.as_mut() {
-                headers.write(input, &mut out, &mut lines)?;
-            }
-            lines.start_input(&mut out)?;
-            print_input(
-                source,
-                &mut out,
-                highlighter.as_ref(),
-                forced_syntax,
-                &mut lines,
-                vis,
-                limits,
-            )
-        });
-        match result {
-            Ok(()) => {}
-            // The output is gone, so there is no point in reading more input.
-            Err(e) if out.failed() => {
-                write_error = Some(e);
-                break;
-            }
-            Err(e) => {
-                eprintln!("hl: {}: {}", input.display(), describe(&e));
-                failed = true;
-            }
-        }
-    }
+    let lines = LineState::new(args.numbering(), args.squeeze_blank, args.line_range);
+    let headers = args.header.then(|| Headers::new(color));
+    let (failed, write_error) = print_all(&inputs, &printer, &mut out, lines, headers);
 
     let flushed = match write_error {
         Some(e) => Err(e),
@@ -161,6 +131,50 @@ fn run(args: &Args) -> Result<ExitCode> {
     } else {
         ExitCode::SUCCESS
     })
+}
+
+/// Starts the pager when `when` asks for one. Without a terminal there is
+/// nobody to page for, as with `--color=auto`.
+fn start_pager(when: PagingWhen, tty: bool) -> Result<Option<Pager>> {
+    if when == PagingWhen::Never || !tty {
+        return Ok(None);
+    }
+    let pager = Pager::spawn(when == PagingWhen::Auto)
+        .map_err(|e| anyhow!("failed to start pager: {e}"))?;
+    Ok(Some(pager))
+}
+
+/// Prints the inputs in turn. An input that cannot be read is reported and
+/// skipped. Returns whether there was one, and the write error that ended
+/// the output early, if any.
+fn print_all<W: Write>(
+    inputs: &[PathBuf],
+    printer: &Printer,
+    out: &mut TrackedWriter<W>,
+    mut lines: LineState,
+    mut headers: Option<Headers>,
+) -> (bool, Option<io::Error>) {
+    let mut failed = false;
+    for input in inputs {
+        // A file that cannot be opened gets no header, like with `head`.
+        let result = open_input(input, printer.limits).and_then(|source| {
+            if let Some(headers) = headers.as_mut() {
+                headers.write(input, out, &mut lines)?;
+            }
+            lines.start_input(out)?;
+            printer.print(source, out, &mut lines)
+        });
+        match result {
+            Ok(()) => {}
+            // The output is gone, so there is no point in reading more input.
+            Err(e) if out.failed() => return (failed, Some(e)),
+            Err(e) => {
+                eprintln!("hl: {}: {}", input.display(), describe(&e));
+                failed = true;
+            }
+        }
+    }
+    (failed, None)
 }
 
 /// Remembers whether writing failed, so that an error coming out of
@@ -269,68 +283,63 @@ fn open_input(path: &Path, limits: Limits) -> io::Result<Input<'_>> {
     })
 }
 
-fn print_input(
-    input: Input,
-    out: &mut impl Write,
-    highlighter: Option<&Highlighter>,
-    forced_syntax: Option<&SyntaxReference>,
-    lines: &mut LineState,
+/// What every input is printed with.
+struct Printer<'a> {
+    /// `None` when the output is not colored.
+    highlighter: Option<Highlighter<'a>>,
+    /// The syntax given by `--language`.
+    forced: Option<&'a SyntaxReference>,
     vis: Visibility,
     limits: Limits,
-) -> io::Result<()> {
-    let Input {
-        source,
-        path,
-        too_large,
-    } = input;
-    let mut reader = BufReader::with_capacity(64 * 1024, source);
-
-    let Some(hl) = highlighter.filter(|_| !too_large) else {
-        return write_plain(&mut reader, out, lines, vis);
-    };
-    let head = reader.fill_buf()?;
-    if let Some(Bom::Utf16 { big_endian }) = sniff_bom(head) {
-        // Terminals expect UTF-8, so UTF-16 is converted for highlighting.
-        reader.consume(2);
-        let mut decoded = BufReader::new(Utf16Decoder::new(&mut reader, big_endian));
-        let syntax = choose_syntax(hl, forced_syntax, &mut decoded, path)?;
-        return hl.write(&mut decoded, out, syntax, lines, limits);
-    }
-    let peek = &head[..head.len().min(PEEK_LEN)];
-    if peek.contains(&0) || !is_utf8_prefix(peek) {
-        return write_plain(&mut reader, out, lines, vis);
-    }
-    let syntax = choose_syntax(hl, forced_syntax, &mut reader, path)?;
-    hl.write(&mut reader, out, syntax, lines, limits)
 }
 
-/// Uses the forced syntax, or detects one from the path and the first line.
-fn choose_syntax<'a>(
-    hl: &Highlighter<'a>,
-    forced: Option<&'a SyntaxReference>,
-    reader: &mut impl BufRead,
-    path: Option<&Path>,
-) -> io::Result<&'a SyntaxReference> {
-    if let Some(syntax) = forced {
-        return Ok(syntax);
+impl<'a> Printer<'a> {
+    fn print(&self, input: Input, out: &mut impl Write, lines: &mut LineState) -> io::Result<()> {
+        let Input {
+            source,
+            path,
+            too_large,
+        } = input;
+        let mut reader = BufReader::with_capacity(64 * 1024, source);
+
+        let Some(hl) = self.highlighter.as_ref().filter(|_| !too_large) else {
+            return write_plain(&mut reader, out, lines, self.vis);
+        };
+        let head = reader.fill_buf()?;
+        if let Some(endian) = utf16_bom(head) {
+            // Terminals expect UTF-8, so UTF-16 is converted for highlighting.
+            reader.consume(2);
+            let mut decoded = BufReader::new(Utf16Decoder::new(&mut reader, endian));
+            let syntax = self.choose_syntax(hl, &mut decoded, path)?;
+            return hl.write(&mut decoded, out, syntax, lines, self.limits);
+        }
+        let peek = &head[..head.len().min(PEEK_LEN)];
+        if peek.contains(&0) || !is_utf8_prefix(peek) {
+            return write_plain(&mut reader, out, lines, self.vis);
+        }
+        let syntax = self.choose_syntax(hl, &mut reader, path)?;
+        hl.write(&mut reader, out, syntax, lines, self.limits)
     }
-    let head = reader.fill_buf()?;
-    let head = head.strip_prefix(UTF8_BOM).unwrap_or(head);
-    let first_line = head.split(|&b| b == b'\n').next().unwrap_or_default();
-    Ok(hl.detect(path, &String::from_utf8_lossy(first_line)))
+
+    /// Uses the forced syntax, or detects one from the path and the first line.
+    fn choose_syntax(
+        &self,
+        hl: &Highlighter<'a>,
+        reader: &mut impl BufRead,
+        path: Option<&Path>,
+    ) -> io::Result<&'a SyntaxReference> {
+        if let Some(syntax) = self.forced {
+            return Ok(syntax);
+        }
+        let head = reader.fill_buf()?;
+        let head = head.strip_prefix(UTF8_BOM).unwrap_or(head);
+        let first_line = head.split(|&b| b == b'\n').next().unwrap_or_default();
+        Ok(hl.detect(path, &String::from_utf8_lossy(first_line)))
+    }
 }
 
 fn is_broken_pipe(err: &io::Error) -> bool {
     err.kind() == io::ErrorKind::BrokenPipe
-}
-
-/// Strips the "(os error N)" suffix to match coreutils-style messages.
-fn describe(err: &io::Error) -> String {
-    let msg = err.to_string();
-    match msg.find(" (os error") {
-        Some(i) => msg[..i].to_string(),
-        None => msg,
-    }
 }
 
 /// Looks up the language of each syntax mapping. An unknown language is an
@@ -348,7 +357,7 @@ fn resolve_mappings<'a>(
                 mapping.language, mapping.spec
             );
             match &mapping.origin {
-                Some(path) => config::warn(path, &format!("{msg}, ignoring it")),
+                Some(path) => diag::warn(path, &format!("{msg}, ignoring it")),
                 None => bail!("{msg} (see --list-languages)"),
             }
             continue;

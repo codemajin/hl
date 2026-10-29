@@ -551,7 +551,7 @@ fn parses_size_units() {
     }
 }
 
-/// "// 日本語" in Shift_JIS and EUC-JP, which are not valid UTF-8.
+/// "// 日本語" in `Shift_JIS` and EUC-JP, which are not valid UTF-8.
 const SJIS_COMMENT: &[u8] = b"// \x93\xfa\x96\x7b\x8c\xea\n";
 const EUC_JP_COMMENT: &[u8] = b"// \xc6\xfc\xcb\xdc\xb8\xec\n";
 

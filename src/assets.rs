@@ -17,7 +17,11 @@ use syntect::{
 };
 use two_face::theme::LazyThemeSet;
 
-use crate::{config, describe, highlight::DEFAULT_THEME};
+use crate::{
+    config,
+    diag::{describe, warn},
+    highlight::DEFAULT_THEME,
+};
 
 const SYNTAX_EXTENSION: &str = "sublime-syntax";
 const THEME_EXTENSION: &str = "tmTheme";
@@ -92,7 +96,7 @@ fn files_in(dir: &Path, extension: &str) -> Vec<PathBuf> {
         Ok(entries) => entries,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Vec::new(),
         Err(e) => {
-            config::warn(dir, &describe(&e));
+            warn(dir, &describe(&e));
             return Vec::new();
         }
     };
@@ -120,7 +124,8 @@ fn fingerprint(files: &[PathBuf]) -> String {
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
             .map_or(0, |d| d.as_nanos());
-        let _ = write!(fingerprint, "\n{}\t{len}\t{modified}", file.display());
+        write!(fingerprint, "\n{}\t{len}\t{modified}", file.display())
+            .expect("writing to a String cannot fail");
     }
     fingerprint
 }
@@ -136,7 +141,7 @@ fn merge(files: &[PathBuf]) -> (SyntaxSet, usize) {
                 builder.add(syntax);
                 added += 1;
             }
-            Err(e) => config::warn(file, &format!("cannot load syntax, skipping it: {e}")),
+            Err(e) => warn(file, &format!("cannot load syntax, skipping it: {e}")),
         }
     }
     (builder.build(), added)
@@ -214,7 +219,9 @@ impl Themes {
         let mut names: Vec<_> = self
             .all_names()
             .filter(|name| match self.exact(name) {
-                Some(Found::Custom(path)) => load_theme(path).is_ok(),
+                Some(Found::Custom(path)) => load_theme(path)
+                    .inspect_err(|e| warn_bad_theme(path, e))
+                    .is_ok(),
                 _ => true,
             })
             .collect();
@@ -229,8 +236,9 @@ impl Themes {
         match self.find(name) {
             Some(Found::Bundled(theme)) => return theme.clone(),
             Some(Found::Custom(path)) => {
-                if let Ok(theme) = load_theme(path) {
-                    return theme;
+                match load_theme(path) {
+                    Ok(theme) => return theme,
+                    Err(e) => warn_bad_theme(path, &e),
                 }
                 eprintln!("hl: falling back to {DEFAULT_THEME}");
             }
@@ -276,13 +284,13 @@ impl Themes {
     }
 }
 
-/// Parses a custom theme, warning when it cannot be loaded.
-fn load_theme(path: &Path) -> Result<Theme, ()> {
-    ThemeSet::get_theme(path).map_err(|e| {
-        let e = match e {
-            syntect::LoadingError::Io(e) => describe(&e),
-            e => e.to_string(),
-        };
-        config::warn(path, &format!("cannot load theme, skipping it: {e}"));
+fn load_theme(path: &Path) -> Result<Theme, String> {
+    ThemeSet::get_theme(path).map_err(|e| match e {
+        syntect::LoadingError::Io(e) => describe(&e),
+        e => e.to_string(),
     })
+}
+
+fn warn_bad_theme(path: &Path, err: &str) {
+    warn(path, &format!("cannot load theme, skipping it: {err}"));
 }

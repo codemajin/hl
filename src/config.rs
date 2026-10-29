@@ -5,13 +5,14 @@ use std::{
 
 use toml::{Table, Value};
 
+use crate::diag::{describe, warn};
+
 /// Default option values read from the config file.
 pub struct Config {
     pub path: PathBuf,
-    /// `(key, value)` pairs, with integers turned into strings.
-    pub values: Vec<(String, String)>,
-    /// `(key, values)` pairs for arrays of strings.
-    pub lists: Vec<(String, Vec<String>)>,
+    /// `(key, value)` pairs as written; their keys and types are checked
+    /// against the options by the caller.
+    pub entries: Vec<(String, Value)>,
 }
 
 impl Config {
@@ -24,7 +25,7 @@ impl Config {
             Ok(text) => text,
             Err(e) if e.kind() == io::ErrorKind::NotFound && !explicit => return None,
             Err(e) => {
-                warn(&path, &crate::describe(&e));
+                warn(&path, &describe(&e));
                 return None;
             }
         };
@@ -38,43 +39,15 @@ impl Config {
                 return None;
             }
         };
-        let mut values = Vec::new();
-        let mut lists = Vec::new();
-        for (key, value) in table {
-            match value {
-                Value::String(s) => values.push((key, s)),
-                Value::Integer(n) => values.push((key, n.to_string())),
-                Value::Array(items) if items.iter().all(Value::is_str) => {
-                    let items = items
-                        .into_iter()
-                        .filter_map(|v| v.as_str().map(str::to_string))
-                        .collect();
-                    lists.push((key, items));
-                }
-                Value::Array(_) => warn(
-                    &path,
-                    &format!("'{key}' must be an array of strings, ignoring it"),
-                ),
-                _ => warn(
-                    &path,
-                    &format!("'{key}' must be a string or an integer, ignoring it"),
-                ),
-            }
-        }
         Some(Self {
             path,
-            values,
-            lists,
+            entries: table.into_iter().collect(),
         })
     }
 
     pub fn warn(&self, msg: &str) {
         warn(&self.path, msg);
     }
-}
-
-pub fn warn(path: &Path, msg: &str) {
-    eprintln!("hl: {}: {msg}", path.display());
 }
 
 /// `HL_CONFIG`, else `$XDG_CONFIG_HOME/hl/config.toml`, else

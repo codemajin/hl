@@ -41,7 +41,8 @@ pub fn as_256_terminal_escaped(ranges: &[(Style, &str)]) -> String {
     let mut s = String::new();
     for (style, text) in ranges {
         let fg = blend(style.foreground, style.background);
-        write!(s, "\x1b[38;5;{}m{text}", to_ansi256(fg.r, fg.g, fg.b)).unwrap();
+        write!(s, "\x1b[38;5;{}m{text}", to_ansi256(fg.r, fg.g, fg.b))
+            .expect("writing to a String cannot fail");
     }
     s
 }
