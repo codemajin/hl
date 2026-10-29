@@ -140,6 +140,15 @@ pub struct Args {
     /// List supported languages and exit.
     #[arg(long)]
     pub list_languages: bool,
+
+    /// Cache the custom syntaxes in the config directory so that they load
+    /// fast, and exit. Run it again after changing them.
+    #[arg(long, conflicts_with = "clear_cache")]
+    pub build_cache: bool,
+
+    /// Remove the cache made by --build-cache and exit.
+    #[arg(long)]
+    pub clear_cache: bool,
 }
 
 /// Options whose default can be set in the config file, by their long name.

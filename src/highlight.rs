@@ -10,7 +10,6 @@ use syntect::{
     parsing::{SyntaxReference, SyntaxSet},
     util::as_24_bit_terminal_escaped,
 };
-use two_face::theme::LazyThemeSet;
 
 use crate::{
     color::{Depth, as_256_terminal_escaped},
@@ -194,26 +193,6 @@ impl<'a> Highlighter<'a> {
             let escaped = escaped.strip_suffix('\n').unwrap_or(&escaped);
             write!(out, "{escaped}{RESET}{newline}")?;
         }
-    }
-}
-
-/// The bundled themes, as listed by `--list-themes`.
-pub fn themes() -> LazyThemeSet {
-    LazyThemeSet::from(two_face::theme::extra())
-}
-
-/// Looks a theme up by exact name, then case-insensitively as long as the
-/// match is unambiguous (so `nord` finds `Nord`).
-pub fn find_theme<'a>(themes: &'a LazyThemeSet, name: &str) -> Option<&'a Theme> {
-    if let Some(theme) = themes.get(name) {
-        return Some(theme);
-    }
-    let mut matches = themes
-        .theme_names()
-        .filter(|n| n.eq_ignore_ascii_case(name));
-    match (matches.next(), matches.next()) {
-        (Some(found), None) => themes.get(found),
-        _ => None,
     }
 }
 

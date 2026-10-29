@@ -84,10 +84,26 @@ fn path() -> Option<(PathBuf, bool)> {
     if let Some(path) = env::var_os("HL_CONFIG").filter(|p| !p.is_empty()) {
         return Some((path.into(), true));
     }
+    Some((dir()?.join("config.toml"), false))
+}
+
+/// `$XDG_CONFIG_HOME/hl`, else `~/.config/hl`. Unlike the config file, it
+/// does not follow `HL_CONFIG`.
+pub fn dir() -> Option<PathBuf> {
+    xdg_dir("XDG_CONFIG_HOME", ".config")
+}
+
+/// `$XDG_CACHE_HOME/hl`, else `~/.cache/hl`.
+pub fn cache_dir() -> Option<PathBuf> {
+    xdg_dir("XDG_CACHE_HOME", ".cache")
+}
+
+/// `hl` under the XDG base directory in `var`, else under `~/<fallback>`.
+fn xdg_dir(var: &str, fallback: &str) -> Option<PathBuf> {
     // The XDG spec says relative paths are invalid and should be ignored.
-    let dir = env::var_os("XDG_CONFIG_HOME")
+    let dir = env::var_os(var)
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
-        .or_else(|| env::var_os("HOME").map(|home| Path::new(&home).join(".config")))?;
-    Some((dir.join("hl").join("config.toml"), false))
+        .or_else(|| env::var_os("HOME").map(|home| Path::new(&home).join(fallback)))?;
+    Some(dir.join("hl"))
 }

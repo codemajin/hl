@@ -53,6 +53,7 @@ hl -p big.rs                     # always view through a pager
 hl -A file.txt                   # show tabs, line ends and control characters, like cat -A
 hl --list-themes                 # list themes
 hl --list-languages              # list languages and their extensions
+hl --build-cache                 # cache custom syntaxes so that they load fast
 ```
 
 ### Options
@@ -73,7 +74,7 @@ hl --list-languages              # list languages and their extensions
 | `-u` | Accepted for `cat` compatibility and ignored |
 | `-l`, `--language <LANG>` | Use this language instead of auto-detection, given as a name or an extension (e.g. `rust`, `py`) |
 | `--map-syntax <PATTERN:LANG>` | Use language LANG for files matching the glob PATTERN (e.g. `'*.conf:INI'`). LANG is a name or an extension, as with `-l`. A pattern without `/` matches the file name; a pattern with `/` matches the absolute path (`*` stays within one directory, `**` spans any number). Can be given more than once; when several mappings match, the last one wins. Standard input is never mapped |
-| `--theme <THEME>` | Color theme (case-insensitive). Defaults to `base16-ocean.dark`, which is also used with a warning if the theme is not found |
+| `--theme <THEME>` | Color theme (case-insensitive), bundled or custom. Defaults to `base16-ocean.dark`, which is also used with a warning if the theme is not found |
 | `--max-size <SIZE>` | Print inputs larger than this without highlighting. Default `512K`. Accepts `K`, `M` and `G` (powers of 1024); `0` removes the limit |
 | `--max-line-length <LEN>` | Stop highlighting at the first line longer than this many bytes (excluding the newline). Default `16K`; `0` removes the limit |
 | `--paging <WHEN>` | When to show output in a pager: `auto`, `always`, or `never` (default). `auto` pages only when the output does not fit on one screen. The pager is `$PAGER`, or `less -RFX` (`auto`) / `less -RX` (`always`) if unset. No pager is started when stdout is not a terminal |
@@ -82,6 +83,8 @@ hl --list-languages              # list languages and their extensions
 | `--color-depth <DEPTH>` | Color depth: `auto`, `truecolor` (alias `24bit`), or `256`. The default `auto` uses 24-bit color when `COLORTERM` is `truecolor` or `24bit`, `TERM` ends in `-direct`, or `WT_SESSION` is set (Windows Terminal), and approximates colors to the 256 color palette otherwise |
 | `--list-themes` | List available themes |
 | `--list-languages` | List supported languages |
+| `--build-cache` | Cache the custom syntaxes (see below) so that they load fast |
+| `--clear-cache` | Remove the cache made by `--build-cache` |
 
 With no file, or when the file is `-`, `hl` reads from standard input.
 
@@ -113,6 +116,30 @@ map-syntax = ["*.conf:INI", "Jenkinsfile:Groovy"]
 Settings apply in this order, highest first: command-line options, environment variables, the configuration file, then the built-in defaults. `hl --help` shows the defaults with the configuration file applied. Without a configuration file, `hl` behaves as before. If the file can't be read or isn't valid TOML, `hl` prints a warning and ignores the whole file. Unknown keys and invalid values get a warning and are skipped one by one. Flags such as `-n` and `--header` can't be set here, because they could not be turned off from the command line.
 
 `map-syntax` takes a list of `--map-syntax` values. Unlike the other keys, it does not supply a default that the command line replaces: `--map-syntax` adds to these mappings, and takes precedence over them when both match. An entry that is malformed or names an unknown language gets a warning and is skipped.
+
+### Custom syntaxes and themes
+
+Besides the bundled ones, `hl` uses Sublime Text syntaxes and TextMate themes placed in the config directory (`$XDG_CONFIG_HOME/hl`, or `~/.config/hl` when `XDG_CONFIG_HOME` is not set; `HL_CONFIG` does not move it):
+
+```text
+~/.config/hl/
+├── syntaxes/   # *.sublime-syntax
+└── themes/     # *.tmTheme
+```
+
+- A custom syntax is used like a bundled one: by its `file_extensions`, its `first_line_match`, `-l`, and `--map-syntax`. When a custom and a bundled syntax claim the same extension, the custom one wins.
+- A theme is named after its file without the extension: `themes/My Theme.tmTheme` is `--theme 'My Theme'`. A custom theme replaces a bundled one with the same name.
+- `--list-languages` and `--list-themes` include the custom ones.
+- A file that can't be loaded gets a warning and is skipped. If the theme in use can't be loaded, `hl` falls back to `base16-ocean.dark`.
+
+Merging custom syntaxes with the bundled ones takes a few hundred milliseconds, so cache the result:
+
+```sh
+hl --build-cache   # writes $XDG_CACHE_HOME/hl/syntaxes.bin (~/.cache/hl/syntaxes.bin)
+hl --clear-cache   # removes it
+```
+
+Run `hl --build-cache` again after adding, changing or removing a syntax, and after upgrading `hl`. Until then, `hl` notices that the cache is out of date, merges the syntaxes on every run, and prints a reminder to stderr. Themes are read only when used and need no cache. Without custom syntaxes, `hl` neither reads nor needs the cache.
 
 ### Behavior details
 

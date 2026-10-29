@@ -1,3 +1,4 @@
+mod assets;
 mod cli;
 mod color;
 mod config;
@@ -16,15 +17,10 @@ use std::{
 use anyhow::{Result, anyhow, bail};
 use cli::{Args, ColorWhen, PagingWhen};
 use encoding::{Bom, UTF8_BOM, Utf16Decoder, is_utf8_prefix, sniff_bom};
-use highlight::{
-    DEFAULT_THEME, Highlighter, Limits, SyntaxMapping, find_language, find_theme, write_plain,
-};
+use highlight::{Highlighter, Limits, SyntaxMapping, find_language, write_plain};
 use lines::{LineState, Visibility};
 use pager::Pager;
-use syntect::{
-    highlighting::Theme,
-    parsing::{SyntaxReference, SyntaxSet},
-};
+use syntect::parsing::{SyntaxReference, SyntaxSet};
 
 /// How many leading bytes are inspected for binary detection.
 const PEEK_LEN: usize = 8 * 1024;
@@ -45,12 +41,20 @@ fn main() -> ExitCode {
 }
 
 fn run(args: &Args) -> Result<ExitCode> {
+    if args.build_cache {
+        return assets::build_cache();
+    }
+
+    if args.clear_cache {
+        return assets::clear_cache();
+    }
+
     if args.list_themes {
         return list_themes();
     }
 
     if args.list_languages {
-        return list_languages(&two_face::syntax::extra_newlines());
+        return list_languages(&assets::syntaxes());
     }
 
     let tty = io::stdout().is_terminal();
@@ -64,8 +68,8 @@ fn run(args: &Args) -> Result<ExitCode> {
         };
     // Syntaxes are also loaded to report unknown languages given on the
     // command line, even when nothing gets highlighted.
-    let syntaxes = (color || args.language.is_some() || !args.map_syntax.is_empty())
-        .then(two_face::syntax::extra_newlines);
+    let syntaxes =
+        (color || args.language.is_some() || !args.map_syntax.is_empty()).then(assets::syntaxes);
     let forced_syntax = match (&syntaxes, &args.language) {
         (Some(syntaxes), Some(lang)) => Some(
             find_language(syntaxes, lang)
@@ -78,7 +82,8 @@ fn run(args: &Args) -> Result<ExitCode> {
         None => Vec::new(),
     };
     let highlighter = syntaxes.as_ref().filter(|_| color).map(|syntaxes| {
-        Highlighter::new(syntaxes, load_theme(&args.theme), args.depth(), mappings)
+        let theme = assets::Themes::load().get_or_default(&args.theme);
+        Highlighter::new(syntaxes, theme, args.depth(), mappings)
     });
 
     // Without a terminal there is nobody to page for, as with `--color=auto`.
@@ -353,26 +358,10 @@ fn resolve_mappings<'a>(
     Ok(resolved)
 }
 
-/// An unknown theme is not fatal: it warns and falls back to the default,
-/// so a typo in `HL_THEME` or the config file never hides the file contents.
-fn load_theme(name: &str) -> Theme {
-    let themes = highlight::themes();
-    find_theme(&themes, name)
-        .unwrap_or_else(|| {
-            eprintln!(
-                "hl: unknown theme '{name}', falling back to {DEFAULT_THEME} (see --list-themes)"
-            );
-            themes.get(DEFAULT_THEME).expect("default theme is bundled")
-        })
-        .clone()
-}
-
 fn list_themes() -> Result<ExitCode> {
-    let themes = highlight::themes();
-    let mut names: Vec<_> = themes.theme_names().collect();
-    names.sort_unstable();
+    let themes = assets::Themes::load();
     let mut out = io::stdout().lock();
-    for name in names {
+    for name in themes.names() {
         writeln!(out, "{name}")?;
     }
     Ok(ExitCode::SUCCESS)

@@ -15,9 +15,11 @@ fn hl() -> Command {
         .env_remove("COLORTERM")
         .env_remove("WT_SESSION")
         .env("TERM", "xterm-256color")
-        // Keeps the user's own config file out of the tests.
+        // Keeps the user's own config file, syntaxes, themes and cache out of
+        // the tests.
         .env_remove("HL_CONFIG")
-        .env("XDG_CONFIG_HOME", "/nonexistent/hl-test-config");
+        .env("XDG_CONFIG_HOME", "/nonexistent/hl-test-config")
+        .env("XDG_CACHE_HOME", "/nonexistent/hl-test-cache");
     cmd
 }
 
@@ -1494,4 +1496,304 @@ fn warns_about_config_mappings_of_the_wrong_type() {
             .success()
             .stderr(predicate::str::contains(warning));
     }
+}
+
+/// A config directory for custom syntaxes and themes, with its own cache.
+struct Assets {
+    dir: TempDir,
+}
+
+const HLTEST_SYNTAX: &str = "%YAML 1.2
+---
+name: HlTest
+file_extensions: [hltest]
+scope: source.hltest
+contexts:
+  main:
+    - match: \\bkw\\b
+      scope: keyword.control.hltest
+";
+
+const RED_THEME: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>name</key><string>Red</string>
+<key>settings</key><array>
+<dict><key>settings</key><dict><key>foreground</key><string>#FF0000</string></dict></dict>
+</array></dict></plist>
+"#;
+
+const NOT_CACHED: &str = "custom syntaxes are not cached";
+
+impl Assets {
+    fn new() -> Self {
+        Self { dir: tempdir() }
+    }
+
+    fn path(&self, sub: &str) -> std::path::PathBuf {
+        self.dir.path().join(sub)
+    }
+
+    fn syntax(&self, name: &str, content: &str) -> &Self {
+        let dir = self.path("config/hl/syntaxes");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(format!("{name}.sublime-syntax")), content).unwrap();
+        self
+    }
+
+    fn theme(&self, name: &str, content: &str) -> &Self {
+        let dir = self.path("config/hl/themes");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(format!("{name}.tmTheme")), content).unwrap();
+        self
+    }
+
+    fn file(&self, name: &str, content: &str) -> String {
+        let path = self.path(name);
+        fs::write(&path, content).unwrap();
+        path.to_str().unwrap().to_string()
+    }
+
+    fn cache(&self) -> std::path::PathBuf {
+        self.path("cache/hl/syntaxes.bin")
+    }
+
+    fn hl(&self) -> Command {
+        let mut cmd = hl();
+        cmd.env("XDG_CONFIG_HOME", self.path("config"))
+            .env("XDG_CACHE_HOME", self.path("cache"));
+        cmd
+    }
+
+    fn colored(&self, args: &[&str]) -> Vec<u8> {
+        colored_stdout(
+            self.hl()
+                .args(["--color", "always", "--color-depth", "truecolor"])
+                .args(args),
+        )
+    }
+}
+
+#[test]
+fn highlights_with_a_custom_syntax() {
+    let assets = Assets::new();
+    assets.syntax("HlTest", HLTEST_SYNTAX);
+    let file = assets.file("a.hltest", "kw other\n");
+    let plain = assets.file("a.txt", "kw other\n");
+    let detected = assets.colored(&[&file]);
+    assert_ne!(detected, assets.colored(&[&plain]));
+    assert_eq!(detected, assets.colored(&["-l", "hltest", &plain]));
+    assert_eq!(detected, assets.colored(&["-l", "HlTest", &plain]));
+    assets
+        .hl()
+        .arg("--list-languages")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("HlTest: hltest\n"));
+}
+
+#[test]
+fn custom_syntax_replaces_a_bundled_one() {
+    let assets = Assets::new();
+    assets.syntax(
+        "MyRust",
+        &HLTEST_SYNTAX
+            .replace("[hltest]", "[rs]")
+            .replace("HlTest", "MyRust"),
+    );
+    let file = assets.file("a.rs", "kw fn main() {}\n");
+    let detected = assets.colored(&[&file]);
+    assert_eq!(detected, assets.colored(&["-l", "MyRust", &file]));
+    assert_ne!(detected, assets.colored(&["-l", "Rust", &file]));
+}
+
+#[test]
+fn skips_custom_syntaxes_that_cannot_be_loaded() {
+    let assets = Assets::new();
+    assets
+        .syntax("HlTest", HLTEST_SYNTAX)
+        .syntax("BadYaml", "name: x\n  bad: [\n")
+        .syntax(
+            "BadRegex",
+            &HLTEST_SYNTAX.replace("\\bkw\\b", "'(unclosed'"),
+        );
+    let file = assets.file("a.hltest", "kw other\n");
+    let expected = assets.colored(&["-l", "hltest", &file]);
+    assets
+        .hl()
+        .args(["--color", "always", "--color-depth", "truecolor", &file])
+        .assert()
+        .success()
+        .stderr(
+            predicate::str::contains("BadYaml.sublime-syntax: cannot load syntax, skipping it")
+                .and(predicate::str::contains(
+                    "BadRegex.sublime-syntax: cannot load syntax, skipping it",
+                )),
+        )
+        .stdout(expected);
+}
+
+#[test]
+fn caches_custom_syntaxes() {
+    let assets = Assets::new();
+    assets.syntax("HlTest", HLTEST_SYNTAX);
+    let file = assets.file("a.hltest", "kw other\n");
+    let uncached = assets
+        .hl()
+        .args(["--color", "always", &file])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(NOT_CACHED))
+        .get_output()
+        .stdout
+        .clone();
+
+    assets
+        .hl()
+        .arg("--build-cache")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("cached 1 of 1 custom syntaxes"));
+    assert!(assets.cache().is_file());
+    assets
+        .hl()
+        .args(["--color", "always", &file])
+        .assert()
+        .success()
+        .stderr("")
+        .stdout(uncached);
+
+    // A changed syntax makes the cache stale until it is built again.
+    assets.syntax(
+        "Other",
+        &HLTEST_SYNTAX
+            .replace("hltest", "other")
+            .replace("HlTest", "Other"),
+    );
+    assets
+        .hl()
+        .arg("--list-languages")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(NOT_CACHED))
+        .stdout(predicate::str::contains("Other: other\n"));
+    assets.hl().arg("--build-cache").assert().success();
+    assets
+        .hl()
+        .arg("--list-languages")
+        .assert()
+        .success()
+        .stderr("")
+        .stdout(predicate::str::contains("Other: other\n"));
+
+    assets
+        .hl()
+        .arg("--clear-cache")
+        .assert()
+        .success()
+        .stderr("");
+    assert!(!assets.cache().exists());
+    assets
+        .hl()
+        .arg("--clear-cache")
+        .assert()
+        .success()
+        .stderr("");
+}
+
+#[test]
+fn build_cache_without_custom_syntaxes_removes_the_cache() {
+    let assets = Assets::new();
+    assets.syntax("HlTest", HLTEST_SYNTAX);
+    assets.hl().arg("--build-cache").assert().success();
+    fs::remove_dir_all(assets.path("config/hl/syntaxes")).unwrap();
+    assets
+        .hl()
+        .arg("--build-cache")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no custom syntaxes"));
+    assert!(!assets.cache().exists());
+}
+
+#[test]
+fn bundled_syntaxes_need_no_cache() {
+    let assets = Assets::new();
+    assets
+        .hl()
+        .args(["--color", "always", "Cargo.toml"])
+        .assert()
+        .success()
+        .stderr("");
+}
+
+#[test]
+fn uses_a_custom_theme() {
+    let assets = Assets::new();
+    assets.theme("Red", RED_THEME);
+    let file = assets.file("a.txt", "text\n");
+    let out = assets.colored(&["--theme", "Red", &file]);
+    assert!(
+        String::from_utf8(out.clone())
+            .unwrap()
+            .contains("\x1b[38;2;255;0;0m")
+    );
+    assert_eq!(out, assets.colored(&["--theme", "red", &file]));
+    assets
+        .hl()
+        .arg("--list-themes")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\nRed\n"));
+}
+
+#[test]
+fn custom_theme_replaces_a_bundled_one() {
+    let assets = Assets::new();
+    assets.theme("Nord", RED_THEME);
+    let file = assets.file("a.txt", "text\n");
+    let out = assets.colored(&["--theme", "Nord", &file]);
+    assert!(
+        String::from_utf8(out)
+            .unwrap()
+            .contains("\x1b[38;2;255;0;0m")
+    );
+    let listed = colored_stdout(assets.hl().arg("--list-themes"));
+    let listed = String::from_utf8(listed).unwrap();
+    assert_eq!(listed.lines().filter(|&n| n == "Nord").count(), 1);
+}
+
+#[test]
+fn skips_custom_themes_that_cannot_be_loaded() {
+    let assets = Assets::new();
+    assets.theme("Broken", "not a theme\n");
+    let file = assets.file("a.txt", "text\n");
+    assets
+        .hl()
+        .arg("--list-themes")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "Broken.tmTheme: cannot load theme, skipping it",
+        ))
+        .stdout(predicate::str::contains("Broken").not());
+    let expected = assets.colored(&[&file]);
+    assets
+        .hl()
+        .args([
+            "--color",
+            "always",
+            "--color-depth",
+            "truecolor",
+            "--theme",
+            "Broken",
+            &file,
+        ])
+        .assert()
+        .success()
+        .stderr(
+            predicate::str::contains("Broken.tmTheme: cannot load theme").and(
+                predicate::str::contains("falling back to base16-ocean.dark"),
+            ),
+        )
+        .stdout(expected);
 }
