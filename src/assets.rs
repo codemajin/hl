@@ -5,7 +5,7 @@ use std::{
     fmt::Write as _,
     fs, io,
     path::{Path, PathBuf},
-    process::{self, ExitCode},
+    process,
     time::UNIX_EPOCH,
 };
 
@@ -44,33 +44,43 @@ pub fn syntaxes() -> SyntaxSet {
     syntaxes
 }
 
+/// What `build_cache` did.
+pub enum CacheReport {
+    /// There are no custom syntaxes in `dir`, so any old cache was removed.
+    Empty { dir: PathBuf },
+    /// `added` of `total` custom syntaxes were cached in `path`.
+    Cached {
+        added: usize,
+        total: usize,
+        path: PathBuf,
+    },
+}
+
 /// Merges the custom syntaxes and writes them to the cache.
-pub fn build_cache() -> Result<ExitCode> {
+pub fn build_cache() -> Result<CacheReport> {
     let path = cache_path().ok_or_else(|| anyhow!("no cache directory (set HOME)"))?;
     let files = syntax_files();
     if files.is_empty() {
         remove_cache(&path)?;
         let dir = syntax_dir().unwrap_or_default();
-        println!("no custom syntaxes in {}, nothing to cache", dir.display());
-        return Ok(ExitCode::SUCCESS);
+        return Ok(CacheReport::Empty { dir });
     }
     let fingerprint = fingerprint(&files);
     let (syntaxes, added) = merge(&files);
     write_cache(&path, &fingerprint, syntaxes).map_err(|e| anyhow!("{}: {e}", path.display()))?;
-    println!(
-        "cached {added} of {} custom syntaxes in {}",
-        files.len(),
-        path.display()
-    );
-    Ok(ExitCode::SUCCESS)
+    Ok(CacheReport::Cached {
+        added,
+        total: files.len(),
+        path,
+    })
 }
 
 /// Removes the cache, so that custom syntaxes are merged on every run.
-pub fn clear_cache() -> Result<ExitCode> {
+pub fn clear_cache() -> Result<()> {
     if let Some(path) = cache_path() {
         remove_cache(&path)?;
     }
-    Ok(ExitCode::SUCCESS)
+    Ok(())
 }
 
 fn syntax_dir() -> Option<PathBuf> {

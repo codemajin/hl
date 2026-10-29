@@ -1,4 +1,4 @@
-use std::io::{self, Write};
+use std::io::{self, BufRead, Write};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Numbering {
@@ -161,6 +161,38 @@ impl LineState {
         self.cursor = Cursor::LineStart;
         self.prev_blank = false;
         Ok(())
+    }
+}
+
+/// Copies `reader` without highlighting, applying numbering, squeezing, the
+/// line range and `cat -v` style notation as requested.
+pub fn write_plain(
+    reader: &mut impl BufRead,
+    out: &mut impl Write,
+    lines: &mut LineState,
+    vis: Visibility,
+) -> io::Result<()> {
+    if lines.is_passthrough() && !vis.any() {
+        io::copy(reader, out)?;
+        return Ok(());
+    }
+    let mut buf = Vec::new();
+    loop {
+        if lines.is_done() {
+            return Ok(());
+        }
+        buf.clear();
+        if reader.read_until(b'\n', &mut buf)? == 0 {
+            return Ok(());
+        }
+        if !lines.begin_line(&buf, out)? {
+            continue;
+        }
+        if vis.any() {
+            write_visible(&buf, vis, out)?;
+        } else {
+            out.write_all(&buf)?;
+        }
     }
 }
 

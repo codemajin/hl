@@ -13,11 +13,15 @@ use syntect::{
 
 use crate::{
     color::{Depth, as_256_terminal_escaped},
+    diag,
     encoding::UTF8_BOM,
-    lines::{LineState, Visibility, write_visible},
+    lines::{LineState, Visibility, write_plain},
 };
 
 pub const DEFAULT_THEME: &str = "base16-ocean.dark";
+
+/// A language that inputs can be highlighted as.
+pub type Syntax = SyntaxReference;
 
 const RESET: &str = "\x1b[0m";
 
@@ -87,7 +91,7 @@ pub struct Highlighter<'a> {
     theme: Theme,
     depth: Depth,
     /// User mappings with their languages resolved; the last match wins.
-    mappings: Vec<(SyntaxMapping, &'a SyntaxReference)>,
+    mappings: Vec<(SyntaxMapping, &'a Syntax)>,
 }
 
 impl<'a> Highlighter<'a> {
@@ -95,7 +99,7 @@ impl<'a> Highlighter<'a> {
         syntaxes: &'a SyntaxSet,
         theme: Theme,
         depth: Depth,
-        mappings: Vec<(SyntaxMapping, &'a SyntaxReference)>,
+        mappings: Vec<(SyntaxMapping, &'a Syntax)>,
     ) -> Self {
         Self {
             syntaxes,
@@ -108,7 +112,7 @@ impl<'a> Highlighter<'a> {
     /// Detects the syntax from the user mappings, then the file name
     /// (extension, then full name) and finally the first line (shebang,
     /// modelines). Falls back to plain text.
-    pub fn detect(&self, path: Option<&Path>, first_line: &str) -> &'a SyntaxReference {
+    pub fn detect(&self, path: Option<&Path>, first_line: &str) -> &'a Syntax {
         let by_path = path.and_then(|p| {
             let mapped = self.mappings.iter().rev().find(|(m, _)| m.matches(p));
             let ext = p.extension().and_then(|e| e.to_str());
@@ -135,7 +139,7 @@ impl<'a> Highlighter<'a> {
         &self,
         reader: &mut impl BufRead,
         out: &mut impl Write,
-        syntax: &SyntaxReference,
+        syntax: &Syntax,
         lines: &mut LineState,
         limits: Limits,
     ) -> io::Result<()> {
@@ -198,40 +202,46 @@ impl<'a> Highlighter<'a> {
 }
 
 /// Resolves an explicit `--language` value by name or extension.
-pub fn find_language<'a>(syntaxes: &'a SyntaxSet, lang: &str) -> Option<&'a SyntaxReference> {
+pub fn find_language<'a>(syntaxes: &'a SyntaxSet, lang: &str) -> Option<&'a Syntax> {
     syntaxes
         .find_syntax_by_token(lang)
         .or_else(|| syntaxes.find_syntax_by_extension(lang))
 }
 
-/// Copies `reader` without highlighting, applying numbering, squeezing, the
-/// line range and `cat -v` style notation as requested.
-pub fn write_plain(
-    reader: &mut impl BufRead,
-    out: &mut impl Write,
-    lines: &mut LineState,
-    vis: Visibility,
-) -> io::Result<()> {
-    if lines.is_passthrough() && !vis.any() {
-        io::copy(reader, out)?;
-        return Ok(());
-    }
-    let mut buf = Vec::new();
-    loop {
-        if lines.is_done() {
-            return Ok(());
-        }
-        buf.clear();
-        if reader.read_until(b'\n', &mut buf)? == 0 {
-            return Ok(());
-        }
-        if !lines.begin_line(&buf, out)? {
+/// Looks up the language of each syntax mapping. An unknown language is an
+/// error on the command line, but only a warning in the config file, which
+/// never stops `hl` from printing.
+pub fn resolve_mappings<'a, 'm>(
+    syntaxes: &'a SyntaxSet,
+    mappings: impl IntoIterator<Item = &'m SyntaxMapping>,
+) -> Result<Vec<(SyntaxMapping, &'a Syntax)>, String> {
+    let mut resolved = Vec::new();
+    for mapping in mappings {
+        let Some(syntax) = find_language(syntaxes, &mapping.language) else {
+            let msg = format!(
+                "unknown language '{}' in map-syntax '{}'",
+                mapping.language, mapping.spec
+            );
+            match &mapping.origin {
+                Some(path) => diag::warn(path, &format!("{msg}, ignoring it")),
+                None => return Err(format!("{msg} (see --list-languages)")),
+            }
             continue;
-        }
-        if vis.any() {
-            write_visible(&buf, vis, out)?;
-        } else {
-            out.write_all(&buf)?;
-        }
+        };
+        resolved.push((mapping.clone(), syntax));
     }
+    Ok(resolved)
+}
+
+/// The names and file extensions of the languages listed by
+/// `--list-languages`, sorted by name.
+pub fn languages(syntaxes: &SyntaxSet) -> Vec<(&str, &[String])> {
+    let mut languages: Vec<_> = syntaxes
+        .syntaxes()
+        .iter()
+        .filter(|s| !s.hidden)
+        .map(|s| (s.name.as_str(), s.file_extensions.as_slice()))
+        .collect();
+    languages.sort_unstable_by_key(|(name, _)| name.to_lowercase());
+    languages
 }

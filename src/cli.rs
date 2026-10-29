@@ -24,6 +24,14 @@ pub enum PagingWhen {
     Never,
 }
 
+impl PagingWhen {
+    /// Whether to start a pager. Without a terminal there is nobody to page
+    /// for, as with `--color=auto`.
+    pub fn should_page(self, tty: bool) -> bool {
+        self != Self::Never && tty
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum ColorDepth {
     Auto,
@@ -168,14 +176,14 @@ const CONFIG_KEYS: [&str; 6] = [
 /// adds to the command-line values instead of supplying a default.
 const MAP_SYNTAX_KEY: &str = "map-syntax";
 
-/// Parses the command line, with the config file supplying the defaults.
+/// Parses the command line, with `config` supplying the defaults.
 ///
 /// Config values replace the built-in defaults of their options, so clap
 /// itself gives the precedence: command line, environment, config file,
 /// built-in default.
-pub fn parse() -> Args {
-    let (cmd, config_mappings) = match Config::load() {
-        Some(config) => apply_config(Args::command(), &config),
+pub fn parse_with(config: Option<&Config>) -> Args {
+    let (cmd, config_mappings) = match config {
+        Some(config) => apply_config(Args::command(), config),
         None => (Args::command(), Vec::new()),
     };
     let mut args = Args::from_arg_matches_mut(&mut cmd.get_matches()).unwrap_or_else(|e| e.exit());
@@ -247,6 +255,24 @@ fn arg_id(key: &str) -> String {
 }
 
 impl Args {
+    /// Whether to color the output, given whether it goes to a terminal.
+    /// `cat -v` style output is never highlighted, so it matches cat exactly.
+    pub fn use_color(&self, tty: bool) -> bool {
+        !self.visibility().any()
+            && match self.color {
+                ColorWhen::Always => true,
+                ColorWhen::Never => false,
+                ColorWhen::Auto => tty,
+            }
+    }
+
+    /// Whether the syntaxes are needed. They are also loaded to report
+    /// unknown languages given on the command line, even when nothing gets
+    /// highlighted.
+    pub fn needs_syntaxes(&self, color: bool) -> bool {
+        color || self.language.is_some() || !self.map_syntax.is_empty()
+    }
+
     /// The syntax mappings from the config file, then the command line, so
     /// that the last matching one wins.
     pub fn mappings(&self) -> impl Iterator<Item = &SyntaxMapping> {
@@ -349,7 +375,106 @@ fn parse_range(s: &str) -> Result<LineRange, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
+
+    fn args(argv: &[&str]) -> Args {
+        Args::try_parse_from(["hl"].iter().chain(argv)).unwrap()
+    }
+
+    /// Parses `argv` with `config` applied, as `parse_with` does.
+    fn args_with(config: &Config, argv: &[&str]) -> Args {
+        let (cmd, config_mappings) = apply_config(Args::command(), config);
+        let matches = cmd.try_get_matches_from(["hl"].iter().chain(argv)).unwrap();
+        let mut parsed = Args::from_arg_matches(&matches).unwrap();
+        parsed.config_mappings = config_mappings;
+        parsed
+    }
+
+    fn config(entries: &str) -> Config {
+        Config {
+            path: PathBuf::from("config.toml"),
+            entries: entries
+                .parse::<toml::Table>()
+                .unwrap()
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn color_follows_the_terminal_by_default() {
+        assert!(args(&[]).use_color(true));
+        assert!(!args(&[]).use_color(false));
+        assert!(args(&["--color=always"]).use_color(false));
+        assert!(!args(&["--color=never"]).use_color(true));
+    }
+
+    #[test]
+    fn nonprinting_notation_is_never_colored() {
+        for flag in ["-v", "-A", "-e", "-E", "-t", "-T"] {
+            assert!(!args(&["--color=always", flag]).use_color(true), "{flag}");
+        }
+    }
+
+    #[test]
+    fn syntaxes_are_needed_to_check_languages() {
+        assert!(args(&[]).needs_syntaxes(true));
+        assert!(!args(&[]).needs_syntaxes(false));
+        assert!(args(&["-l", "rust"]).needs_syntaxes(false));
+        assert!(args(&["--map-syntax", "*.conf:INI"]).needs_syntaxes(false));
+    }
+
+    #[test]
+    fn paging_needs_a_terminal() {
+        assert!(PagingWhen::Always.should_page(true));
+        assert!(PagingWhen::Auto.should_page(true));
+        assert!(!PagingWhen::Never.should_page(true));
+        assert!(!PagingWhen::Always.should_page(false));
+        assert_eq!(args(&["-p"]).paging(), PagingWhen::Always);
+    }
+
+    #[test]
+    fn config_sets_defaults() {
+        let config = config(r#"color = "never""#);
+        assert_eq!(args_with(&config, &[]).color, ColorWhen::Never);
+        assert_eq!(
+            args_with(&config, &["--color=always"]).color,
+            ColorWhen::Always
+        );
+    }
+
+    #[test]
+    fn bad_config_entries_are_ignored() {
+        let config = config(
+            r#"
+            color = "sometimes"
+            paging = 1
+            pager = "less"
+            "#,
+        );
+        let args = args_with(&config, &[]);
+        assert_eq!(args.color, ColorWhen::Auto);
+        assert_eq!(args.paging(), PagingWhen::Never);
+    }
+
+    #[test]
+    fn config_mappings_come_first() {
+        let config = config(r#"map-syntax = ["*.conf:INI", "bad"]"#);
+        let args = args_with(&config, &["--map-syntax", "*.conf:TOML"]);
+        let mappings: Vec<_> = args
+            .mappings()
+            .map(|m| (m.spec.as_str(), m.origin.as_deref()))
+            .collect();
+        assert_eq!(
+            mappings,
+            [
+                ("*.conf:INI", Some(Path::new("config.toml"))),
+                ("*.conf:TOML", None),
+            ]
+        );
+    }
 
     #[test]
     fn cli_is_consistent() {
