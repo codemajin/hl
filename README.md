@@ -174,18 +174,24 @@ To run the real `cat` without going through the alias, use `\cat` or `command ca
 
 ```sh
 cargo build
-cargo test          # integration tests in tests/cli.rs
+cargo test          # unit tests in src/ and integration tests in tests/cli.rs
 cargo clippy
 cargo fmt --check   # formatting (rustfmt.toml)
 ```
 
 | File | Role |
 | --- | --- |
-| `src/main.rs` | Entry point: input dispatch, output selection, error handling |
-| `src/cli.rs` | Command-line argument definitions (clap) |
-| `src/highlight.rs` | Language detection and highlighted output (syntect) |
+| `src/main.rs` | Entry point: builds the printer from the arguments and config, picks the pager or stdout, handles errors and the exit code |
+| `src/assets.rs` | Custom syntaxes and themes from the config directory, merged with the bundled ones, and the syntax cache (`--build-cache`/`--clear-cache`) |
+| `src/cli.rs` | Command-line argument definitions (clap) and defaults from the config file |
+| `src/color.rs` | Terminal color depth detection and the 256-color fallback |
+| `src/config.rs` | Config file loading and the config/cache directory paths |
+| `src/diag.rs` | Warning and error messages on stderr |
+| `src/encoding.rs` | UTF-8/UTF-16 BOM detection and UTF-16 decoding |
+| `src/highlight.rs` | Language detection, `--map-syntax` mappings, size limits, and highlighted output (syntect) |
 | `src/lines.rs` | Line numbering, blank-line squeezing, and `cat -v`/`-E`/`-T` notation |
 | `src/pager.rs` | Starting the pager and waiting for it to exit |
+| `src/print.rs` | Printing each input in turn, highlighted or plain, with headers and encoding handling |
 
 ### Test coverage
 

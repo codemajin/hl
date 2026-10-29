@@ -174,18 +174,24 @@ export HL_THEME='Monokai Extended'
 
 ```sh
 cargo build
-cargo test          # tests/cli.rs の結合テスト
+cargo test          # src/ のユニットテストと tests/cli.rs の結合テスト
 cargo clippy
 cargo fmt --check   # フォーマットの確認（rustfmt.toml）
 ```
 
 | ファイル | 役割 |
 | --- | --- |
-| `src/main.rs` | エントリポイント。入力の振り分け、出力先の選択、エラー処理 |
-| `src/cli.rs` | コマンドライン引数の定義（clap） |
-| `src/highlight.rs` | 言語判定とハイライト出力（syntect） |
+| `src/main.rs` | エントリポイント。引数と設定からの組み立て、ページャか標準出力かの選択、エラー処理と終了コード |
+| `src/assets.rs` | 設定ディレクトリのカスタム構文・テーマの読み込みと同梱分とのマージ、構文キャッシュ（`--build-cache`/`--clear-cache`） |
+| `src/cli.rs` | コマンドライン引数の定義（clap）と設定ファイルからのデフォルト値 |
+| `src/color.rs` | 端末の色深度の判定と 256 色へのフォールバック |
+| `src/config.rs` | 設定ファイルの読み込みと、設定・キャッシュディレクトリのパス |
+| `src/diag.rs` | 標準エラー出力への警告・エラーメッセージ |
+| `src/encoding.rs` | UTF-8/UTF-16 の BOM 判定と UTF-16 のデコード |
+| `src/highlight.rs` | 言語判定、`--map-syntax` の対応付け、サイズの上限、ハイライト出力（syntect） |
 | `src/lines.rs` | 行番号、空行の圧縮、`cat -v`/`-E`/`-T` の表記 |
 | `src/pager.rs` | ページャの起動と終了待ち |
+| `src/print.rs` | 各入力の順次出力（ハイライトありかなしか）、ヘッダ、文字コードの扱い |
 
 ### テストカバレッジ
 
