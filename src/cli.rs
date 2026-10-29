@@ -1,9 +1,10 @@
 use std::path::PathBuf;
 
-use clap::{Parser, ValueEnum};
+use clap::{CommandFactory, FromArgMatches, Parser, ValueEnum};
 
 use crate::{
     color::{self, Depth},
+    config::Config,
     highlight::{DEFAULT_THEME, Limits},
     lines::{LineRange, Numbering, Visibility},
 };
@@ -129,6 +130,46 @@ pub struct Args {
     /// List supported languages and exit.
     #[arg(long)]
     pub list_languages: bool,
+}
+
+/// Options whose default can be set in the config file, by their long name.
+/// Flags are left out because the command line could not turn them off.
+const CONFIG_KEYS: [&str; 6] = [
+    "theme",
+    "color",
+    "color-depth",
+    "paging",
+    "max-size",
+    "max-line-length",
+];
+
+/// Parses the command line, with the config file supplying the defaults.
+///
+/// Config values replace the built-in defaults of their options, so clap
+/// itself gives the precedence: command line, environment, config file,
+/// built-in default.
+pub fn parse() -> Args {
+    let mut cmd = Args::command();
+    if let Some(config) = Config::load() {
+        // Checks each value on its own, without the environment, so that a
+        // bad value is reported as coming from the config file.
+        let probe = Args::command().mut_args(|arg| arg.env(None));
+        for (key, value) in &config.values {
+            if !CONFIG_KEYS.contains(&key.as_str()) {
+                config.warn(&format!("unknown key '{key}', ignoring it"));
+                continue;
+            }
+            let option = format!("--{key}={value}");
+            if probe.clone().try_get_matches_from(["hl", &option]).is_err() {
+                config.warn(&format!("invalid value '{value}' for '{key}', ignoring it"));
+                continue;
+            }
+            cmd = cmd.mut_arg(key.replace('-', "_"), |arg| {
+                arg.default_value(value.clone())
+            });
+        }
+    }
+    Args::from_arg_matches_mut(&mut cmd.get_matches()).unwrap_or_else(|e| e.exit())
 }
 
 impl Args {

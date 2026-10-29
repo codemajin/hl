@@ -91,7 +91,23 @@ hl --list-languages              # 対応言語と拡張子の一覧
 | `HL_MAX_SIZE` | `--max-size` の既定値 |
 | `HL_MAX_LINE_LENGTH` | `--max-line-length` の既定値 |
 | `HL_COLOR_DEPTH` | `--color-depth` の既定値 |
+| `HL_CONFIG` | 設定ファイルの場所 |
 | `PAGER` | `--paging` と `-p` で使うページャ |
+
+### 設定ファイル
+
+一部のオプションの既定値は `$XDG_CONFIG_HOME/hl/config.toml`（`XDG_CONFIG_HOME` が未設定なら `~/.config/hl/config.toml`）で設定できます。別のファイルを使うときは `HL_CONFIG` で場所を指定します。キーにはオプションの長い名前を使います。
+
+```toml
+theme = "Monokai Extended"
+color = "auto"            # auto, always, never
+color-depth = "truecolor" # auto, truecolor, 256
+paging = "auto"           # auto, always, never
+max-size = "1M"           # 0 のような整数も書けます
+max-line-length = "16K"
+```
+
+優先順位は高い順に、コマンドライン引数、環境変数、設定ファイル、組み込みの既定値です。`hl --help` には設定ファイルを反映した既定値が出ます。設定ファイルがなければ今までどおり動きます。ファイルが読めないときや TOML として正しくないときは、警告を出してファイル全体を無視します。知らないキーや不正な値は、警告を出してその項目だけ読み飛ばします。`-n` や `--header` のようなフラグは、コマンドラインで打ち消せなくなるため設定できません。
 
 ### 動作の詳細
 
@@ -114,7 +130,7 @@ hl --list-languages              # 対応言語と拡張子の一覧
 alias cat='hl'
 ```
 
-テーマを固定したい場合は、あわせて `HL_THEME` を設定してください。
+テーマを固定したい場合は、あわせて `HL_THEME` を設定してください（[設定ファイル](#設定ファイル)の `theme` でも構いません）。
 
 ```sh
 export HL_THEME='Monokai Extended'

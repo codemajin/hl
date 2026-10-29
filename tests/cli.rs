@@ -14,7 +14,10 @@ fn hl() -> Command {
         .env_remove("HL_COLOR_DEPTH")
         .env_remove("COLORTERM")
         .env_remove("WT_SESSION")
-        .env("TERM", "xterm-256color");
+        .env("TERM", "xterm-256color")
+        // Keeps the user's own config file out of the tests.
+        .env_remove("HL_CONFIG")
+        .env("XDG_CONFIG_HOME", "/nonexistent/hl-test-config");
     cmd
 }
 
@@ -1077,4 +1080,186 @@ fn applies_a_line_range_without_highlighting() {
         .assert()
         .success()
         .stdout(&b"\x82\xa0\n"[..]);
+}
+
+/// Writes `content` to a config file in `dir` and returns its path.
+fn write_config(dir: &Path, content: &str) -> std::path::PathBuf {
+    let path = dir.join("config.toml");
+    fs::write(&path, content).unwrap();
+    path
+}
+
+/// `hl` with the config file at `path` given through `HL_CONFIG`.
+fn hl_with_config(path: &Path) -> Command {
+    let mut cmd = hl();
+    cmd.env("HL_CONFIG", path);
+    cmd
+}
+
+#[test]
+fn reads_the_config_from_xdg_config_home() {
+    let dir = tempdir();
+    fs::create_dir(dir.path().join("hl")).unwrap();
+    write_config(&dir.path().join("hl"), "color = \"always\"\n");
+    hl().env("XDG_CONFIG_HOME", dir.path())
+        .arg("Cargo.toml")
+        .assert()
+        .success()
+        .stderr("")
+        .stdout(predicate::str::contains(ESC));
+}
+
+#[test]
+fn hl_config_overrides_the_config_location() {
+    let xdg = tempdir();
+    fs::create_dir(xdg.path().join("hl")).unwrap();
+    write_config(&xdg.path().join("hl"), "color = \"always\"\n");
+    let dir = tempdir();
+    let config = write_config(dir.path(), "color = \"never\"\n");
+    hl_with_config(&config)
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .args(["--color-depth", "256", "Cargo.toml"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(ESC).not());
+}
+
+#[test]
+fn prints_nothing_extra_without_a_config_file() {
+    let dir = tempdir();
+    let content = fs::read("Cargo.toml").unwrap();
+    hl().env("XDG_CONFIG_HOME", dir.path())
+        .arg("Cargo.toml")
+        .assert()
+        .success()
+        .stderr("")
+        .stdout(content);
+}
+
+#[test]
+fn warns_when_the_hl_config_file_is_missing() {
+    let dir = tempdir();
+    let content = fs::read("Cargo.toml").unwrap();
+    hl_with_config(&dir.path().join("missing.toml"))
+        .arg("Cargo.toml")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "missing.toml: No such file or directory",
+        ))
+        .stdout(content);
+}
+
+#[test]
+fn command_line_beats_env_beats_config() {
+    let dir = tempdir();
+    let config = write_config(dir.path(), "color-depth = \"truecolor\"\n");
+    assert_depth(&mut hl_with_config(&config), TRUECOLOR);
+    assert_depth(
+        hl_with_config(&config).env("HL_COLOR_DEPTH", "256"),
+        ANSI256,
+    );
+    assert_depth(
+        hl_with_config(&config)
+            .env("HL_COLOR_DEPTH", "256")
+            .args(["--color-depth", "truecolor"]),
+        TRUECOLOR,
+    );
+}
+
+#[test]
+fn command_line_overrides_the_config_color() {
+    let dir = tempdir();
+    let config = write_config(dir.path(), "color = \"always\"\n");
+    let content = fs::read("Cargo.toml").unwrap();
+    hl_with_config(&config)
+        .args(["--color", "never", "Cargo.toml"])
+        .assert()
+        .success()
+        .stdout(content);
+}
+
+#[test]
+fn reads_the_theme_from_the_config() {
+    let dir = tempdir();
+    let config = write_config(dir.path(), "theme = \"Nord\"\n");
+    let expected =
+        colored_stdout(hl().args(["--color", "always", "--theme", "Nord", "Cargo.toml"]));
+    let default = colored_stdout(hl().args(["--color", "always", "Cargo.toml"]));
+    assert_ne!(expected, default);
+    hl_with_config(&config)
+        .args(["--color", "always", "Cargo.toml"])
+        .assert()
+        .success()
+        .stderr("")
+        .stdout(expected);
+}
+
+#[test]
+fn reads_sizes_from_the_config_as_integers_or_strings() {
+    let dir = tempdir();
+    let path = dir.path().join("large.rs");
+    let content = "fn main() {}\n".repeat(100).into_bytes();
+    fs::write(&path, &content).unwrap();
+    for size in ["64", "\"64\"", "\"1K\""] {
+        let config = write_config(dir.path(), &format!("max-size = {size}\n"));
+        hl_with_config(&config)
+            .args(["--color", "always"])
+            .arg(&path)
+            .assert()
+            .success()
+            .stderr("")
+            .stdout(content.clone());
+    }
+}
+
+#[test]
+fn ignores_a_broken_config_file() {
+    let dir = tempdir();
+    let config = write_config(dir.path(), "color = \"always\"\ntheme =\n");
+    let content = fs::read("Cargo.toml").unwrap();
+    hl_with_config(&config)
+        .arg("Cargo.toml")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("invalid TOML, ignoring the file"))
+        .stdout(content);
+}
+
+#[test]
+fn ignores_bad_config_entries_and_keeps_the_rest() {
+    let dir = tempdir();
+    let config = write_config(
+        dir.path(),
+        "color = \"always\"\ncolor-depth = \"16\"\nnumber = 1\npaging = true\n",
+    );
+    hl_with_config(&config)
+        .arg("Cargo.toml")
+        .assert()
+        .success()
+        .stderr(
+            predicate::str::contains("invalid value '16' for 'color-depth', ignoring it")
+                .and(predicate::str::contains(
+                    "unknown key 'number', ignoring it",
+                ))
+                .and(predicate::str::contains(
+                    "'paging' must be a string or an integer, ignoring it",
+                )),
+        )
+        .stdout(predicate::str::contains(ANSI256));
+}
+
+#[test]
+fn reports_an_invalid_env_value_as_before_with_a_config() {
+    let dir = tempdir();
+    let config = write_config(dir.path(), "color-depth = \"256\"\n");
+    hl_with_config(&config)
+        .env("HL_COLOR_DEPTH", "16")
+        .arg("Cargo.toml")
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("invalid value '16' for '--color-depth")
+                .and(predicate::str::contains("config.toml").not()),
+        );
 }

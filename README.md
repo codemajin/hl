@@ -91,7 +91,23 @@ With no file, or when the file is `-`, `hl` reads from standard input.
 | `HL_MAX_SIZE` | Default for `--max-size` |
 | `HL_MAX_LINE_LENGTH` | Default for `--max-line-length` |
 | `HL_COLOR_DEPTH` | Default for `--color-depth` |
+| `HL_CONFIG` | Path of the configuration file |
 | `PAGER` | Pager used by `--paging` and `-p` |
+
+### Configuration file
+
+Defaults for some options can be set in `$XDG_CONFIG_HOME/hl/config.toml` (`~/.config/hl/config.toml` when `XDG_CONFIG_HOME` is not set). Set `HL_CONFIG` to use another file. Keys are the long option names:
+
+```toml
+theme = "Monokai Extended"
+color = "auto"            # auto, always, never
+color-depth = "truecolor" # auto, truecolor, 256
+paging = "auto"           # auto, always, never
+max-size = "1M"           # integers such as 0 work too
+max-line-length = "16K"
+```
+
+Settings apply in this order, highest first: command-line options, environment variables, the configuration file, then the built-in defaults. `hl --help` shows the defaults with the configuration file applied. Without a configuration file, `hl` behaves as before. If the file can't be read or isn't valid TOML, `hl` prints a warning and ignores the whole file. Unknown keys and invalid values get a warning and are skipped one by one. Flags such as `-n` and `--header` can't be set here, because they could not be turned off from the command line.
 
 ### Behavior details
 
@@ -114,7 +130,7 @@ Add an alias to your shell configuration file (`~/.bashrc`, `~/.zshrc`, etc.):
 alias cat='hl'
 ```
 
-To fix the theme, also set `HL_THEME`:
+To fix the theme, also set `HL_THEME` (or `theme` in the [configuration file](#configuration-file)):
 
 ```sh
 export HL_THEME='Monokai Extended'

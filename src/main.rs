@@ -1,5 +1,6 @@
 mod cli;
 mod color;
+mod config;
 mod encoding;
 mod highlight;
 mod lines;
@@ -13,7 +14,6 @@ use std::{
 };
 
 use anyhow::{Result, anyhow, bail};
-use clap::Parser;
 use cli::{Args, ColorWhen, PagingWhen};
 use encoding::{Bom, UTF8_BOM, Utf16Decoder, is_utf8_prefix, sniff_bom};
 use highlight::{DEFAULT_THEME, Highlighter, Limits, find_language, find_theme, write_plain};
@@ -28,7 +28,7 @@ use syntect::{
 const PEEK_LEN: usize = 8 * 1024;
 
 fn main() -> ExitCode {
-    let args = Args::parse();
+    let args = cli::parse();
     match run(&args) {
         Ok(code) => code,
         // A closed pipe (`hl ... | head`) is a normal way to stop reading.
@@ -321,7 +321,7 @@ fn describe(err: &io::Error) -> String {
 }
 
 /// An unknown theme is not fatal: it warns and falls back to the default,
-/// so a typo in `HL_THEME` never hides the file contents.
+/// so a typo in `HL_THEME` or the config file never hides the file contents.
 fn load_theme(name: &str) -> Theme {
     let themes = highlight::themes();
     find_theme(&themes, name)
