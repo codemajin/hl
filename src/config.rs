@@ -10,6 +10,8 @@ pub struct Config {
     pub path: PathBuf,
     /// `(key, value)` pairs, with integers turned into strings.
     pub values: Vec<(String, String)>,
+    /// `(key, values)` pairs for arrays of strings.
+    pub lists: Vec<(String, Vec<String>)>,
 }
 
 impl Config {
@@ -36,21 +38,34 @@ impl Config {
                 return None;
             }
         };
-        let values = table
-            .into_iter()
-            .filter_map(|(key, value)| match value {
-                Value::String(s) => Some((key, s)),
-                Value::Integer(n) => Some((key, n.to_string())),
-                _ => {
-                    warn(
-                        &path,
-                        &format!("'{key}' must be a string or an integer, ignoring it"),
-                    );
-                    None
+        let mut values = Vec::new();
+        let mut lists = Vec::new();
+        for (key, value) in table {
+            match value {
+                Value::String(s) => values.push((key, s)),
+                Value::Integer(n) => values.push((key, n.to_string())),
+                Value::Array(items) if items.iter().all(Value::is_str) => {
+                    let items = items
+                        .into_iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect();
+                    lists.push((key, items));
                 }
-            })
-            .collect();
-        Some(Self { path, values })
+                Value::Array(_) => warn(
+                    &path,
+                    &format!("'{key}' must be an array of strings, ignoring it"),
+                ),
+                _ => warn(
+                    &path,
+                    &format!("'{key}' must be a string or an integer, ignoring it"),
+                ),
+            }
+        }
+        Some(Self {
+            path,
+            values,
+            lists,
+        })
     }
 
     pub fn warn(&self, msg: &str) {
@@ -58,7 +73,7 @@ impl Config {
     }
 }
 
-fn warn(path: &Path, msg: &str) {
+pub fn warn(path: &Path, msg: &str) {
     eprintln!("hl: {}: {msg}", path.display());
 }
 

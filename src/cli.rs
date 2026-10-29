@@ -5,7 +5,7 @@ use clap::{CommandFactory, FromArgMatches, Parser, ValueEnum};
 use crate::{
     color::{self, Depth},
     config::Config,
-    highlight::{DEFAULT_THEME, Limits},
+    highlight::{DEFAULT_THEME, Limits, SyntaxMapping},
     lines::{LineRange, Numbering, Visibility},
 };
 
@@ -93,6 +93,16 @@ pub struct Args {
     #[arg(short = 'l', long, value_name = "LANG")]
     pub language: Option<String>,
 
+    /// Use LANG for files matching the glob PATTERN (e.g. '*.conf:INI'). A
+    /// pattern containing '/' matches the full path. Can be repeated; the
+    /// last matching mapping wins.
+    #[arg(long, value_name = "PATTERN:LANG", value_parser = SyntaxMapping::parse)]
+    pub map_syntax: Vec<SyntaxMapping>,
+
+    /// Mappings from the config file, checked before those of --map-syntax.
+    #[arg(skip)]
+    config_mappings: Vec<SyntaxMapping>,
+
     /// Color theme.
     #[arg(long, env = "HL_THEME", default_value = DEFAULT_THEME)]
     pub theme: String,
@@ -143,6 +153,10 @@ const CONFIG_KEYS: [&str; 6] = [
     "max-line-length",
 ];
 
+/// The config key listing `--map-syntax` mappings. Unlike the keys above, it
+/// adds to the command-line values instead of supplying a default.
+const MAP_SYNTAX_KEY: &str = "map-syntax";
+
 /// Parses the command line, with the config file supplying the defaults.
 ///
 /// Config values replace the built-in defaults of their options, so clap
@@ -150,11 +164,16 @@ const CONFIG_KEYS: [&str; 6] = [
 /// built-in default.
 pub fn parse() -> Args {
     let mut cmd = Args::command();
+    let mut config_mappings = Vec::new();
     if let Some(config) = Config::load() {
         // Checks each value on its own, without the environment, so that a
         // bad value is reported as coming from the config file.
         let probe = Args::command().mut_args(|arg| arg.env(None));
         for (key, value) in &config.values {
+            if key == MAP_SYNTAX_KEY {
+                config.warn(&format!("'{key}' must be an array of strings, ignoring it"));
+                continue;
+            }
             if !CONFIG_KEYS.contains(&key.as_str()) {
                 config.warn(&format!("unknown key '{key}', ignoring it"));
                 continue;
@@ -168,11 +187,42 @@ pub fn parse() -> Args {
                 arg.default_value(value.clone())
             });
         }
+        for (key, items) in &config.lists {
+            if key != MAP_SYNTAX_KEY {
+                if CONFIG_KEYS.contains(&key.as_str()) {
+                    config.warn(&format!(
+                        "'{key}' must be a string or an integer, ignoring it"
+                    ));
+                } else {
+                    config.warn(&format!("unknown key '{key}', ignoring it"));
+                }
+                continue;
+            }
+            for item in items {
+                match SyntaxMapping::parse(item) {
+                    Ok(mut mapping) => {
+                        mapping.origin = Some(config.path.clone());
+                        config_mappings.push(mapping);
+                    }
+                    Err(e) => config.warn(&format!(
+                        "invalid {MAP_SYNTAX_KEY} entry '{item}': {e}, ignoring it"
+                    )),
+                }
+            }
+        }
     }
-    Args::from_arg_matches_mut(&mut cmd.get_matches()).unwrap_or_else(|e| e.exit())
+    let mut args = Args::from_arg_matches_mut(&mut cmd.get_matches()).unwrap_or_else(|e| e.exit());
+    args.config_mappings = config_mappings;
+    args
 }
 
 impl Args {
+    /// The syntax mappings from the config file, then the command line, so
+    /// that the last matching one wins.
+    pub fn mappings(&self) -> impl Iterator<Item = &SyntaxMapping> {
+        self.config_mappings.iter().chain(&self.map_syntax)
+    }
+
     pub fn numbering(&self) -> Numbering {
         if self.number_nonblank {
             Numbering::NonBlank

@@ -1263,3 +1263,235 @@ fn reports_an_invalid_env_value_as_before_with_a_config() {
                 .and(predicate::str::contains("config.toml").not()),
         );
 }
+
+const INI_TEXT: &str = "[section]\nkey = value\n";
+
+/// Colored output of `hl` with `args`, which must succeed without warnings.
+fn colored_with(cmd: &mut Command, args: &[&str]) -> Vec<u8> {
+    cmd.args(["--color", "always"])
+        .args(args)
+        .assert()
+        .success()
+        .stderr("")
+        .get_output()
+        .stdout
+        .clone()
+}
+
+/// A file named `name` in `dir` holding `content`, returned as a string path.
+fn fixture(dir: &Path, name: &str, content: &str) -> String {
+    let path = dir.join(name);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, content).unwrap();
+    path.to_str().unwrap().to_string()
+}
+
+#[test]
+fn maps_a_glob_to_a_language() {
+    let dir = tempdir();
+    let file = fixture(dir.path(), "app.myconf", INI_TEXT);
+    let ini = colored_with(&mut hl(), &["-l", "ini", &file]);
+    assert_ne!(colored_with(&mut hl(), &[&file]), ini);
+    assert_eq!(
+        colored_with(&mut hl(), &["--map-syntax", "*.myconf:INI", &file]),
+        ini
+    );
+}
+
+#[test]
+fn maps_an_exact_file_name() {
+    let dir = tempdir();
+    let file = fixture(dir.path(), "Settings", INI_TEXT);
+    assert_eq!(
+        colored_with(&mut hl(), &["--map-syntax", "Settings:ini", &file]),
+        colored_with(&mut hl(), &["-l", "ini", &file])
+    );
+}
+
+#[test]
+fn mapping_beats_extension_detection() {
+    let dir = tempdir();
+    let file = fixture(dir.path(), "main.rs", "def f(): pass\n");
+    assert_eq!(
+        colored_with(&mut hl(), &["--map-syntax", "*.rs:Python", &file]),
+        colored_with(&mut hl(), &["-l", "python", &file])
+    );
+}
+
+#[test]
+fn language_option_beats_mapping() {
+    let dir = tempdir();
+    let file = fixture(dir.path(), "main.rs", "fn main() {}\n");
+    assert_eq!(
+        colored_with(
+            &mut hl(),
+            &["--map-syntax", "*.rs:Python", "-l", "rust", &file]
+        ),
+        colored_with(&mut hl(), &["-l", "rust", &file])
+    );
+}
+
+#[test]
+fn matches_a_pattern_with_a_slash_against_the_full_path() {
+    let dir = tempdir();
+    let inside = fixture(dir.path(), "sub/app.myconf", INI_TEXT);
+    let outside = fixture(dir.path(), "app.myconf", INI_TEXT);
+    let map = ["--map-syntax", "**/sub/*.myconf:INI"];
+    let ini = colored_with(&mut hl(), &["-l", "ini", &inside]);
+    assert_eq!(
+        colored_with(&mut hl(), &[&map[..], &[&inside]].concat()),
+        ini
+    );
+    assert_ne!(
+        colored_with(&mut hl(), &[&map[..], &[&outside]].concat()),
+        ini
+    );
+    // A relative path is made absolute before matching.
+    let relative = colored_with(
+        hl().current_dir(dir.path()),
+        &[&map[..], &["sub/app.myconf"]].concat(),
+    );
+    assert_eq!(relative, ini);
+}
+
+#[test]
+fn later_mapping_wins() {
+    let dir = tempdir();
+    let file = fixture(dir.path(), "app.myconf", INI_TEXT);
+    assert_eq!(
+        colored_with(
+            &mut hl(),
+            &[
+                "--map-syntax",
+                "*:Python",
+                "--map-syntax",
+                "*.myconf:INI",
+                &file
+            ]
+        ),
+        colored_with(&mut hl(), &["-l", "ini", &file])
+    );
+}
+
+#[test]
+fn reads_mappings_from_the_config() {
+    let dir = tempdir();
+    let file = fixture(dir.path(), "app.myconf", INI_TEXT);
+    let config = write_config(dir.path(), "map-syntax = [\"*.myconf:INI\"]\n");
+    assert_eq!(
+        colored_with(&mut hl_with_config(&config), &[&file]),
+        colored_with(&mut hl(), &["-l", "ini", &file])
+    );
+}
+
+#[test]
+fn command_line_mapping_beats_config_mapping() {
+    let dir = tempdir();
+    let file = fixture(dir.path(), "app.myconf", INI_TEXT);
+    let config = write_config(
+        dir.path(),
+        "map-syntax = [\"*.myconf:Python\", \"*.other:Python\"]\n",
+    );
+    assert_eq!(
+        colored_with(
+            &mut hl_with_config(&config),
+            &["--map-syntax", "*.myconf:INI", &file]
+        ),
+        colored_with(&mut hl(), &["-l", "ini", &file])
+    );
+    // The command line adds to the config mappings rather than replacing them.
+    let other = fixture(dir.path(), "x.other", INI_TEXT);
+    assert_eq!(
+        colored_with(
+            &mut hl_with_config(&config),
+            &["--map-syntax", "*.myconf:INI", &other]
+        ),
+        colored_with(&mut hl(), &["-l", "python", &other])
+    );
+}
+
+#[test]
+fn does_not_map_stdin() {
+    assert_eq!(
+        colored_with(hl().write_stdin(INI_TEXT), &["--map-syntax", "*:INI"]),
+        colored_with(hl().write_stdin(INI_TEXT), &[])
+    );
+}
+
+#[test]
+fn rejects_a_malformed_mapping() {
+    for spec in ["nocolon", ":INI", "*.conf:", "[:INI"] {
+        hl().args(["--map-syntax", spec, "Cargo.toml"])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("invalid value"))
+            .stdout("");
+    }
+}
+
+#[test]
+fn rejects_an_unknown_language_in_a_mapping() {
+    for color in ["always", "never"] {
+        hl().args(["--color", color, "--map-syntax", "*.conf:no-such-lang"])
+            .write_stdin("x\n")
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(
+                "unknown language 'no-such-lang' in map-syntax '*.conf:no-such-lang'",
+            ))
+            .stdout("");
+    }
+}
+
+#[test]
+fn warns_about_bad_config_mappings_and_keeps_the_rest() {
+    let dir = tempdir();
+    let file = fixture(dir.path(), "app.myconf", INI_TEXT);
+    let config = write_config(
+        dir.path(),
+        "map-syntax = [\"*.myconf:no-such-lang\", \"bad\", \"*.myconf:INI\"]\n",
+    );
+    let out = hl_with_config(&config)
+        .args(["--color", "always", &file])
+        .assert()
+        .success()
+        .stderr(
+            predicate::str::contains(
+                "unknown language 'no-such-lang' in map-syntax '*.myconf:no-such-lang', ignoring it",
+            )
+            .and(predicate::str::contains(
+                "invalid map-syntax entry 'bad'",
+            )),
+        )
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(out, colored_with(&mut hl(), &["-l", "ini", &file]));
+}
+
+#[test]
+fn warns_about_config_mappings_of_the_wrong_type() {
+    let dir = tempdir();
+    for (content, warning) in [
+        (
+            "map-syntax = \"*.conf:INI\"\n",
+            "'map-syntax' must be an array of strings",
+        ),
+        (
+            "map-syntax = [1]\n",
+            "'map-syntax' must be an array of strings",
+        ),
+        (
+            "theme = [\"Nord\"]\n",
+            "'theme' must be a string or an integer",
+        ),
+        ("number = [\"1\"]\n", "unknown key 'number'"),
+    ] {
+        let config = write_config(dir.path(), content);
+        hl_with_config(&config)
+            .arg("Cargo.toml")
+            .assert()
+            .success()
+            .stderr(predicate::str::contains(warning));
+    }
+}

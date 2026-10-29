@@ -46,6 +46,7 @@ hl -n file.py                    # number lines (continuous across files)
 hl --header src/*.rs             # print a header with the file name before each file
 hl -n -r 120:160 src/main.rs     # print only lines 120 to 160, with their line numbers
 cat script | hl -l bash          # read stdin with an explicit language
+hl --map-syntax '*.conf:INI' app.conf  # highlight *.conf files as INI
 hl --theme Nord file.rs          # choose a theme
 hl --paging=auto big.rs          # use a pager only if the output does not fit on one screen
 hl -p big.rs                     # always view through a pager
@@ -71,6 +72,7 @@ hl --list-languages              # list languages and their extensions
 | `-t` | Same as `-vT` |
 | `-u` | Accepted for `cat` compatibility and ignored |
 | `-l`, `--language <LANG>` | Use this language instead of auto-detection, given as a name or an extension (e.g. `rust`, `py`) |
+| `--map-syntax <PATTERN:LANG>` | Use language LANG for files matching the glob PATTERN (e.g. `'*.conf:INI'`). LANG is a name or an extension, as with `-l`. A pattern without `/` matches the file name; a pattern with `/` matches the absolute path (`*` stays within one directory, `**` spans any number). Can be given more than once; when several mappings match, the last one wins. Standard input is never mapped |
 | `--theme <THEME>` | Color theme (case-insensitive). Defaults to `base16-ocean.dark`, which is also used with a warning if the theme is not found |
 | `--max-size <SIZE>` | Print inputs larger than this without highlighting. Default `512K`. Accepts `K`, `M` and `G` (powers of 1024); `0` removes the limit |
 | `--max-line-length <LEN>` | Stop highlighting at the first line longer than this many bytes (excluding the newline). Default `16K`; `0` removes the limit |
@@ -105,13 +107,16 @@ color-depth = "truecolor" # auto, truecolor, 256
 paging = "auto"           # auto, always, never
 max-size = "1M"           # integers such as 0 work too
 max-line-length = "16K"
+map-syntax = ["*.conf:INI", "Jenkinsfile:Groovy"]
 ```
 
 Settings apply in this order, highest first: command-line options, environment variables, the configuration file, then the built-in defaults. `hl --help` shows the defaults with the configuration file applied. Without a configuration file, `hl` behaves as before. If the file can't be read or isn't valid TOML, `hl` prints a warning and ignores the whole file. Unknown keys and invalid values get a warning and are skipped one by one. Flags such as `-n` and `--header` can't be set here, because they could not be turned off from the command line.
 
+`map-syntax` takes a list of `--map-syntax` values. Unlike the other keys, it does not supply a default that the command line replaces: `--map-syntax` adds to these mappings, and takes precedence over them when both match. An entry that is malformed or names an unknown language gets a warning and is skipped.
+
 ### Behavior details
 
-- The language is determined in this order: `-l`, extension, file name, then the first line (shebang, etc.). If none match, the file is printed as plain text.
+- The language is determined in this order: `-l`, `--map-syntax` (and `map-syntax` in the configuration file), extension, file name, then the first line (shebang, etc.). If none match, the file is printed as plain text.
 - If the first 8 KB of a file contain a NUL byte, the file is treated as binary and printed as-is without highlighting.
 - Input that is not valid UTF-8, such as Shift_JIS or EUC-JP, is printed as-is without highlighting, from the first invalid line on (or entirely, if the first 8 KB are invalid), so no bytes are replaced. hl does not guess other encodings.
 - UTF-16 files with a BOM are converted to UTF-8 and highlighted when output is colored. Without color they are printed as-is. A UTF-8 BOM is kept in the output and ignored for language detection.

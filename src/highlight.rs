@@ -1,8 +1,9 @@
 use std::{
     io::{self, BufRead, Read, Write},
-    path::Path,
+    path::{self, Path, PathBuf},
 };
 
+use globset::{GlobBuilder, GlobMatcher};
 use syntect::{
     easy::HighlightLines,
     highlighting::Theme,
@@ -37,28 +38,85 @@ impl Limits {
     }
 }
 
+/// A `PATTERN:LANG` pair from `--map-syntax` or the config file.
+#[derive(Debug, Clone)]
+pub struct SyntaxMapping {
+    glob: GlobMatcher,
+    /// Whether the pattern contains `/` and so applies to the whole path
+    /// rather than the file name.
+    by_path: bool,
+    /// The mapping as written, for messages.
+    pub spec: String,
+    pub language: String,
+    /// The config file the mapping comes from, or `None` for the command line.
+    pub origin: Option<PathBuf>,
+}
+
+impl SyntaxMapping {
+    /// Parses `PATTERN:LANG`, splitting at the last colon. The language is
+    /// only checked once the syntaxes are loaded.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let (pattern, language) = s
+            .rsplit_once(':')
+            .filter(|(p, l)| !p.is_empty() && !l.is_empty())
+            .ok_or_else(|| format!("'{s}' is not PATTERN:LANG (e.g. '*.conf:INI')"))?;
+        let glob = GlobBuilder::new(pattern)
+            .literal_separator(true)
+            .build()
+            .map_err(|e| e.kind().to_string())?
+            .compile_matcher();
+        Ok(Self {
+            glob,
+            by_path: pattern.contains('/'),
+            spec: s.to_string(),
+            language: language.to_string(),
+            origin: None,
+        })
+    }
+
+    fn matches(&self, path: &Path) -> bool {
+        if self.by_path {
+            path::absolute(path).is_ok_and(|p| self.glob.is_match(p))
+        } else {
+            path.file_name().is_some_and(|n| self.glob.is_match(n))
+        }
+    }
+}
+
 pub struct Highlighter<'a> {
     syntaxes: &'a SyntaxSet,
     theme: Theme,
     depth: Depth,
+    /// User mappings with their languages resolved; the last match wins.
+    mappings: Vec<(SyntaxMapping, &'a SyntaxReference)>,
 }
 
 impl<'a> Highlighter<'a> {
-    pub fn new(syntaxes: &'a SyntaxSet, theme: Theme, depth: Depth) -> Self {
+    pub fn new(
+        syntaxes: &'a SyntaxSet,
+        theme: Theme,
+        depth: Depth,
+        mappings: Vec<(SyntaxMapping, &'a SyntaxReference)>,
+    ) -> Self {
         Self {
             syntaxes,
             theme,
             depth,
+            mappings,
         }
     }
 
-    /// Detects the syntax from the file name (extension, then full name) and
-    /// finally the first line (shebang, modelines). Falls back to plain text.
+    /// Detects the syntax from the user mappings, then the file name
+    /// (extension, then full name) and finally the first line (shebang,
+    /// modelines). Falls back to plain text.
     pub fn detect(&self, path: Option<&Path>, first_line: &str) -> &'a SyntaxReference {
         let by_path = path.and_then(|p| {
+            let mapped = self.mappings.iter().rev().find(|(m, _)| m.matches(p));
             let ext = p.extension().and_then(|e| e.to_str());
             let name = p.file_name().and_then(|n| n.to_str());
-            ext.and_then(|e| self.syntaxes.find_syntax_by_extension(e))
+            mapped
+                .map(|&(_, syntax)| syntax)
+                .or_else(|| ext.and_then(|e| self.syntaxes.find_syntax_by_extension(e)))
                 .or_else(|| name.and_then(|n| self.syntaxes.find_syntax_by_extension(n)))
         });
         by_path

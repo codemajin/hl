@@ -16,7 +16,9 @@ use std::{
 use anyhow::{Result, anyhow, bail};
 use cli::{Args, ColorWhen, PagingWhen};
 use encoding::{Bom, UTF8_BOM, Utf16Decoder, is_utf8_prefix, sniff_bom};
-use highlight::{DEFAULT_THEME, Highlighter, Limits, find_language, find_theme, write_plain};
+use highlight::{
+    DEFAULT_THEME, Highlighter, Limits, SyntaxMapping, find_language, find_theme, write_plain,
+};
 use lines::{LineState, Visibility};
 use pager::Pager;
 use syntect::{
@@ -60,7 +62,10 @@ fn run(args: &Args) -> Result<ExitCode> {
             ColorWhen::Never => false,
             ColorWhen::Auto => tty,
         };
-    let syntaxes = (color || args.language.is_some()).then(two_face::syntax::extra_newlines);
+    // Syntaxes are also loaded to report unknown languages given on the
+    // command line, even when nothing gets highlighted.
+    let syntaxes = (color || args.language.is_some() || !args.map_syntax.is_empty())
+        .then(two_face::syntax::extra_newlines);
     let forced_syntax = match (&syntaxes, &args.language) {
         (Some(syntaxes), Some(lang)) => Some(
             find_language(syntaxes, lang)
@@ -68,10 +73,13 @@ fn run(args: &Args) -> Result<ExitCode> {
         ),
         _ => None,
     };
-    let highlighter = syntaxes
-        .as_ref()
-        .filter(|_| color)
-        .map(|syntaxes| Highlighter::new(syntaxes, load_theme(&args.theme), args.depth()));
+    let mappings = match &syntaxes {
+        Some(syntaxes) => resolve_mappings(syntaxes, args)?,
+        None => Vec::new(),
+    };
+    let highlighter = syntaxes.as_ref().filter(|_| color).map(|syntaxes| {
+        Highlighter::new(syntaxes, load_theme(&args.theme), args.depth(), mappings)
+    });
 
     // Without a terminal there is nobody to page for, as with `--color=auto`.
     let mut pager = match args.paging() {
@@ -318,6 +326,31 @@ fn describe(err: &io::Error) -> String {
         Some(i) => msg[..i].to_string(),
         None => msg,
     }
+}
+
+/// Looks up the language of each syntax mapping. An unknown language is an
+/// error on the command line, but only a warning in the config file, which
+/// never stops `hl` from printing.
+fn resolve_mappings<'a>(
+    syntaxes: &'a SyntaxSet,
+    args: &Args,
+) -> Result<Vec<(SyntaxMapping, &'a SyntaxReference)>> {
+    let mut resolved = Vec::new();
+    for mapping in args.mappings() {
+        let Some(syntax) = find_language(syntaxes, &mapping.language) else {
+            let msg = format!(
+                "unknown language '{}' in map-syntax '{}'",
+                mapping.language, mapping.spec
+            );
+            match &mapping.origin {
+                Some(path) => config::warn(path, &format!("{msg}, ignoring it")),
+                None => bail!("{msg} (see --list-languages)"),
+            }
+            continue;
+        };
+        resolved.push((mapping.clone(), syntax));
+    }
+    Ok(resolved)
 }
 
 /// An unknown theme is not fatal: it warns and falls back to the default,
