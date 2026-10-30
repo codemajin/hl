@@ -1,5 +1,7 @@
 # hl
 
+[![CI](https://github.com/codemajin/hl/actions/workflows/ci.yml/badge.svg)](https://github.com/codemajin/hl/actions/workflows/ci.yml)
+
 English | [日本語](README_ja.md)
 
 `hl` is a `cat` replacement that detects the file type and prints the file with syntax highlighting. It is written in Rust.
@@ -10,7 +12,7 @@ English | [日本語](README_ja.md)
 
 ## Requirements
 
-- A Rust toolchain (Rust 1.85 or later, for edition 2024)
+- A Rust toolchain (Rust 1.88 or later, for edition 2024)
 - `less` for the pager options (`--paging`, `-p`). If `$PAGER` is set, that pager is used instead.
 - A terminal with 24-bit color (Windows Terminal, iTerm2, GNOME Terminal, WezTerm, etc.) or 256 color support
 
@@ -178,6 +180,8 @@ cargo test          # unit tests in src/ and integration tests in tests/cli.rs
 cargo clippy
 cargo fmt --check   # formatting (rustfmt.toml)
 ```
+
+GitHub Actions runs `cargo fmt --check`, `cargo clippy` (warnings are errors) and `cargo test` on every push and pull request, on Linux and macOS with stable Rust and the minimum supported version (1.88). Formatting is checked with nightly rustfmt, because some options in `rustfmt.toml` are nightly-only; run `cargo +nightly fmt` to match it.
 
 | File | Role |
 | --- | --- |

@@ -1,5 +1,7 @@
 # hl
 
+[![CI](https://github.com/codemajin/hl/actions/workflows/ci.yml/badge.svg)](https://github.com/codemajin/hl/actions/workflows/ci.yml)
+
 [English](README.md) | 日本語
 
 `hl` は、ファイルの種類を自動で判定してシンタックスハイライトを付ける `cat` 代替コマンドです。Rust で書かれています。
@@ -10,7 +12,7 @@
 
 ## 必要なもの
 
-- Rust ツールチェーン（edition 2024 に対応した Rust 1.85 以降）
+- Rust ツールチェーン（edition 2024 に対応した Rust 1.88 以降）
 - ページャ機能（`--paging`、`-p`）を使う場合は `less`。環境変数 `$PAGER` を設定していればそちらを使います。
 - 24bit カラー（Windows Terminal、iTerm2、GNOME Terminal、WezTerm など）か 256 色に対応した端末
 
@@ -178,6 +180,8 @@ cargo test          # src/ のユニットテストと tests/cli.rs の結合テ
 cargo clippy
 cargo fmt --check   # フォーマットの確認（rustfmt.toml）
 ```
+
+push と pull request のたびに、GitHub Actions が `cargo fmt --check`、`cargo clippy`（警告はエラー扱い）、`cargo test` を実行します。Linux と macOS の両方で、stable と最小対応バージョン（1.88）の Rust を使います。`rustfmt.toml` には nightly でしか効かないオプションがあるため、フォーマットの確認には nightly の rustfmt を使います。手元で揃えるときは `cargo +nightly fmt` を実行してください。
 
 | ファイル | 役割 |
 | --- | --- |
