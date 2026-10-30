@@ -42,11 +42,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # The tests compare `hl` with GNU coreutils `cat`. ubuntu-24.04 still
+        # ships it as `cat` (later releases use uutils), and on macOS it is
+        # installed from Homebrew as `gcat`.
+        os: [ubuntu-24.04, macos-latest]
         # "1.88" is the MSRV; keep it in sync with `rust-version` in Cargo.toml.
         rust: [stable, "1.88"]
     steps:
       - uses: actions/checkout@v5
+      - if: runner.os == 'macOS'
+        run: brew install coreutils
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.rust }}

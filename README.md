@@ -181,7 +181,7 @@ cargo clippy
 cargo fmt --check   # formatting (rustfmt.toml)
 ```
 
-GitHub Actions runs `cargo fmt --check`, `cargo clippy` (warnings are errors) and `cargo test` on every push and pull request, on Linux and macOS with stable Rust and the minimum supported version (1.88). Formatting is checked with nightly rustfmt, because some options in `rustfmt.toml` are nightly-only; run `cargo +nightly fmt` to match it.
+GitHub Actions runs `cargo fmt --check`, `cargo clippy` (warnings are errors) and `cargo test` on every push and pull request, on Linux and macOS with stable Rust and the minimum supported version (1.88). The tests compare `hl` with GNU coreutils `cat`, so on macOS install it first (`brew install coreutils`, which provides `gcat`). Formatting is checked with nightly rustfmt, because some options in `rustfmt.toml` are nightly-only; run `cargo +nightly fmt` to match it.
 
 | File | Role |
 | --- | --- |

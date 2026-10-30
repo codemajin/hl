@@ -1,4 +1,4 @@
-use std::{fs, path::Path};
+use std::{fs, path::Path, sync::OnceLock};
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -164,8 +164,27 @@ fn cat_fixtures(dir: &Path, prefix: &str, binary: bool) -> Vec<std::path::PathBu
     vec![first, second]
 }
 
+/// The GNU coreutils `cat` that `hl` is compared with. Other implementations
+/// differ: BSD `cat` (macOS) has no `-A`, and uutils `cat` (Ubuntu 25.10 and
+/// later) squeezes blank lines across files differently. `gcat` is the name
+/// Homebrew's coreutils uses.
+fn gnu_cat() -> &'static str {
+    static CAT: OnceLock<&str> = OnceLock::new();
+    CAT.get_or_init(|| {
+        ["gcat", "cat"]
+            .into_iter()
+            .find(|cat| {
+                std::process::Command::new(cat)
+                    .arg("--version")
+                    .output()
+                    .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains("GNU coreutils"))
+            })
+            .expect("GNU coreutils cat is required (as `gcat` or `cat`)")
+    })
+}
+
 fn cat_output(opts: &[&str], files: &[std::path::PathBuf]) -> Vec<u8> {
-    let out = std::process::Command::new("cat")
+    let out = std::process::Command::new(gnu_cat())
         .args(opts)
         .args(files)
         .output()
