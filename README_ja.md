@@ -12,11 +12,48 @@
 
 ## 必要なもの
 
-- Rust ツールチェーン（edition 2024 に対応した Rust 1.88 以降）
+- ソースからビルドする場合は Rust ツールチェーン（edition 2024 に対応した Rust 1.88 以降）
 - ページャ機能（`--paging`、`-p`）を使う場合は `less`。環境変数 `$PAGER` を設定していればそちらを使います。
 - 24bit カラー（Windows Terminal、iTerm2、GNOME Terminal、WezTerm など）か 256 色に対応した端末
 
 ## インストール
+
+### ビルド済みバイナリ
+
+各[リリース](https://github.com/codemajin/hl/releases)に、次のプラットフォーム向けのバイナリがあります。
+
+| プラットフォーム | ターゲット |
+| --- | --- |
+| Linux x86_64 | `x86_64-unknown-linux-musl` |
+| Linux aarch64 | `aarch64-unknown-linux-musl` |
+| macOS Intel | `x86_64-apple-darwin` |
+| macOS Apple シリコン | `aarch64-apple-darwin` |
+
+Linux 版は静的リンクなので、ディストリビューションを問わず動きます。ダウンロードして検証し、`~/.local/bin` にインストールする例です。
+
+```sh
+VERSION=v0.1.0                      # インストールするリリース
+TARGET=x86_64-unknown-linux-musl    # 上の表から自分のプラットフォームを選ぶ
+NAME=hl-$VERSION-$TARGET
+curl -fLO "https://github.com/codemajin/hl/releases/download/$VERSION/$NAME.tar.gz"
+curl -fLO "https://github.com/codemajin/hl/releases/download/$VERSION/$NAME.tar.gz.sha256"
+shasum -a 256 -c "$NAME.tar.gz.sha256"
+tar xzf "$NAME.tar.gz"
+install -d ~/.local/bin
+install "$NAME/hl" ~/.local/bin/hl
+```
+
+`~/.local/bin` に PATH が通っていることを確認してください。更新するときは、新しいバージョンで同じコマンドを実行します。
+
+macOS では、Web ブラウザでダウンロードしたファイルに隔離属性が付き、Gatekeeper に実行を止められます。そのときは `xattr -d com.apple.quarantine ~/.local/bin/hl` で属性を外してください。`curl` でダウンロードした場合は付きません。
+
+アンインストールするときは、ファイルを削除します。
+
+```sh
+rm ~/.local/bin/hl
+```
+
+### ソースから
 
 ```sh
 git clone https://github.com/codemajin/hl.git
@@ -34,7 +71,7 @@ cargo install --path . --root ~/.local      # → ~/.local/bin/hl
 
 更新するときは、リポジトリを最新にしてから同じコマンドを実行してください。既存のファイルは上書きされます。
 
-### アンインストール
+アンインストールするには次のようにします。
 
 ```sh
 cargo uninstall hl                  # --root を指定した場合は同じ --root を付ける
@@ -196,6 +233,21 @@ push と pull request のたびに、GitHub Actions が `cargo fmt --check`、`c
 | `src/lines.rs` | 行番号、空行の圧縮、`cat -v`/`-E`/`-T` の表記 |
 | `src/pager.rs` | ページャの起動と終了待ち |
 | `src/print.rs` | 各入力の順次出力（ハイライトありかなしか）、ヘッダ、文字コードの扱い |
+
+### リリース
+
+バージョン番号は[セマンティック バージョニング](https://semver.org/lang/ja/)に従い、リリースには `Cargo.toml` のバージョンに合わせて `vX.Y.Z` のタグを付けます。変更内容は [CHANGELOG.md](CHANGELOG.md) に記録します。
+
+1. `Cargo.toml` の `version` を変更し、`cargo build` を実行して `Cargo.lock` を更新する
+2. `CHANGELOG.md` の `Unreleased` の項目を新しい `## [X.Y.Z] - YYYY-MM-DD` の節に移し、末尾のリンクを更新する
+3. コミットしてから、タグを push する
+
+   ```sh
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
+   ```
+
+すると `.github/workflows/release.yml` が 4 つのプラットフォーム向けにバイナリをビルドし、SHA-256 のチェックサムと一緒に GitHub のリリースとして公開します。リリースノートは CHANGELOG の該当の節です。タグが `Cargo.toml` のバージョンと一致しない場合や、CHANGELOG にそのバージョンの節がない場合は、何も公開せずに失敗します。
 
 ### テストカバレッジ
 

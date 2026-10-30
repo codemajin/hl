@@ -12,11 +12,48 @@ English | [日本語](README_ja.md)
 
 ## Requirements
 
-- A Rust toolchain (Rust 1.88 or later, for edition 2024)
+- To build from source: a Rust toolchain (Rust 1.88 or later, for edition 2024)
 - `less` for the pager options (`--paging`, `-p`). If `$PAGER` is set, that pager is used instead.
 - A terminal with 24-bit color (Windows Terminal, iTerm2, GNOME Terminal, WezTerm, etc.) or 256 color support
 
 ## Installation
+
+### Prebuilt binaries
+
+Each [release](https://github.com/codemajin/hl/releases) has binaries for these platforms:
+
+| Platform | Target |
+| --- | --- |
+| Linux x86_64 | `x86_64-unknown-linux-musl` |
+| Linux aarch64 | `aarch64-unknown-linux-musl` |
+| macOS Intel | `x86_64-apple-darwin` |
+| macOS Apple silicon | `aarch64-apple-darwin` |
+
+The Linux binaries are statically linked, so they run on any distribution. To download, verify and install one to `~/.local/bin`:
+
+```sh
+VERSION=v0.1.0                      # the release to install
+TARGET=x86_64-unknown-linux-musl    # your platform, from the table above
+NAME=hl-$VERSION-$TARGET
+curl -fLO "https://github.com/codemajin/hl/releases/download/$VERSION/$NAME.tar.gz"
+curl -fLO "https://github.com/codemajin/hl/releases/download/$VERSION/$NAME.tar.gz.sha256"
+shasum -a 256 -c "$NAME.tar.gz.sha256"
+tar xzf "$NAME.tar.gz"
+install -d ~/.local/bin
+install "$NAME/hl" ~/.local/bin/hl
+```
+
+Make sure `~/.local/bin` is on your `PATH`. To update, run the same commands with the new version.
+
+On macOS, a file downloaded with a web browser is quarantined and blocked by Gatekeeper. If that happens, remove the attribute with `xattr -d com.apple.quarantine ~/.local/bin/hl`. Files downloaded with `curl` are not affected.
+
+To uninstall, remove the binary:
+
+```sh
+rm ~/.local/bin/hl
+```
+
+### From source
 
 ```sh
 git clone https://github.com/codemajin/hl.git
@@ -34,7 +71,7 @@ cargo install --path . --root ~/.local      # → ~/.local/bin/hl
 
 To update, pull the latest changes and run the same command again. It overwrites the existing binary.
 
-### Uninstallation
+To uninstall:
 
 ```sh
 cargo uninstall hl                  # add the same --root if you used one
@@ -196,6 +233,21 @@ GitHub Actions runs `cargo fmt --check`, `cargo clippy` (warnings are errors) an
 | `src/lines.rs` | Line numbering, blank-line squeezing, and `cat -v`/`-E`/`-T` notation |
 | `src/pager.rs` | Starting the pager and waiting for it to exit |
 | `src/print.rs` | Printing each input in turn, highlighted or plain, with headers and encoding handling |
+
+### Releasing
+
+Versions follow [Semantic Versioning](https://semver.org/), and a release is tagged `vX.Y.Z` with the version in `Cargo.toml`. Changes are recorded in [CHANGELOG.md](CHANGELOG.md).
+
+1. Set `version` in `Cargo.toml` and run `cargo build` to update `Cargo.lock`.
+2. In `CHANGELOG.md`, move the entries under `Unreleased` to a new `## [X.Y.Z] - YYYY-MM-DD` section, and update the links at the end.
+3. Commit, then push the tag:
+
+   ```sh
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
+   ```
+
+`.github/workflows/release.yml` then builds the binaries for the four platforms and publishes them, with SHA-256 checksums, as a GitHub release whose notes are the changelog section. It fails without publishing anything if the tag doesn't match the version in `Cargo.toml` or the changelog has no section for it.
 
 ### Test coverage
 
