@@ -242,3 +242,106 @@ fn write_nonprinting(b: u8, out: &mut impl Write) -> io::Result<()> {
         _ => out.write_all(&[c]),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use super::*;
+
+    fn plain(input: &[u8], lines: &mut LineState, vis: Visibility) -> Vec<u8> {
+        let mut out = Vec::new();
+        write_plain(&mut Cursor::new(input), &mut out, lines, vis).unwrap();
+        out
+    }
+
+    fn numbered(numbering: Numbering, range: Option<LineRange>) -> LineState {
+        LineState::new(numbering, false, range)
+    }
+
+    #[test]
+    fn passes_bytes_through_unchanged() {
+        let input = b"a\n\xffb";
+        let mut lines = numbered(Numbering::None, None);
+        assert_eq!(plain(input, &mut lines, Visibility::default()), input);
+    }
+
+    #[test]
+    fn writes_nothing_for_empty_input() {
+        let mut lines = numbered(Numbering::All, None);
+        assert_eq!(plain(b"", &mut lines, Visibility::default()), b"");
+    }
+
+    #[test]
+    fn numbers_every_line_and_keeps_a_missing_newline() {
+        let mut lines = numbered(Numbering::All, None);
+        assert_eq!(
+            plain(b"a\n\nb", &mut lines, Visibility::default()),
+            b"     1\ta\n     2\t\n     3\tb"
+        );
+    }
+
+    #[test]
+    fn numbers_only_non_blank_lines() {
+        let mut lines = numbered(Numbering::NonBlank, None);
+        assert_eq!(
+            plain(b"a\n\nb\n", &mut lines, Visibility::default()),
+            b"     1\ta\n\n     2\tb\n"
+        );
+    }
+
+    #[test]
+    fn squeezes_blank_lines() {
+        let mut lines = LineState::new(Numbering::None, true, None);
+        assert_eq!(
+            plain(b"a\n\n\n\nb\n", &mut lines, Visibility::default()),
+            b"a\n\nb\n"
+        );
+    }
+
+    #[test]
+    fn stops_reading_after_the_line_range() {
+        let range = LineRange {
+            start: 2,
+            end: Some(3),
+        };
+        let mut lines = numbered(Numbering::All, Some(range));
+        let mut reader = Cursor::new(&b"a\nb\nc\nd\n"[..]);
+        let mut out = Vec::new();
+        write_plain(&mut reader, &mut out, &mut lines, Visibility::default()).unwrap();
+        assert_eq!(out, b"     2\tb\n     3\tc\n");
+        assert_eq!(reader.position(), 6, "read past the range");
+    }
+
+    #[test]
+    fn prints_an_open_line_range_to_the_end() {
+        let range = LineRange {
+            start: 3,
+            end: None,
+        };
+        let mut lines = numbered(Numbering::All, Some(range));
+        assert_eq!(
+            plain(b"a\nb\nc\nd\n", &mut lines, Visibility::default()),
+            b"     3\tc\n     4\td\n"
+        );
+    }
+
+    #[test]
+    fn continues_an_unfinished_line_into_the_next_input() {
+        let mut lines = numbered(Numbering::All, None);
+        let mut out = plain(b"a", &mut lines, Visibility::default());
+        lines.start_input(&mut out).unwrap();
+        out.extend(plain(b"b\n", &mut lines, Visibility::default()));
+        assert_eq!(out, b"     1\tab\n");
+    }
+
+    #[test]
+    fn shows_line_ends_without_adding_a_newline() {
+        let vis = Visibility {
+            ends: true,
+            ..Visibility::default()
+        };
+        let mut lines = numbered(Numbering::None, None);
+        assert_eq!(plain(b"a\r\nb", &mut lines, vis), b"a^M$\nb");
+    }
+}

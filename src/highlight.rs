@@ -245,3 +245,301 @@ pub fn languages(syntaxes: &SyntaxSet) -> Vec<(&str, &[String])> {
     languages.sort_unstable_by_key(|(name, _)| name.to_lowercase());
     languages
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use super::*;
+    use crate::lines::{LineRange, Numbering};
+
+    /// The bundled syntaxes only, so the user's custom ones stay out.
+    fn syntaxes() -> SyntaxSet {
+        two_face::syntax::extra_newlines()
+    }
+
+    fn highlighter<'a>(syntaxes: &'a SyntaxSet, mappings: &[&str]) -> Highlighter<'a> {
+        let mappings: Vec<_> = mappings
+            .iter()
+            .map(|m| SyntaxMapping::parse(m).unwrap())
+            .collect();
+        let mappings = resolve_mappings(syntaxes, &mappings).unwrap();
+        Highlighter::new(syntaxes, Theme::default(), Depth::TrueColor, mappings)
+    }
+
+    /// The name of the syntax detected for `path` and `first_line`.
+    fn detect(mappings: &[&str], path: Option<&str>, first_line: &str) -> String {
+        let syntaxes = syntaxes();
+        let hl = highlighter(&syntaxes, mappings);
+        hl.detect(path.map(Path::new), first_line).name.clone()
+    }
+
+    #[test]
+    fn detects_by_extension() {
+        assert_eq!(detect(&[], Some("src/main.rs"), ""), "Rust");
+        assert_eq!(detect(&[], Some("MAIN.RS"), ""), "Rust");
+    }
+
+    #[test]
+    fn detects_by_file_name() {
+        assert_eq!(detect(&[], Some("Makefile"), ""), "Makefile");
+        assert_eq!(
+            detect(&[], Some(".bashrc"), ""),
+            "Bourne Again Shell (bash)"
+        );
+    }
+
+    #[test]
+    fn detects_by_shebang() {
+        let python = "#!/usr/bin/env python3";
+        assert_eq!(detect(&[], Some("script"), python), "Python");
+        assert_eq!(detect(&[], None, "#!/bin/sh"), "Bourne Again Shell (bash)");
+    }
+
+    #[test]
+    fn extension_beats_shebang() {
+        let python = "#!/usr/bin/env python3";
+        assert_eq!(detect(&[], Some("main.rs"), python), "Rust");
+    }
+
+    #[test]
+    fn falls_back_to_plain_text() {
+        assert_eq!(detect(&[], Some("notes.unknownext"), "hello"), "Plain Text");
+        assert_eq!(detect(&[], None, ""), "Plain Text");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detects_by_shebang_when_the_name_is_not_utf8() {
+        use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+
+        let syntaxes = syntaxes();
+        let hl = highlighter(&syntaxes, &[]);
+        let path = Path::new(OsStr::from_bytes(b"a.\xff"));
+        let syntax = hl.detect(Some(path), "#!/bin/sh");
+        assert_eq!(syntax.name, "Bourne Again Shell (bash)");
+    }
+
+    #[test]
+    fn mapping_beats_extension() {
+        assert_eq!(detect(&["*.rs:Python"], Some("main.rs"), ""), "Python");
+    }
+
+    #[test]
+    fn later_mapping_wins() {
+        let mappings = ["*.rs:Python", "main.*:Ruby"];
+        assert_eq!(detect(&mappings, Some("main.rs"), ""), "Ruby");
+    }
+
+    #[test]
+    fn unmatched_mapping_falls_through() {
+        assert_eq!(detect(&["*.py:Ruby"], Some("main.rs"), ""), "Rust");
+    }
+
+    #[test]
+    fn mappings_do_not_apply_to_stdin() {
+        assert_eq!(
+            detect(&["*:Ruby"], None, "#!/usr/bin/env python3"),
+            "Python"
+        );
+    }
+
+    #[test]
+    fn pattern_with_a_slash_matches_the_absolute_path() {
+        let path = Some("conf/app.cfg");
+        assert_eq!(detect(&["**/conf/*.cfg:Ruby"], path, ""), "Ruby");
+        assert_ne!(detect(&["conf/*.cfg:Ruby"], path, ""), "Ruby");
+    }
+
+    #[test]
+    fn finds_a_language_by_name_or_extension() {
+        let syntaxes = syntaxes();
+        let name = |lang| find_language(&syntaxes, lang).map(|s| s.name.as_str());
+        assert_eq!(name("Rust"), Some("Rust"));
+        assert_eq!(name("rust"), Some("Rust"));
+        assert_eq!(name("py"), Some("Python"));
+        assert_eq!(name("no-such-language"), None);
+        assert_eq!(name(""), None);
+    }
+
+    #[test]
+    fn parses_a_mapping_at_the_last_colon() {
+        let mapping = SyntaxMapping::parse("*.conf:INI").unwrap();
+        assert_eq!(mapping.spec, "*.conf:INI");
+        assert_eq!(mapping.language, "INI");
+        assert!(mapping.origin.is_none());
+        assert_eq!(SyntaxMapping::parse("a:b:INI").unwrap().language, "INI");
+    }
+
+    #[test]
+    fn rejects_malformed_mappings() {
+        for spec in ["*.conf", ":INI", "*.conf:"] {
+            let err = SyntaxMapping::parse(spec).unwrap_err();
+            assert!(err.contains("is not PATTERN:LANG"), "{spec}: {err}");
+        }
+        assert!(SyntaxMapping::parse("[:INI").is_err());
+    }
+
+    #[test]
+    fn unknown_language_is_an_error_on_the_command_line() {
+        let syntaxes = syntaxes();
+        let mapping = SyntaxMapping::parse("*.x:no-such-language").unwrap();
+        let err = resolve_mappings(&syntaxes, [&mapping]).unwrap_err();
+        assert!(err.contains("see --list-languages"), "{err}");
+    }
+
+    #[test]
+    fn unknown_language_in_the_config_is_skipped() {
+        let syntaxes = syntaxes();
+        let mut unknown = SyntaxMapping::parse("*.x:no-such-language").unwrap();
+        unknown.origin = Some(PathBuf::from("config.toml"));
+        let known = SyntaxMapping::parse("*.y:Rust").unwrap();
+        let resolved = resolve_mappings(&syntaxes, [&unknown, &known]).unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].0.spec, "*.y:Rust");
+    }
+
+    #[test]
+    fn size_limit_is_exclusive() {
+        let limits = |max_size| Limits {
+            max_size,
+            max_line: None,
+        };
+        assert!(!limits(None).exceeds_size(u64::MAX));
+        assert!(!limits(Some(10)).exceeds_size(10));
+        assert!(limits(Some(10)).exceeds_size(11));
+    }
+
+    const NO_LIMITS: Limits = Limits {
+        max_size: None,
+        max_line: None,
+    };
+
+    /// Highlights `input` as plain text.
+    fn write(input: &[u8], lines: &mut LineState, limits: Limits, depth: Depth) -> Vec<u8> {
+        let syntaxes = syntaxes();
+        let mut hl = highlighter(&syntaxes, &[]);
+        hl.depth = depth;
+        let mut out = Vec::new();
+        let syntax = syntaxes.find_syntax_plain_text();
+        hl.write(&mut Cursor::new(input), &mut out, syntax, lines, limits)
+            .unwrap();
+        out
+    }
+
+    fn write_simple(input: &[u8], numbering: Numbering, limits: Limits) -> Vec<u8> {
+        let mut lines = LineState::new(numbering, false, None);
+        write(input, &mut lines, limits, Depth::TrueColor)
+    }
+
+    fn strip_ansi(bytes: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut rest = bytes;
+        while let Some((&b, tail)) = rest.split_first() {
+            if b == 0x1b {
+                let end = tail.iter().position(|&c| c == b'm').unwrap();
+                rest = &tail[end + 1..];
+            } else {
+                out.push(b);
+                rest = tail;
+            }
+        }
+        out
+    }
+
+    fn has_escape(bytes: &[u8]) -> bool {
+        bytes.contains(&0x1b)
+    }
+
+    #[test]
+    fn resets_colors_before_each_newline() {
+        let out = write_simple(b"a\nb\n", Numbering::All, NO_LIMITS);
+        assert_eq!(strip_ansi(&out), b"     1\ta\n     2\tb\n");
+        let out = String::from_utf8(out).unwrap();
+        assert_eq!(out.matches("\x1b[0m\n").count(), 2, "{out:?}");
+    }
+
+    #[test]
+    fn keeps_a_missing_trailing_newline() {
+        let out = write_simple(b"a\nb", Numbering::None, NO_LIMITS);
+        assert!(out.ends_with(b"b\x1b[0m"), "{out:?}");
+    }
+
+    #[test]
+    fn writes_nothing_for_empty_input() {
+        assert_eq!(write_simple(b"", Numbering::All, NO_LIMITS), b"");
+    }
+
+    #[test]
+    fn keeps_the_bom_in_front_of_the_colors() {
+        let out = write_simple("\u{FEFF}a\n".as_bytes(), Numbering::None, NO_LIMITS);
+        assert!(out.starts_with(UTF8_BOM), "{out:?}");
+        assert_eq!(strip_ansi(&out), "\u{FEFF}a\n".as_bytes());
+    }
+
+    #[test]
+    fn prints_only_the_line_range() {
+        let range = LineRange {
+            start: 2,
+            end: Some(2),
+        };
+        let mut lines = LineState::new(Numbering::All, false, Some(range));
+        let out = write(b"a\nb\nc\n", &mut lines, NO_LIMITS, Depth::TrueColor);
+        assert_eq!(strip_ansi(&out), b"     2\tb\n");
+    }
+
+    fn max_line(max: u64) -> Limits {
+        Limits {
+            max_size: None,
+            max_line: Some(max),
+        }
+    }
+
+    #[test]
+    fn highlights_a_line_at_the_length_limit() {
+        let out = write_simple(b"abcd\nxy\n", Numbering::None, max_line(4));
+        assert!(out.starts_with(b"\x1b["), "{out:?}");
+        assert!(out.ends_with(b"xy\x1b[0m\n"), "{out:?}");
+    }
+
+    #[test]
+    fn copies_the_rest_from_a_line_over_the_limit() {
+        let out = write_simple(b"abcde\nxy\n", Numbering::None, max_line(4));
+        assert_eq!(out, b"abcde\nxy\n");
+    }
+
+    #[test]
+    fn keeps_numbering_after_switching_to_plain() {
+        let out = write_simple(b"abcde\nxy\n", Numbering::All, max_line(4));
+        assert_eq!(out, b"     1\tabcde\n     2\txy\n");
+    }
+
+    #[test]
+    fn copies_the_rest_once_the_size_limit_is_exceeded() {
+        let limits = Limits {
+            max_size: Some(2),
+            max_line: None,
+        };
+        let out = write_simple(b"a\nb\n", Numbering::None, limits);
+        let (first, rest) = out.split_at(out.len() - 2);
+        assert!(has_escape(first), "{out:?}");
+        assert_eq!(rest, b"b\n");
+    }
+
+    #[test]
+    fn copies_the_rest_from_a_line_that_is_not_utf8() {
+        let out = write_simple(b"a\n\xff\nc\n", Numbering::None, NO_LIMITS);
+        let (first, rest) = out.split_at(out.len() - 4);
+        assert!(has_escape(first), "{out:?}");
+        assert_eq!(rest, b"\xff\nc\n");
+    }
+
+    #[test]
+    fn uses_256_colors_when_asked() {
+        let mut lines = LineState::new(Numbering::None, false, None);
+        let out = write(b"a\n", &mut lines, NO_LIMITS, Depth::Ansi256);
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.contains("\x1b[38;5;"), "{out:?}");
+        assert!(!out.contains("38;2;"), "{out:?}");
+    }
+}

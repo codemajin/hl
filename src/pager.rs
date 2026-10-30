@@ -19,6 +19,11 @@ impl Pager {
     /// on one screen; `$PAGER` is run as given either way.
     pub fn spawn(quit_if_one_screen: bool) -> io::Result<Self> {
         let (program, args) = command(env::var("PAGER").ok().as_deref(), quit_if_one_screen);
+        Self::start(&program, &args)
+    }
+
+    /// Starts `program` with `args`, piping our output to its stdin.
+    fn start(program: &str, args: &[String]) -> io::Result<Self> {
         let mut child = Command::new(program)
             .args(args)
             .stdin(Stdio::piped())
@@ -92,5 +97,51 @@ mod tests {
             command(Some("  less  -R   -S "), true),
             ("less".into(), vec!["-R".into(), "-S".into()])
         );
+    }
+
+    /// A pager that copies its input to `path` instead of the terminal.
+    #[cfg(unix)]
+    fn recording_pager(path: &std::path::Path) -> Pager {
+        let args = [
+            "-c".into(),
+            r#"cat > "$0""#.into(),
+            path.display().to_string(),
+        ];
+        Pager::start("sh", &args).unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn finish_waits_for_the_pager_to_read_everything() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("paged");
+        let mut pager = recording_pager(&path);
+        pager.stdin().write_all(b"hello\n").unwrap();
+        pager.finish().unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"hello\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn drop_waits_for_the_pager_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("paged");
+        let mut pager = recording_pager(&path);
+        pager.stdin().write_all(b"hello\n").unwrap();
+        drop(pager);
+        assert_eq!(std::fs::read(&path).unwrap(), b"hello\n");
+    }
+
+    #[test]
+    fn reports_a_missing_pager() {
+        let err = Pager::start("hl-no-such-pager", &[]).err().unwrap();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ignores_the_exit_status_of_the_pager() {
+        let args = ["-c".into(), "exit 1".into()];
+        Pager::start("sh", &args).unwrap().finish().unwrap();
     }
 }
