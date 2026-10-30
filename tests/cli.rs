@@ -149,6 +149,39 @@ fn lists_themes() {
         .stdout(predicate::str::contains("base16-ocean.dark"));
 }
 
+#[test]
+fn prints_completions() {
+    for shell in ["bash", "zsh", "fish"] {
+        hl().args(["--completions", shell])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("line-range"));
+    }
+}
+
+#[test]
+fn rejects_unknown_shell() {
+    hl().args(["--completions", "nosuchshell"])
+        .assert()
+        .failure()
+        .stdout("");
+}
+
+/// The man page shows the built-in defaults, not those of the config file.
+#[test]
+fn prints_man_page_without_config() {
+    let dir = tempdir();
+    let config = dir.path().join("config.toml");
+    fs::write(&config, "theme = \"Nord\"\n").unwrap();
+    hl().env("HL_CONFIG", &config)
+        .arg("--man")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(".TH hl 1"))
+        .stdout(predicate::str::contains(r"\-\-line\-range"))
+        .stdout(predicate::str::contains(r"[default: base16\-ocean.dark]"));
+}
+
 /// Writes two fixture files exercising the cases `cat` options care about.
 /// With `binary`, the first one also has control characters and high bytes.
 fn cat_fixtures(dir: &Path, prefix: &str, binary: bool) -> Vec<std::path::PathBuf> {

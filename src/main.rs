@@ -42,6 +42,18 @@ fn main() -> ExitCode {
 }
 
 fn run(args: &Args) -> Result<ExitCode> {
+    if let Some(shell) = args.completions {
+        let mut out = io::stdout().lock();
+        cli::print_completions(shell, &mut out);
+        out.flush()?;
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    if args.man {
+        cli::print_man(&mut io::stdout().lock())?;
+        return Ok(ExitCode::SUCCESS);
+    }
+
     if args.build_cache {
         print_cache_report(&assets::build_cache()?);
         return Ok(ExitCode::SUCCESS);

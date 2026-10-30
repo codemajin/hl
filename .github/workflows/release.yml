@@ -46,9 +46,33 @@ jobs:
           name: notes
           path: notes.md
 
+  # Generated once on Linux: the x86_64-apple-darwin binary is cross-compiled
+  # and can't run on its build machine, and the output is the same everywhere.
+  assets:
+    name: generate completions and man page
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked
+      - run: |
+          mkdir completions man
+          target/debug/hl --completions bash > completions/hl.bash
+          target/debug/hl --completions zsh > completions/_hl
+          target/debug/hl --completions fish > completions/hl.fish
+          target/debug/hl --man > man/hl.1
+      - uses: actions/upload-artifact@v7
+        with:
+          name: assets
+          path: |
+            completions
+            man
+
   build:
     name: build (${{ matrix.target }})
-    needs: check
+    needs: [check, assets]
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -74,11 +98,16 @@ jobs:
         with:
           key: ${{ matrix.target }}
       - run: cargo build --release --locked --target ${{ matrix.target }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: assets
+          path: assets
       - name: Package
         run: |
           name="hl-$GITHUB_REF_NAME-${{ matrix.target }}"
           mkdir "$name"
           cp "target/${{ matrix.target }}/release/hl" LICENSE README.md README_ja.md CHANGELOG.md "$name/"
+          cp -R assets/completions assets/man "$name/"
           tar czf "$name.tar.gz" "$name"
           shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
       - uses: actions/upload-artifact@v7

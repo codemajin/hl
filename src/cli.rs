@@ -1,6 +1,10 @@
-use std::path::PathBuf;
+use std::{
+    io::{self, Write},
+    path::PathBuf,
+};
 
 use clap::{Command, CommandFactory, FromArgMatches, Parser, ValueEnum};
+use clap_complete::Shell;
 use toml::Value;
 
 use crate::{
@@ -159,6 +163,14 @@ pub struct Args {
     /// Remove the cache made by --build-cache and exit.
     #[arg(long)]
     pub clear_cache: bool,
+
+    /// Print the completion script for SHELL and exit.
+    #[arg(long, value_enum, value_name = "SHELL")]
+    pub completions: Option<Shell>,
+
+    /// Print the man page (roff) and exit.
+    #[arg(long)]
+    pub man: bool,
 }
 
 /// Options whose default can be set in the config file, by their long name.
@@ -326,6 +338,17 @@ impl Args {
             max_line: (self.max_line_length > 0).then_some(self.max_line_length),
         }
     }
+}
+
+/// Writes the completion script for `shell`. Like [`print_man`], it uses
+/// the built-in defaults, so the output does not depend on the config file.
+pub fn print_completions(shell: Shell, out: &mut dyn Write) {
+    clap_complete::generate(shell, &mut Args::command(), "hl", out);
+}
+
+/// Writes the man page in roff.
+pub fn print_man(out: &mut dyn Write) -> io::Result<()> {
+    clap_mangen::Man::new(Args::command()).render(out)
 }
 
 /// Parses a byte count such as `512`, `16K`, `2m` or `1G` (powers of 1024).

@@ -77,6 +77,30 @@ cargo install --path . --root ~/.local      # → ~/.local/bin/hl
 cargo uninstall hl                  # --root を指定した場合は同じ --root を付ける
 ```
 
+### シェル補完と man ページ
+
+リリースのアーカイブには、bash、zsh、fish の補完スクリプトが `completions/` に、man ページが `man/hl.1` に入っています。`hl --completions <SHELL>` と `hl --man` で `hl` 自身に出力させることもできるので、ソースからインストールした場合はこちらを使います。自分のユーザーにインストールする例です。
+
+```sh
+# bash（bash-completion パッケージが必要）
+mkdir -p ~/.local/share/bash-completion/completions
+hl --completions bash > ~/.local/share/bash-completion/completions/hl
+
+# zsh: ~/.zshrc の compinit より前に `fpath=(~/.zfunc $fpath)` も追加する
+mkdir -p ~/.zfunc
+hl --completions zsh > ~/.zfunc/_hl
+
+# fish
+mkdir -p ~/.config/fish/completions
+hl --completions fish > ~/.config/fish/completions/hl.fish
+
+# man ページ
+mkdir -p ~/.local/share/man/man1
+hl --man > ~/.local/share/man/man1/hl.1
+```
+
+リリースのアーカイブを使う場合は、代わりに `$NAME/completions/hl.bash`、`$NAME/completions/_hl`、`$NAME/completions/hl.fish`、`$NAME/man/hl.1` を同じ場所にコピーしてもかまいません。補完は新しく起動したシェルから有効になります。`man hl` でページが見つからないときは、`MANPATH` に `~/.local/share/man` を追加してください。`hl` を更新したら、新しいオプションも補完されるようにファイルを作り直してください。アンインストールするときはこれらのファイルも削除します。
+
 ## 使い方
 
 ```sh
@@ -124,6 +148,8 @@ hl --build-cache                 # ユーザー定義の構文をキャッシュ
 | `--list-languages` | 対応している言語を一覧表示します |
 | `--build-cache` | ユーザー定義の構文（後述）をキャッシュして、速く読めるようにします |
 | `--clear-cache` | `--build-cache` で作ったキャッシュを消します |
+| `--completions <SHELL>` | `bash`、`zsh`、`fish`、`elvish`、`powershell` の補完スクリプトを出力します（[シェル補完と man ページ](#シェル補完と-man-ページ)を参照） |
+| `--man` | man ページを roff 形式で出力します |
 
 ファイルを指定しないか `-` を指定すると、標準入力から読み込みます。
 
@@ -247,7 +273,7 @@ push と pull request のたびに、GitHub Actions が `cargo fmt --check`、`c
    git push origin vX.Y.Z
    ```
 
-すると `.github/workflows/release.yml` が 4 つのプラットフォーム向けにバイナリをビルドし、SHA-256 のチェックサムと一緒に GitHub のリリースとして公開します。リリースノートは CHANGELOG の該当の節です。タグが `Cargo.toml` のバージョンと一致しない場合や、CHANGELOG にそのバージョンの節がない場合は、何も公開せずに失敗します。
+すると `.github/workflows/release.yml` が 4 つのプラットフォーム向けにバイナリをビルドし、`hl` 自身で生成した補完スクリプトと man ページとまとめてアーカイブし、SHA-256 のチェックサムとともに GitHub のリリースとして公開します。リリースノートは CHANGELOG の該当の節です。タグが `Cargo.toml` のバージョンと一致しない場合や、CHANGELOG にそのバージョンの節がない場合は、何も公開せずに失敗します。
 
 ### テストカバレッジ
 
