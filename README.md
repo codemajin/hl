@@ -265,6 +265,19 @@ GitHub Actions runs `cargo fmt --check`, `cargo clippy` (warnings are errors) an
 | `src/pager.rs` | Starting the pager and waiting for it to exit |
 | `src/print.rs` | Printing each input in turn, highlighted or plain, with headers and encoding handling |
 
+### Dependencies
+
+Dependabot (`.github/dependabot.yml`) opens update PRs every week, for the crates and for the GitHub Actions. Minor and patch updates of the crates come in one PR, a major update in a PR of its own, and the Actions in one PR.
+
+[cargo-deny](https://github.com/EmbarkStudios/cargo-deny) (`.github/workflows/deny.yml`) checks the dependencies on every push and pull request: known vulnerabilities and yanked versions (advisories), licenses, bans and sources (crates.io only). The advisories are also checked every day, since new ones appear while the dependencies stay the same. The allowed licenses, and the advisories ignored for now with the reason, are listed in `deny.toml`. To run it locally:
+
+```sh
+cargo install cargo-deny --locked
+cargo deny check
+```
+
+The minimum supported Rust version (MSRV, `rust-version` in `Cargo.toml`) may be raised when an update needs it, to a version at least six releases behind the latest stable; to get a fix for a vulnerability, it is always raised. Such an update fails the CI job with the MSRV. When raising it, update `rust-version` in `Cargo.toml`, the matrix in `.github/workflows/ci.yml`, the version in this README (Requirements and Development) and `CHANGELOG.md` together.
+
 ### Releasing
 
 Versions follow [Semantic Versioning](https://semver.org/), and a release is tagged `vX.Y.Z` with the version in `Cargo.toml`. Changes are recorded in [CHANGELOG.md](CHANGELOG.md).

@@ -265,6 +265,19 @@ push と pull request のたびに、GitHub Actions が `cargo fmt --check`、`c
 | `src/pager.rs` | ページャの起動と終了待ち |
 | `src/print.rs` | 各入力の順次出力（ハイライトありかなしか）、ヘッダ、文字コードの扱い |
 
+### 依存関係
+
+Dependabot（`.github/dependabot.yml`）が、依存クレートと GitHub Actions の更新 PR を毎週作ります。クレートのマイナー・パッチ更新は 1 本の PR にまとめ、メジャー更新は個別の PR にします。Actions の更新も 1 本にまとめます。
+
+[cargo-deny](https://github.com/EmbarkStudios/cargo-deny)（`.github/workflows/deny.yml`）は push と pull request のたびに依存を確認します。確認するのは、既知の脆弱性と yank されたバージョン（advisories）、ライセンス、bans、取得元（crates.io 以外は不可）です。依存が変わらなくても新しい脆弱性は公開されるので、advisories は毎日も確認します。許可するライセンスと、理由を付けて当面無視する advisory は `deny.toml` に書いてあります。手元で実行するときは次のようにします。
+
+```sh
+cargo install cargo-deny --locked
+cargo deny check
+```
+
+最小対応バージョン（MSRV、`Cargo.toml` の `rust-version`）は、依存の更新に必要なら上げてかまいません。ただし、最新の stable より 6 リリース以上古いバージョンまでにとどめます。脆弱性の修正を取り込むためなら、必ず上げます。そうした更新では、MSRV でテストする CI のジョブが失敗します。MSRV を上げるときは、`Cargo.toml` の `rust-version`、`.github/workflows/ci.yml` のマトリクス、この README のバージョン（「必要なもの」と「開発」）、`CHANGELOG.md` を一緒に更新してください。
+
 ### リリース
 
 バージョン番号は[セマンティック バージョニング](https://semver.org/lang/ja/)に従い、リリースには `Cargo.toml` のバージョンに合わせて `vX.Y.Z` のタグを付けます。変更内容は [CHANGELOG.md](CHANGELOG.md) に記録します。

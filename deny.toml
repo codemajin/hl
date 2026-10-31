@@ -1,0 +1,31 @@
+# Checked by `cargo deny check` in .github/workflows/deny.yml.
+
+[advisories]
+# Known vulnerabilities and unmaintained crates are errors by default.
+yanked = "deny"
+ignore = [
+    # Both are unmaintained, with no known vulnerability, and come in through
+    # syntect 5.3, which has no release without them yet. Remove these when
+    # syntect drops them.
+    { id = "RUSTSEC-2025-0141", reason = "bincode 1, used by syntect" },
+    { id = "RUSTSEC-2024-0320", reason = "yaml-rust, used by syntect" },
+]
+
+[licenses]
+# The licenses that may end up in the distributed binary. A crate passes if
+# its license expression is satisfied by these, so `MIT OR Unlicense` is fine.
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "Unicode-3.0", # unicode-ident
+    "Zlib",        # zlib-rs
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+# Only crates.io.
+unknown-registry = "deny"
+unknown-git = "deny"

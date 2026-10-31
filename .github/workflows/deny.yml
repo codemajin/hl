@@ -1,0 +1,34 @@
+name: Dependencies
+
+on:
+  push:
+  pull_request:
+  # New advisories are published while the dependencies stay the same.
+  schedule:
+    - cron: "0 0 * * *"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-deny:
+    name: cargo-deny (${{ matrix.checks }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        checks:
+          - advisories
+          - bans licenses sources
+    steps:
+      - uses: actions/checkout@v5
+      # The scheduled run only looks for new advisories; the other checks
+      # can only change with the dependencies.
+      - if: github.event_name != 'schedule' || matrix.checks == 'advisories'
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check ${{ matrix.checks }}
