@@ -149,10 +149,12 @@ impl<'a> Highlighter<'a> {
     /// Once the input exceeds `limits.max_size` or a line exceeds
     /// `limits.max_line`, the rest is copied as is: syntect's state carries
     /// over between lines, so highlighting cannot resume after a skipped line.
-    /// A line that is not valid UTF-8 switches to plain output the same way.
+    /// A line that is not valid UTF-8 switches to plain output the same way,
+    /// and so does an error in the syntax, after a warning about `name`.
     pub fn write(
         &self,
         reader: &mut impl BufRead,
+        name: &Path,
         out: &mut impl Write,
         syntax: &Syntax,
         lines: &mut LineState,
@@ -200,9 +202,19 @@ impl<'a> Highlighter<'a> {
             let newline = if line.ends_with('\n') { "\n" } else { "" };
             // Highlight including the newline so syntect's state stays correct,
             // but print the newline after the reset sequence.
-            let ranges = hl
-                .highlight_line(line, self.syntaxes)
-                .map_err(io::Error::other)?;
+            let ranges = match hl.highlight_line(line, self.syntaxes) {
+                Ok(ranges) => ranges,
+                Err(e) => {
+                    diag::warn(
+                        name,
+                        &format!("cannot highlight: {e}, printing the rest as plain text"),
+                    );
+                    if print {
+                        lines.write_raw(line.as_bytes(), out)?;
+                    }
+                    return write_plain(reader, out, lines, Visibility::default());
+                }
+            };
             if !print {
                 continue;
             }
@@ -437,8 +449,15 @@ mod tests {
         hl.depth = depth;
         let mut out = Vec::new();
         let syntax = syntaxes.find_syntax_plain_text();
-        hl.write(&mut Cursor::new(input), &mut out, syntax, lines, limits)
-            .unwrap();
+        hl.write(
+            &mut Cursor::new(input),
+            Path::new("-"),
+            &mut out,
+            syntax,
+            lines,
+            limits,
+        )
+        .unwrap();
         out
     }
 
@@ -566,6 +585,7 @@ mod tests {
         let syntax = syntaxes.find_syntax_plain_text();
         hl.write(
             &mut Cursor::new(input),
+            Path::new("-"),
             &mut out,
             syntax,
             &mut lines,
@@ -597,6 +617,16 @@ mod tests {
         let out = write_highlighted(b"abcde\nxy\n", max_line(4), Depth::TrueColor);
         assert!(out.starts_with("abcde\n\x1b[48;2;"), "{out:?}");
         assert!(out.ends_with("xy\x1b[0m\n"), "{out:?}");
+    }
+
+    #[test]
+    fn highlights_a_long_line_in_one_piece() {
+        let syntaxes = syntaxes();
+        let sgr = highlighter(&syntaxes, &[]).line_highlight_sgr();
+        let out = write_highlighted(b"a\nbbbbbbbbbb\nc\n", max_line(4), Depth::TrueColor);
+        let lines: Vec<_> = out.split_inclusive('\n').collect();
+        assert_eq!(lines[1], format!("{sgr}bbbbbbbbbb\x1b[0m\n"), "{out:?}");
+        assert_eq!(lines[2], "c\n", "{out:?}");
     }
 
     #[test]

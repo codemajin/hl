@@ -211,7 +211,8 @@ impl<'a> Printer<'a> {
         lines: &mut LineState,
     ) -> io::Result<()> {
         let syntax = self.choose_syntax(hl, &mut reader, path)?;
-        hl.write(&mut reader, out, syntax, lines, self.limits)
+        let name = path.unwrap_or(Path::new("-"));
+        hl.write(&mut reader, name, out, syntax, lines, self.limits)
     }
 
     /// Uses the forced syntax, or detects one from the path and the first line.

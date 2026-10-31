@@ -211,18 +211,26 @@ impl LineState {
     }
 
     /// Writes a chunk of the current line as it is, ending the highlight
-    /// background before the newline.
+    /// background before the newline. A chunk without a newline leaves the
+    /// background on for the rest of the line.
     pub fn write_raw(&self, line: &[u8], out: &mut impl Write) -> io::Result<()> {
-        if !self.highlighted {
-            return out.write_all(line);
+        match line.strip_suffix(b"\n").filter(|_| self.highlighted) {
+            Some(body) => {
+                out.write_all(body)?;
+                out.write_all(RESET.as_bytes())?;
+                out.write_all(b"\n")
+            }
+            None => out.write_all(line),
         }
-        let (body, newline) = match line.strip_suffix(b"\n") {
-            Some(body) => (body, &b"\n"[..]),
-            None => (line, &b""[..]),
-        };
-        out.write_all(body)?;
-        out.write_all(RESET.as_bytes())?;
-        out.write_all(newline)
+    }
+
+    /// Called at the end of an input. Ends the highlight background of a
+    /// line left unfinished by `write_raw`.
+    pub fn end_input(&self, out: &mut impl Write) -> io::Result<()> {
+        if self.highlighted && self.cursor == (Cursor::InLine { printing: true }) {
+            out.write_all(RESET.as_bytes())?;
+        }
+        Ok(())
     }
 }
 
@@ -245,7 +253,7 @@ pub fn write_plain(
         }
         buf.clear();
         if reader.read_until(b'\n', &mut buf)? == 0 {
-            return Ok(());
+            return lines.end_input(out);
         }
         if !lines.begin_line(&buf, out)? {
             continue;
@@ -427,6 +435,39 @@ mod tests {
             plain(b"a", &mut lines, Visibility::default()),
             b"<bg>a\x1b[0m"
         );
+    }
+
+    #[test]
+    fn resets_once_after_the_last_chunk_of_a_line() {
+        let mut lines = numbered(Numbering::None, None).with_highlight(highlight(&[line(1)]));
+        let mut out = Vec::new();
+        for chunk in [&b"bb"[..], b"bb", b"b\n"] {
+            assert!(lines.begin_line(chunk, &mut out).unwrap());
+            lines.write_raw(chunk, &mut out).unwrap();
+        }
+        assert_eq!(out, b"<bg>bbbbb\x1b[0m\n");
+    }
+
+    #[test]
+    fn resets_at_the_end_of_an_input_without_newline() {
+        let mut lines = numbered(Numbering::None, None).with_highlight(highlight(&[line(1)]));
+        let mut out = Vec::new();
+        for chunk in [&b"bb"[..], b"bb"] {
+            assert!(lines.begin_line(chunk, &mut out).unwrap());
+            lines.write_raw(chunk, &mut out).unwrap();
+        }
+        lines.end_input(&mut out).unwrap();
+        assert_eq!(out, b"<bg>bbbb\x1b[0m");
+    }
+
+    #[test]
+    fn does_not_reset_at_the_end_of_an_input_without_highlight() {
+        let mut lines = numbered(Numbering::None, None).with_highlight(highlight(&[line(2)]));
+        let mut out = Vec::new();
+        assert!(lines.begin_line(b"a", &mut out).unwrap());
+        lines.write_raw(b"a", &mut out).unwrap();
+        lines.end_input(&mut out).unwrap();
+        assert_eq!(out, b"a");
     }
 
     #[test]

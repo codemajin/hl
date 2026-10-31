@@ -1866,6 +1866,33 @@ fn skips_custom_syntaxes_that_cannot_be_loaded() {
 }
 
 #[test]
+fn prints_the_rest_after_a_syntax_error() {
+    let assets = Assets::new();
+    assets.syntax(
+        "Foo",
+        &HLTEST_SYNTAX.replace("[hltest]", "[foo]").replace(
+            "scope: keyword.control.hltest",
+            "push: scope:source.nonexistent",
+        ),
+    );
+    let file = assets.file("a.foo", "a\nkw\nb\n");
+    let out = assets
+        .hl()
+        .args(["--color", "always", &file])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    assert_eq!(strip_ansi(&out.stdout), b"a\nkw\nb\n");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert_eq!(
+        stderr.matches("printing the rest as plain text").count(),
+        1,
+        "{stderr}"
+    );
+}
+
+#[test]
 fn caches_custom_syntaxes() {
     let assets = Assets::new();
     assets.syntax("HlTest", HLTEST_SYNTAX);
