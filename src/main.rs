@@ -44,20 +44,16 @@ fn main() -> ExitCode {
 
 fn run(args: &Args) -> Result<ExitCode> {
     if let Some(shell) = args.completions {
-        let mut out = io::stdout().lock();
-        cli::print_completions(shell, &mut out);
-        out.flush()?;
-        return Ok(ExitCode::SUCCESS);
+        return print_and_exit(|out| cli::print_completions(shell, out));
     }
 
     if args.man {
-        cli::print_man(&mut io::stdout().lock())?;
-        return Ok(ExitCode::SUCCESS);
+        return print_and_exit(|out| cli::print_man(out));
     }
 
     if args.build_cache {
-        print_cache_report(&assets::build_cache()?);
-        return Ok(ExitCode::SUCCESS);
+        let report = assets::build_cache()?;
+        return print_and_exit(|out| print_cache_report(&report, out));
     }
 
     if args.clear_cache {
@@ -66,11 +62,11 @@ fn run(args: &Args) -> Result<ExitCode> {
     }
 
     if args.list_themes {
-        return list_themes();
+        return print_and_exit(list_themes);
     }
 
     if args.list_languages {
-        return list_languages();
+        return print_and_exit(list_languages);
     }
 
     let tty = io::stdout().is_terminal();
@@ -132,11 +128,7 @@ fn run(args: &Args) -> Result<ExitCode> {
         Some(e) => Err(e),
         None => out.flush(),
     };
-    if let Err(e) = flushed
-        && !is_broken_pipe(&e)
-    {
-        bail!("write error: {}", describe(&e));
-    }
+    check_write(flushed)?;
     drop(out);
     if let Some(p) = pager {
         p.finish()?;
@@ -178,34 +170,54 @@ fn is_broken_pipe(err: &io::Error) -> bool {
     err.kind() == io::ErrorKind::BrokenPipe
 }
 
-fn print_cache_report(report: &CacheReport) {
+/// Turns the result of writing the output into the error `hl` reports. A
+/// closed pipe (`hl ... | head`) is a normal way to stop reading.
+fn check_write(result: io::Result<()>) -> Result<()> {
+    match result {
+        Err(e) if !is_broken_pipe(&e) => bail!("write error: {}", describe(&e)),
+        _ => Ok(()),
+    }
+}
+
+/// Writes the output of a command that exits without printing the inputs
+/// (`--list-themes`, ...), with write errors handled like the normal output.
+fn print_and_exit(write: impl FnOnce(&mut dyn Write) -> io::Result<()>) -> Result<ExitCode> {
+    let mut out = io::stdout().lock();
+    check_write(write(&mut out).and_then(|()| out.flush()))?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn print_cache_report(report: &CacheReport, out: &mut dyn Write) -> io::Result<()> {
     match report {
         CacheReport::Empty { dir } => {
-            println!("no custom syntaxes in {}, nothing to cache", dir.display());
+            writeln!(
+                out,
+                "no custom syntaxes in {}, nothing to cache",
+                dir.display()
+            )
         }
         CacheReport::Cached { added, total, path } => {
-            println!(
+            writeln!(
+                out,
                 "cached {added} of {total} custom syntaxes in {}",
                 path.display()
-            );
+            )
         }
     }
 }
 
-fn list_themes() -> Result<ExitCode> {
+fn list_themes(out: &mut dyn Write) -> io::Result<()> {
     let themes = assets::Themes::load();
-    let mut out = io::stdout().lock();
     for name in themes.names() {
         writeln!(out, "{name}")?;
     }
-    Ok(ExitCode::SUCCESS)
+    Ok(())
 }
 
-fn list_languages() -> Result<ExitCode> {
+fn list_languages(out: &mut dyn Write) -> io::Result<()> {
     let syntaxes = assets::syntaxes();
-    let mut out = io::stdout().lock();
     for (name, extensions) in highlight::languages(&syntaxes) {
         writeln!(out, "{name}: {}", extensions.join(", "))?;
     }
-    Ok(ExitCode::SUCCESS)
+    Ok(())
 }

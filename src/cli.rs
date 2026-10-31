@@ -431,8 +431,11 @@ impl Args {
 
 /// Writes the completion script for `shell`. Like [`print_man`], it uses
 /// the built-in defaults, so the output does not depend on the config file.
-pub fn print_completions(shell: Shell, out: &mut dyn Write) {
-    clap_complete::generate(shell, &mut Args::command(), "hl", out);
+pub fn print_completions(shell: Shell, out: &mut dyn Write) -> io::Result<()> {
+    // `generate` panics when it cannot write, so the script is written here.
+    let mut script = Vec::new();
+    clap_complete::generate(shell, &mut Args::command(), "hl", &mut script);
+    out.write_all(&script)
 }
 
 /// Writes the man page in roff.

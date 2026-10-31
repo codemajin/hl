@@ -816,18 +816,67 @@ fn reports_write_errors_without_blaming_the_input() {
     );
 }
 
+/// The commands that print something and exit without reading the inputs.
+const EARLY_EXIT_COMMANDS: [&[&str]; 5] = [
+    &["--completions", "zsh"],
+    &["--man"],
+    &["--list-languages"],
+    &["--list-themes"],
+    &["--build-cache"],
+];
+
+/// `hl` with `args` and a config and cache that do not exist, run without
+/// `assert_cmd` to control its stdout.
+fn early_exit_command(args: &[&str]) -> std::process::Command {
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_hl"));
+    cmd.args(args)
+        .env_remove("HL_CONFIG")
+        .env("XDG_CONFIG_HOME", "/nonexistent/hl-test-config")
+        .env("XDG_CACHE_HOME", "/nonexistent/hl-test-cache")
+        .stderr(std::process::Stdio::piped());
+    cmd
+}
+
+#[cfg(target_os = "linux")]
 #[test]
-fn stops_quietly_when_the_listing_pipe_closes() {
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_hl"))
-        .arg("--list-languages")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
+fn reports_write_errors_of_early_exit_commands() {
+    for args in EARLY_EXIT_COMMANDS {
+        let output = early_exit_command(args)
+            .stdout(fs::File::create("/dev/full").unwrap())
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            "hl: write error: No space left on device\n",
+            "{args:?}"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn clear_cache_prints_nothing_to_fail_on() {
+    let output = early_exit_command(&["--clear-cache"])
+        .stdout(fs::File::create("/dev/full").unwrap())
+        .output()
         .unwrap();
-    drop(child.stdout.take());
-    let output = child.wait_with_output().unwrap();
     assert!(output.status.success());
     assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+}
+
+#[test]
+fn early_exit_commands_stop_quietly_when_the_pipe_closes() {
+    for args in EARLY_EXIT_COMMANDS {
+        let mut child = early_exit_command(args)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        drop(child.stdout.take());
+        let output = child.wait_with_output().unwrap();
+        assert_eq!(output.status.code(), Some(0), "{args:?}");
+        assert_eq!(String::from_utf8_lossy(&output.stderr), "", "{args:?}");
+    }
 }
 
 #[test]
