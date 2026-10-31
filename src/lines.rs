@@ -141,8 +141,9 @@ impl LineState {
         Ok(())
     }
 
-    /// Called with each chunk from `read_until(b'\n')`. Writes the line
-    /// number if one is due and returns whether the line should be printed.
+    /// Called with each chunk of a line, the last of which ends with the
+    /// newline (if the line has one). Writes the line number if one is due
+    /// and returns whether the line should be printed.
     pub fn begin_line(&mut self, line: &[u8], out: &mut impl Write) -> io::Result<bool> {
         let printing = match self.cursor {
             Cursor::LineStart => self.start_line(line, out)?,
@@ -234,6 +235,10 @@ impl LineState {
     }
 }
 
+/// The most bytes `write_plain` reads into memory at once. Longer lines
+/// are handled in chunks, so memory does not grow with the line length.
+const CHUNK: usize = 64 * 1024;
+
 /// Copies `reader` without highlighting, applying numbering, squeezing, the
 /// line range and `cat -v` style notation as requested.
 pub fn write_plain(
@@ -241,6 +246,16 @@ pub fn write_plain(
     out: &mut impl Write,
     lines: &mut LineState,
     vis: Visibility,
+) -> io::Result<()> {
+    write_plain_chunked(reader, out, lines, vis, CHUNK)
+}
+
+fn write_plain_chunked(
+    reader: &mut impl BufRead,
+    out: &mut impl Write,
+    lines: &mut LineState,
+    vis: Visibility,
+    limit: usize,
 ) -> io::Result<()> {
     if lines.is_passthrough() && !vis.any() {
         io::copy(reader, out)?;
@@ -252,7 +267,7 @@ pub fn write_plain(
             return Ok(());
         }
         buf.clear();
-        if reader.read_until(b'\n', &mut buf)? == 0 {
+        if read_chunk(reader, &mut buf, limit)? == 0 {
             return lines.end_input(out);
         }
         if !lines.begin_line(&buf, out)? {
@@ -264,6 +279,51 @@ pub fn write_plain(
             lines.write_raw(&buf, out)?;
         }
     }
+}
+
+/// Reads up to and including the next newline like `read_until(b'\n')`, but
+/// stops after `limit` bytes. A CRLF is not split: when the chunk would end
+/// between `\r` and `\n`, the `\n` is taken too, so `-E` still sees the
+/// line ending as a whole. Returns the number of bytes read.
+fn read_chunk(reader: &mut impl BufRead, buf: &mut Vec<u8>, limit: usize) -> io::Result<usize> {
+    debug_assert!(limit > 0, "a zero limit reads nothing");
+    let mut read = 0;
+    while read < limit {
+        let available = match reader.fill_buf() {
+            Ok(available) => available,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        if available.is_empty() {
+            return Ok(read);
+        }
+        let room = &available[..available.len().min(limit - read)];
+        let (n, newline) = match room.iter().position(|&b| b == b'\n') {
+            Some(i) => (i + 1, true),
+            None => (room.len(), false),
+        };
+        buf.extend_from_slice(&room[..n]);
+        reader.consume(n);
+        read += n;
+        if newline {
+            return Ok(read);
+        }
+    }
+    if buf.ends_with(b"\r") {
+        let next = loop {
+            match reader.fill_buf() {
+                Ok(available) => break available.first().copied(),
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        };
+        if next == Some(b'\n') {
+            buf.push(b'\n');
+            reader.consume(1);
+            read += 1;
+        }
+    }
+    Ok(read)
 }
 
 /// Writes one line using `cat -v` / `-E` / `-T` notation.
@@ -521,5 +581,121 @@ mod tests {
         };
         let mut lines = numbered(Numbering::None, None);
         assert_eq!(plain(b"a\r\nb", &mut lines, vis), b"a^M$\nb");
+    }
+    fn chunked(input: &[u8], lines: &mut LineState, vis: Visibility, limit: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        write_plain_chunked(&mut Cursor::new(input), &mut out, lines, vis, limit).unwrap();
+        out
+    }
+
+    /// Checks that reading in chunks of every small size gives the same
+    /// output as reading each line at once.
+    fn assert_same_in_chunks(input: &[u8], new_lines: impl Fn() -> LineState, vis: Visibility) {
+        let whole = chunked(input, &mut new_lines(), vis, usize::MAX);
+        for limit in 1..=5 {
+            assert_eq!(
+                chunked(input, &mut new_lines(), vis, limit),
+                whole,
+                "chunks of {limit} bytes"
+            );
+        }
+    }
+
+    const LONG_LINES: &[u8] = b"abcdefghij\n\n\n\nab\tc\x01\xffdefgh\r\nxy\r\r\nlast line";
+
+    #[test]
+    fn numbers_long_lines_read_in_chunks() {
+        assert_same_in_chunks(
+            LONG_LINES,
+            || numbered(Numbering::All, None),
+            Visibility::default(),
+        );
+    }
+
+    #[test]
+    fn squeezes_and_numbers_non_blank_long_lines_read_in_chunks() {
+        assert_same_in_chunks(
+            LONG_LINES,
+            || LineState::new(Numbering::NonBlank, true, None),
+            Visibility::default(),
+        );
+    }
+
+    #[test]
+    fn shows_nonprinting_characters_of_long_lines_read_in_chunks() {
+        let vis = Visibility {
+            nonprinting: true,
+            ends: true,
+            tabs: true,
+        };
+        assert_same_in_chunks(LONG_LINES, || numbered(Numbering::None, None), vis);
+    }
+
+    #[test]
+    fn shows_crlf_endings_split_by_chunks() {
+        let vis = Visibility {
+            ends: true,
+            ..Visibility::default()
+        };
+        assert_same_in_chunks(LONG_LINES, || numbered(Numbering::None, None), vis);
+        assert_eq!(
+            chunked(b"abc\r\n", &mut numbered(Numbering::None, None), vis, 4),
+            b"abc^M$\n"
+        );
+    }
+
+    #[test]
+    fn highlights_long_lines_read_in_chunks() {
+        for input in [LONG_LINES, b"abcdefghij\n"] {
+            assert_same_in_chunks(
+                input,
+                || {
+                    numbered(Numbering::All, None).with_highlight(highlight(&[
+                        line(1),
+                        line(5),
+                        line(7),
+                    ]))
+                },
+                Visibility::default(),
+            );
+        }
+    }
+
+    #[test]
+    fn applies_the_line_range_to_long_lines_read_in_chunks() {
+        let range = LineRange {
+            start: 2,
+            end: Some(5),
+        };
+        assert_same_in_chunks(
+            LONG_LINES,
+            || numbered(Numbering::All, Some(range)),
+            Visibility::default(),
+        );
+    }
+
+    #[test]
+    fn reads_a_chunk_up_to_the_limit_or_the_newline() {
+        let mut reader = Cursor::new(&b"abcdef\ngh"[..]);
+        let mut chunks = Vec::new();
+        loop {
+            let mut buf = Vec::new();
+            if read_chunk(&mut reader, &mut buf, 4).unwrap() == 0 {
+                break;
+            }
+            chunks.push(buf);
+        }
+        assert_eq!(chunks, [&b"abcd"[..], b"ef\n", b"gh"]);
+    }
+
+    #[test]
+    fn does_not_split_a_crlf_between_chunks() {
+        let mut reader = Cursor::new(&b"abc\r\nd\r"[..]);
+        let mut buf = Vec::new();
+        assert_eq!(read_chunk(&mut reader, &mut buf, 4).unwrap(), 5);
+        assert_eq!(buf, b"abc\r\n");
+        buf.clear();
+        assert_eq!(read_chunk(&mut reader, &mut buf, 2).unwrap(), 2);
+        assert_eq!(buf, b"d\r");
     }
 }

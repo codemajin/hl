@@ -141,6 +141,26 @@ fn keeps_missing_trailing_newline() {
         .stdout(predicate::str::ends_with("\x1b[0m"));
 }
 
+/// A huge line without a newline is read in chunks, not all at once
+/// (issue 024). Memory use is not measured here.
+#[test]
+fn numbers_a_huge_line_without_newline() {
+    let input = vec![b'x'; 32 * 1024 * 1024];
+    let mut expected = b"     1\t".to_vec();
+    expected.extend_from_slice(&input);
+    for color in ["never", "always"] {
+        let out = hl()
+            .args(["--color", color, "-l", "rust", "-n"])
+            .write_stdin(input.clone())
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        assert!(out == expected, "--color={color}: output differs");
+    }
+}
+
 #[test]
 fn lists_themes() {
     hl().arg("--list-themes")
