@@ -4,6 +4,7 @@ mod color;
 mod config;
 mod diag;
 mod encoding;
+mod escape;
 mod highlight;
 mod lines;
 mod pager;
@@ -99,6 +100,7 @@ fn run(args: &Args) -> Result<ExitCode> {
         forced,
         vis: args.visibility(),
         limits: args.limits(),
+        strip: args.strip_escapes(color),
     };
 
     let mut pager = start_pager(args.paging(), tty)?;

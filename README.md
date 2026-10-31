@@ -146,6 +146,7 @@ hl --build-cache                 # cache custom syntaxes so that they load fast
 | `-p` | Same as `--paging=always` |
 | `--color <WHEN>` | When to use colors: `auto`, `always`, or `never`. The default `auto` colors output only when stdout is a terminal |
 | `--color-depth <DEPTH>` | Color depth: `auto`, `truecolor` (alias `24bit`), or `256`. The default `auto` uses 24-bit color when `COLORTERM` is `truecolor` or `24bit`, `TERM` ends in `-direct`, or `WT_SESSION` is set (Windows Terminal), and approximates colors to the 256 color palette otherwise |
+| `--strip-ansi <WHEN>` | When to remove escape sequences (colors, window titles, hyperlinks, ...) from the input: `auto`, `always`, or `never`. The default `auto` removes them only when output is colored; `always` also removes them from uncolored output; `never` prints them as they are (see [Behavior details](#behavior-details)) |
 | `--list-themes` | List available themes |
 | `--list-languages` | List supported languages |
 | `--build-cache` | Cache the custom syntaxes (see below) so that they load fast |
@@ -174,6 +175,7 @@ Defaults for some options can be set in `$XDG_CONFIG_HOME/hl/config.toml` (`~/.c
 theme = "Monokai Extended"
 color = "auto"            # auto, always, never
 color-depth = "truecolor" # auto, truecolor, 256
+strip-ansi = "auto"       # auto, always, never
 paging = "auto"           # auto, always, never
 max-size = "1M"           # integers such as 0 work too
 max-line-length = "16K"
@@ -211,10 +213,11 @@ Run `hl --build-cache` again after adding, changing or removing a syntax, and af
 ### Behavior details
 
 - The language is determined in this order: `-l`, `--map-syntax` (and `map-syntax` in the configuration file), extension, file name, then the first line (shebang, etc.). If none match, the file is printed as plain text.
-- If the first 8 KB of a file contain a NUL byte, the file is treated as binary and printed as-is without highlighting.
+- If the first 8 KB of a file contain a NUL byte, the file is treated as binary and printed without highlighting (as-is, except for the escape sequences removed as described below).
 - Input that is not valid UTF-8, such as Shift_JIS or EUC-JP, is printed as-is without highlighting, from the first invalid line on (or entirely, if the first 8 KB are invalid), so no bytes are replaced. hl does not guess other encodings.
 - UTF-16 files with a BOM are converted to UTF-8 and highlighted when output is colored. Without color they are printed as-is. A UTF-8 BOM is kept in the output and ignored for language detection.
 - Highlighting only manages a few hundred KB per second, so hl limits it to stay fast on huge files and minified JS/CSS. A file larger than `--max-size` is not highlighted at all; for input of unknown size such as stdin, highlighting stops once the limit is reached. When a line longer than `--max-line-length` appears, highlighting stops from that line on. In both cases hl prints the same bytes as `cat`, without a warning.
+- When output is colored, escape sequences in the input are removed, so that they neither mix with the highlight colors nor control the terminal (window title, hyperlinks, clipboard, ...). This covers CSI (`ESC [ ... m`, etc.), OSC, DCS and the other strings ended by BEL or ST, and the other sequences starting with ESC, also in the parts printed without highlighting (binary files, input past `--max-size` or `--max-line-length`, lines after one that is not valid UTF-8). A string without its terminator ends at the end of the line, and a sequence cut off by the end of the input is dropped. Without color, the output is the same as `cat`'s. `--strip-ansi=always` removes them from uncolored output too, and `--strip-ansi=never` keeps them. UTF-16 printed without conversion keeps its escape sequences.
 - With `-v`, `-E`, `-T` (or `-A`, `-e`, `-t`), output is not highlighted, so it is identical to `cat`'s. `-n`, `-b` and `-s` work together with highlighting.
 - With `--header`, each input, including a single file, starts with a `==> FILE <==` line (`==> standard input <==` for stdin), with a blank line between files. The header is bold when output is colored. Header lines are not numbered by `-n` or `-b`, and numbering continues across files as usual. A file that can't be opened gets no header. Without `--header`, the output is the same as `cat`'s.
 - With `-r`, the lines before the range are still read and highlighted without being printed, so the printed lines get the same colors as when the whole file is shown, and reading stops after the range. The range applies to each input on its own: `-n` and `-b` show the line numbers of that input, counting the lines outside the range (and those squeezed by `-s`), and a file that ends without a newline inside the range gets one before the next input. Without `-r`, numbering continues across files as with `cat`.

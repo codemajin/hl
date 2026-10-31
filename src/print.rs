@@ -9,6 +9,7 @@ use std::{
 use crate::{
     diag::describe,
     encoding::{UTF8_BOM, Utf16Decoder, is_utf8_prefix, utf16_bom},
+    escape::StripEscapes,
     highlight::{Highlighter, Limits, Syntax},
     lines::{LineState, Visibility, write_plain},
 };
@@ -150,6 +151,8 @@ pub struct Printer<'a> {
     pub forced: Option<&'a Syntax>,
     pub vis: Visibility,
     pub limits: Limits,
+    /// Whether to remove the escape sequences of the input.
+    pub strip: bool,
 }
 
 impl<'a> Printer<'a> {
@@ -161,21 +164,52 @@ impl<'a> Printer<'a> {
         } = input;
         let mut reader = BufReader::with_capacity(64 * 1024, source);
 
-        let Some(hl) = self.highlighter.as_ref().filter(|_| !too_large) else {
+        let hl = self.highlighter.as_ref().filter(|_| !too_large);
+        if hl.is_none() && !self.strip {
             return write_plain(&mut reader, out, lines, self.vis);
-        };
+        }
         let head = reader.fill_buf()?;
         if let Some(endian) = utf16_bom(head) {
+            let Some(hl) = hl else {
+                // UTF-16 printed as is keeps its escape sequences, because
+                // dropping single bytes would break it.
+                return write_plain(&mut reader, out, lines, self.vis);
+            };
             // Terminals expect UTF-8, so UTF-16 is converted for highlighting.
             reader.consume(2);
-            let mut decoded = BufReader::new(Utf16Decoder::new(&mut reader, endian));
-            let syntax = self.choose_syntax(hl, &mut decoded, path)?;
-            return hl.write(&mut decoded, out, syntax, lines, self.limits);
+            let decoded = BufReader::new(Utf16Decoder::new(&mut reader, endian));
+            return self.filtered(decoded, |r| self.highlight(hl, r, path, out, lines));
         }
         let peek = &head[..head.len().min(PEEK_LEN)];
-        if peek.contains(&0) || !is_utf8_prefix(peek) {
-            return write_plain(&mut reader, out, lines, self.vis);
+        let binary = peek.contains(&0) || !is_utf8_prefix(peek);
+        match hl.filter(|_| !binary) {
+            Some(hl) => self.filtered(reader, |r| self.highlight(hl, r, path, out, lines)),
+            None => self.filtered(reader, |mut r| write_plain(&mut r, out, lines, self.vis)),
         }
+    }
+
+    /// Runs `f` on `reader`, with the escape sequences removed when asked.
+    fn filtered<R: BufRead>(
+        &self,
+        reader: R,
+        f: impl FnOnce(&mut dyn BufRead) -> io::Result<()>,
+    ) -> io::Result<()> {
+        if self.strip {
+            f(&mut StripEscapes::new(reader))
+        } else {
+            let mut reader = reader;
+            f(&mut reader)
+        }
+    }
+
+    fn highlight(
+        &self,
+        hl: &Highlighter<'a>,
+        mut reader: &mut dyn BufRead,
+        path: Option<&Path>,
+        out: &mut impl Write,
+        lines: &mut LineState,
+    ) -> io::Result<()> {
         let syntax = self.choose_syntax(hl, &mut reader, path)?;
         hl.write(&mut reader, out, syntax, lines, self.limits)
     }
@@ -213,6 +247,7 @@ mod tests {
                 max_size: None,
                 max_line: None,
             },
+            strip: false,
         }
     }
 

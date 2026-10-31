@@ -1984,3 +1984,103 @@ fn skips_custom_themes_that_cannot_be_loaded() {
         )
         .stdout(expected);
 }
+
+/// The issue's example, with an OSC title, a hyperlink and colors.
+const ESCAPED_INPUT: &[u8] =
+    b"a\x1b[31mred\x1b[0m\n\x1b]0;title\x07\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\\n";
+
+fn assert_no_input_escapes(out: &[u8]) {
+    let text = String::from_utf8_lossy(out);
+    for seq in ["\x1b[31m", "\x1b]", "\x07", "\x1b\\"] {
+        assert!(!text.contains(seq), "{seq:?} left in {text:?}");
+    }
+}
+
+#[test]
+fn strips_escape_sequences_from_colored_input() {
+    let out = colored_stdout(
+        hl().args(["--color", "always", "-l", "txt"])
+            .write_stdin(ESCAPED_INPUT),
+    );
+    assert_no_input_escapes(&out);
+    assert!(has_escape(&out), "the output should still be colored");
+    assert_eq!(strip_ansi(&out), b"ared\nlink\n");
+}
+
+#[test]
+fn keeps_escape_sequences_without_color() {
+    hl().arg("-l")
+        .arg("txt")
+        .write_stdin(ESCAPED_INPUT)
+        .assert()
+        .success()
+        .stdout(ESCAPED_INPUT);
+}
+
+#[test]
+fn keeps_escape_sequences_with_strip_ansi_never() {
+    let out = colored_stdout(
+        hl().args(["--color", "always", "--strip-ansi", "never", "-l", "txt"])
+            .write_stdin(ESCAPED_INPUT),
+    );
+    let text = String::from_utf8_lossy(&out);
+    assert!(text.contains("\x1b[31mred"), "{text:?}");
+    assert!(text.contains("\x1b]0;title\x07"), "{text:?}");
+}
+
+#[test]
+fn strips_escape_sequences_without_color_when_always() {
+    hl().args(["--strip-ansi", "always"])
+        .write_stdin(ESCAPED_INPUT)
+        .assert()
+        .success()
+        .stdout("ared\nlink\n");
+}
+
+#[test]
+fn strips_escape_sequences_after_highlighting_stops() {
+    let out = colored_stdout(
+        hl().args(["--color", "always", "--max-line-length", "4", "-l", "txt"])
+            .write_stdin("ab\nabc\x1b[31mdef\x1b]0;t\x07\nx\x1b[0m\n"),
+    );
+    assert!(out.ends_with(b"abcdef\nx\n"), "{out:?}");
+    assert!(has_escape(&out[..out.len() - 9]), "{out:?}");
+}
+
+#[test]
+fn strips_escape_sequences_from_colored_binary_and_non_utf8_input() {
+    for input in [
+        &b"\x00a\x1b[31mb\x1b]0;t\x07\n"[..],
+        b"\xffa\x1b[31mb\x1b]0;t\x07\n",
+    ] {
+        let mut expected = input[..1].to_vec();
+        expected.extend_from_slice(b"ab\n");
+        hl().args(["--color", "always"])
+            .write_stdin(input)
+            .assert()
+            .success()
+            .stdout(expected);
+    }
+}
+
+#[test]
+fn strips_escape_sequences_from_utf16_after_decoding() {
+    let out = colored_stdout(
+        hl().args(["--color", "always", "-l", "txt"])
+            .write_stdin(utf16_with_bom("a\x1b[31mb\x1b]0;t\x07\n", false)),
+    );
+    assert_no_input_escapes(&out);
+    assert_eq!(strip_ansi(&out), b"ab\n");
+}
+
+#[test]
+fn reads_strip_ansi_from_the_config() {
+    let dir = tempdir();
+    let config = write_config(dir.path(), "strip-ansi = \"never\"\n");
+    let out = colored_stdout(
+        hl_with_config(&config)
+            .args(["--color", "always", "-l", "txt"])
+            .write_stdin(ESCAPED_INPUT),
+    );
+    assert!(String::from_utf8_lossy(&out).contains("\x1b[31mred"));
+}

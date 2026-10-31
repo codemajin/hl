@@ -37,6 +37,13 @@ impl PagingWhen {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum StripAnsi {
+    Auto,
+    Always,
+    Never,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum ColorDepth {
     Auto,
     #[value(name = "truecolor", alias = "24bit")]
@@ -152,6 +159,12 @@ pub struct Args {
     #[arg(long, env = "HL_COLOR_DEPTH", value_enum, value_name = "DEPTH", default_value_t = ColorDepth::Auto)]
     pub color_depth: ColorDepth,
 
+    /// When to remove escape sequences (colors, OSC, ...) from the input:
+    /// `auto` removes them only when the output is colored, `always` also
+    /// when it is not.
+    #[arg(long, value_enum, value_name = "WHEN", default_value_t = StripAnsi::Auto)]
+    pub strip_ansi: StripAnsi,
+
     /// List available themes and exit.
     #[arg(long)]
     pub list_themes: bool,
@@ -180,10 +193,11 @@ pub struct Args {
 
 /// Options whose default can be set in the config file, by their long name.
 /// Flags are left out because the command line could not turn them off.
-const CONFIG_KEYS: [&str; 6] = [
+const CONFIG_KEYS: [&str; 7] = [
     "theme",
     "color",
     "color-depth",
+    "strip-ansi",
     "paging",
     "max-size",
     "max-line-length",
@@ -281,6 +295,16 @@ impl Args {
                 ColorWhen::Never => false,
                 ColorWhen::Auto => tty,
             }
+    }
+
+    /// Whether to remove the escape sequences of the input, given whether
+    /// the output is colored.
+    pub fn strip_escapes(&self, color: bool) -> bool {
+        match self.strip_ansi {
+            StripAnsi::Auto => color,
+            StripAnsi::Always => true,
+            StripAnsi::Never => false,
+        }
     }
 
     /// Whether the syntaxes are needed. They are also loaded to report
@@ -444,6 +468,14 @@ mod tests {
         for flag in ["-v", "-A", "-e", "-E", "-t", "-T"] {
             assert!(!args(&["--color=always", flag]).use_color(true), "{flag}");
         }
+    }
+
+    #[test]
+    fn strips_escapes_only_when_colored_by_default() {
+        assert!(args(&[]).strip_escapes(true));
+        assert!(!args(&[]).strip_escapes(false));
+        assert!(args(&["--strip-ansi=always"]).strip_escapes(false));
+        assert!(!args(&["--strip-ansi=never"]).strip_escapes(true));
     }
 
     #[test]
