@@ -1420,7 +1420,7 @@ fn ignores_bad_config_entries_and_keeps_the_rest() {
     let dir = tempdir();
     let config = write_config(
         dir.path(),
-        "color = \"always\"\ncolor-depth = \"16\"\nnumber = 1\npaging = true\n",
+        "color = \"always\"\ncolor-depth = \"16\"\nnumber = 1\npaging = true\nhighlight = 1\n",
     );
     hl_with_config(&config)
         .arg("Cargo.toml")
@@ -1429,13 +1429,58 @@ fn ignores_bad_config_entries_and_keeps_the_rest() {
         .stderr(
             predicate::str::contains("invalid value '16' for 'color-depth', ignoring it")
                 .and(predicate::str::contains(
-                    "unknown key 'number', ignoring it",
+                    "'number' must be true or false, ignoring it",
+                ))
+                .and(predicate::str::contains(
+                    "unknown key 'highlight', ignoring it",
                 ))
                 .and(predicate::str::contains(
                     "'paging' must be a string or an integer, ignoring it",
                 )),
         )
         .stdout(predicate::str::contains(ANSI256));
+}
+
+#[test]
+fn reads_flags_from_the_config() {
+    let dir = tempdir();
+    let config = write_config(dir.path(), "number = true\nheader = true\n");
+    let files = write_files(dir.path(), &[("a.txt", "one\n\n")]);
+    hl_with_config(&config)
+        .args(&files)
+        .assert()
+        .success()
+        .stderr("")
+        .stdout(format!(
+            "==> {} <==\n     1\tone\n     2\t\n",
+            files[0].display()
+        ));
+}
+
+#[test]
+fn command_line_cancels_config_flags() {
+    let dir = tempdir();
+    let config = write_config(dir.path(), "number = true\nheader = true\n");
+    let content = fs::read("Cargo.toml").unwrap();
+    hl_with_config(&config)
+        .args(["--no-number", "--no-header", "Cargo.toml"])
+        .assert()
+        .success()
+        .stderr("")
+        .stdout(content);
+}
+
+/// The `--no-*` options are left out of `-h` to keep it short.
+#[test]
+fn shows_no_options_only_in_long_help() {
+    hl().arg("-h")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--no-number").not());
+    hl().arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--no-number"));
 }
 
 #[test]
@@ -1674,7 +1719,8 @@ fn warns_about_config_mappings_of_the_wrong_type() {
             "theme = [\"Nord\"]\n",
             "'theme' must be a string or an integer",
         ),
-        ("number = [\"1\"]\n", "unknown key 'number'"),
+        ("number = [\"1\"]\n", "'number' must be true or false"),
+        ("pager = [\"less\"]\n", "unknown key 'pager'"),
     ] {
         let config = write_config(dir.path(), content);
         hl_with_config(&config)

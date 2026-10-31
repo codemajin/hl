@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Completion scripts for bash, zsh and fish and the man page in the release archives.
 - `-H`/`--highlight-line` to show some lines with a background color.
 - `--strip-ansi` (`auto`, `always`, `never`) to choose when escape sequences are removed from the input.
+- `number`, `number-nonblank`, `squeeze-blank` and `header` in the config file, and `--no-number`, `--no-number-nonblank`, `--no-squeeze-blank` and `--no-header` to turn them off for one run.
 
 ### Changed
 

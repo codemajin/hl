@@ -62,16 +62,28 @@ pub struct Args {
     pub files: Vec<PathBuf>,
 
     /// Number all output lines (continuous across files, like `cat -n`).
-    #[arg(short = 'n', long)]
+    #[arg(short = 'n', long, overrides_with = "no_number")]
     pub number: bool,
 
+    /// Cancel -n, e.g. when it is set in the config file.
+    #[arg(long, overrides_with = "number", hide_short_help = true)]
+    no_number: bool,
+
     /// Number non-empty output lines; overrides -n.
-    #[arg(short = 'b', long)]
+    #[arg(short = 'b', long, overrides_with = "no_number_nonblank")]
     pub number_nonblank: bool,
 
+    /// Cancel -b, e.g. when it is set in the config file.
+    #[arg(long, overrides_with = "number_nonblank", hide_short_help = true)]
+    no_number_nonblank: bool,
+
     /// Suppress repeated empty output lines.
-    #[arg(short = 's', long)]
+    #[arg(short = 's', long, overrides_with = "no_squeeze_blank")]
     pub squeeze_blank: bool,
+
+    /// Cancel -s, e.g. when it is set in the config file.
+    #[arg(long, overrides_with = "squeeze_blank", hide_short_help = true)]
+    no_squeeze_blank: bool,
 
     /// Print only lines N to M of each input (N:M, N:, :M or N). Earlier
     /// lines are still read so that highlighting stays correct.
@@ -84,8 +96,12 @@ pub struct Args {
     pub highlight_line: Vec<LineRange>,
 
     /// Print a `==> FILE <==` header before each input.
-    #[arg(long)]
+    #[arg(long, overrides_with = "no_header")]
     pub header: bool,
+
+    /// Cancel --header, e.g. when it is set in the config file.
+    #[arg(long, overrides_with = "header", hide_short_help = true)]
+    no_header: bool,
 
     /// Equivalent to -vET.
     #[arg(short = 'A', long)]
@@ -192,7 +208,6 @@ pub struct Args {
 }
 
 /// Options whose default can be set in the config file, by their long name.
-/// Flags are left out because the command line could not turn them off.
 const CONFIG_KEYS: [&str; 7] = [
     "theme",
     "color",
@@ -203,9 +218,23 @@ const CONFIG_KEYS: [&str; 7] = [
     "max-line-length",
 ];
 
+/// Flags that the config file can turn on with `true`. They are applied
+/// after parsing rather than as clap defaults: clap fills in the default of
+/// a flag removed by `overrides_with` again, so `--no-*` could not turn
+/// them off.
+const CONFIG_FLAGS: [&str; 4] = ["number", "number-nonblank", "squeeze-blank", "header"];
+
 /// The config key listing `--map-syntax` mappings. Unlike the keys above, it
 /// adds to the command-line values instead of supplying a default.
 const MAP_SYNTAX_KEY: &str = "map-syntax";
+
+/// What the config file adds to the command line besides option defaults.
+#[derive(Default)]
+struct ConfigExtras {
+    /// Flags set to `true`.
+    flags: Vec<&'static str>,
+    mappings: Vec<SyntaxMapping>,
+}
 
 /// Parses the command line, with `config` supplying the defaults.
 ///
@@ -213,30 +242,40 @@ const MAP_SYNTAX_KEY: &str = "map-syntax";
 /// itself gives the precedence: command line, environment, config file,
 /// built-in default.
 pub fn parse_with(config: Option<&Config>) -> Args {
-    let (cmd, config_mappings) = match config {
+    let (cmd, extras) = match config {
         Some(config) => apply_config(Args::command(), config),
-        None => (Args::command(), Vec::new()),
+        None => (Args::command(), ConfigExtras::default()),
     };
     let mut args = Args::from_arg_matches_mut(&mut cmd.get_matches()).unwrap_or_else(|e| e.exit());
-    args.config_mappings = config_mappings;
+    args.apply_extras(extras);
     args
 }
 
-/// Sets the config values as the defaults of `cmd` and returns the config
-/// mappings. A bad entry warns and is ignored.
-fn apply_config(mut cmd: Command, config: &Config) -> (Command, Vec<SyntaxMapping>) {
+/// Sets the config values as the defaults of `cmd` and returns the flags
+/// and mappings of the config. A bad entry warns and is ignored.
+fn apply_config(mut cmd: Command, config: &Config) -> (Command, ConfigExtras) {
     // Checks each value on its own, without the environment, so that a bad
     // value is reported as coming from the config file.
     let probe = Args::command().mut_args(|arg| arg.env(None));
-    let mut mappings = Vec::new();
+    let mut extras = ConfigExtras::default();
     for (key, value) in &config.entries {
+        if let Some(&flag) = CONFIG_FLAGS.iter().find(|&&flag| flag == key) {
+            match value {
+                Value::Boolean(true) => extras.flags.push(flag),
+                Value::Boolean(false) => {}
+                _ => config.warn(&format!("'{key}' must be true or false, ignoring it")),
+            }
+            continue;
+        }
         let is_option = CONFIG_KEYS.contains(&key.as_str());
         let value = match value {
             Value::String(s) if is_option => s.clone(),
             Value::Integer(n) if is_option => n.to_string(),
             Value::Array(items) if key == MAP_SYNTAX_KEY && items.iter().all(Value::is_str) => {
                 let items = items.iter().filter_map(Value::as_str);
-                mappings.extend(items.filter_map(|item| parse_mapping(config, item)));
+                extras
+                    .mappings
+                    .extend(items.filter_map(|item| parse_mapping(config, item)));
                 continue;
             }
             _ if key == MAP_SYNTAX_KEY => {
@@ -261,7 +300,7 @@ fn apply_config(mut cmd: Command, config: &Config) -> (Command, Vec<SyntaxMappin
         }
         cmd = cmd.mut_arg(arg_id(key), |arg| arg.default_value(value));
     }
-    (cmd, mappings)
+    (cmd, extras)
 }
 
 /// A `map-syntax` entry of the config file, or `None` with a warning.
@@ -286,6 +325,27 @@ fn arg_id(key: &str) -> String {
 }
 
 impl Args {
+    /// Applies what the config file adds after parsing.
+    fn apply_extras(&mut self, extras: ConfigExtras) {
+        for flag in extras.flags {
+            self.apply_config_flag(flag);
+        }
+        self.config_mappings = extras.mappings;
+    }
+
+    /// Turns on the flag named `key` in [`CONFIG_FLAGS`], unless its `--no-*`
+    /// option was given.
+    fn apply_config_flag(&mut self, key: &str) {
+        let (on, off) = match key {
+            "number" => (&mut self.number, self.no_number),
+            "number-nonblank" => (&mut self.number_nonblank, self.no_number_nonblank),
+            "squeeze-blank" => (&mut self.squeeze_blank, self.no_squeeze_blank),
+            "header" => (&mut self.header, self.no_header),
+            _ => unreachable!("unknown config flag '{key}'"),
+        };
+        *on |= !off;
+    }
+
     /// Whether to color the output, given whether it goes to a terminal.
     /// `cat -v` style output is never highlighted, so it matches cat exactly.
     pub fn use_color(&self, tty: bool) -> bool {
@@ -437,10 +497,10 @@ mod tests {
 
     /// Parses `argv` with `config` applied, as `parse_with` does.
     fn args_with(config: &Config, argv: &[&str]) -> Args {
-        let (cmd, config_mappings) = apply_config(Args::command(), config);
+        let (cmd, extras) = apply_config(Args::command(), config);
         let matches = cmd.try_get_matches_from(["hl"].iter().chain(argv)).unwrap();
         let mut parsed = Args::from_arg_matches(&matches).unwrap();
-        parsed.config_mappings = config_mappings;
+        parsed.apply_extras(extras);
         parsed
     }
 
@@ -530,11 +590,78 @@ mod tests {
             color = "sometimes"
             paging = 1
             pager = "less"
+            header = "yes"
             "#,
         );
         let args = args_with(&config, &[]);
         assert_eq!(args.color, ColorWhen::Auto);
         assert_eq!(args.paging(), PagingWhen::Never);
+        assert!(!args.header);
+    }
+
+    #[test]
+    fn config_turns_flags_on() {
+        let on = config(
+            r#"
+            number = true
+            squeeze-blank = true
+            header = true
+            "#,
+        );
+        let args = args_with(&on, &[]);
+        assert_eq!(args.numbering(), Numbering::All);
+        assert!(args.squeeze_blank);
+        assert!(args.header);
+
+        let off = config("number = false\nheader = false");
+        let args = args_with(&off, &[]);
+        assert_eq!(args.numbering(), Numbering::None);
+        assert!(!args.header);
+    }
+
+    #[test]
+    fn no_flags_cancel_the_config() {
+        let config = config(
+            r#"
+            number = true
+            squeeze-blank = true
+            header = true
+            "#,
+        );
+        let cancelled = args_with(
+            &config,
+            &["--no-number", "--no-squeeze-blank", "--no-header"],
+        );
+        assert_eq!(cancelled.numbering(), Numbering::None);
+        assert!(!cancelled.squeeze_blank);
+        assert!(!cancelled.header);
+        // The last of a flag and its --no-* option wins.
+        assert_eq!(
+            args_with(&config, &["--no-number", "-n"]).numbering(),
+            Numbering::All
+        );
+        assert_eq!(args(&["-n", "--no-number"]).numbering(), Numbering::None);
+    }
+
+    #[test]
+    fn number_nonblank_wins_across_config_and_command_line() {
+        let nonblank = config("number-nonblank = true");
+        assert_eq!(
+            args_with(&nonblank, &["-n"]).numbering(),
+            Numbering::NonBlank
+        );
+        assert_eq!(
+            args_with(&nonblank, &["--no-number-nonblank", "-n"]).numbering(),
+            Numbering::All
+        );
+        let number = config("number = true");
+        assert_eq!(args_with(&number, &["-b"]).numbering(), Numbering::NonBlank);
+        let both = config("number = true\nnumber-nonblank = true");
+        assert_eq!(args_with(&both, &[]).numbering(), Numbering::NonBlank);
+        assert_eq!(
+            args_with(&both, &["--no-number-nonblank"]).numbering(),
+            Numbering::All
+        );
     }
 
     #[test]
@@ -570,6 +697,16 @@ mod tests {
                 cmd.get_arguments().any(|arg| arg.get_id() == id.as_str()),
                 "no option for config key '{key}'"
             );
+        }
+    }
+
+    /// `apply_config_flag` panics on an unknown key, so it must handle every
+    /// config flag.
+    #[test]
+    fn config_flags_are_handled() {
+        for key in CONFIG_FLAGS {
+            let mut parsed = args(&[]);
+            parsed.apply_config_flag(key);
         }
     }
 }

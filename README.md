@@ -130,6 +130,7 @@ hl --build-cache                 # cache custom syntaxes so that they load fast
 | `-r`, `--line-range <N:M>` | Print only lines N to M of each input. `N:` runs to the end, `:M` starts at line 1, and `N` prints a single line |
 | `-H`, `--highlight-line <N:M>` | Show lines N to M of each input with the background color of the theme's line highlight. Takes the same forms as `-r` and can be given more than once. The line number from `-n` or `-b` is highlighted too, but not the rest of the line beyond its text. Only applies when the output is colored, so it does not change plain output |
 | `--header` | Print a `==> FILE <==` header before each input |
+| `--no-number`, `--no-number-nonblank`, `--no-squeeze-blank`, `--no-header` | Turn off `-n`, `-b`, `-s` or `--header` set in the [configuration file](#configuration-file). Of a flag and its `--no-*` option, the one given last wins |
 | `-v`, `--show-nonprinting` | Show control characters and bytes 128 and above in `^` and `M-` notation (except newline and tab) |
 | `-E`, `--show-ends` | Print `$` at the end of each line |
 | `-T`, `--show-tabs` | Print tabs as `^I` |
@@ -179,10 +180,11 @@ strip-ansi = "auto"       # auto, always, never
 paging = "auto"           # auto, always, never
 max-size = "1M"           # integers such as 0 work too
 max-line-length = "16K"
+number = true             # also number-nonblank, squeeze-blank, header
 map-syntax = ["*.conf:INI", "Jenkinsfile:Groovy"]
 ```
 
-Settings apply in this order, highest first: command-line options, environment variables, the configuration file, then the built-in defaults. `hl --help` shows the defaults with the configuration file applied. Without a configuration file, `hl` behaves as before. If the file can't be read or isn't valid TOML, `hl` prints a warning and ignores the whole file. Unknown keys and invalid values get a warning and are skipped one by one. Flags such as `-n` and `--header` can't be set here, because they could not be turned off from the command line.
+Settings apply in this order, highest first: command-line options, environment variables, the configuration file, then the built-in defaults. `hl --help` shows the defaults with the configuration file applied. Without a configuration file, `hl` behaves as before. If the file can't be read or isn't valid TOML, `hl` prints a warning and ignores the whole file. Unknown keys and invalid values get a warning and are skipped one by one. The flags `number`, `number-nonblank`, `squeeze-blank` and `header` take `true` or `false`; a flag turned on here can be turned off for one run with `--no-number`, `--no-number-nonblank`, `--no-squeeze-blank` or `--no-header`. `-b` still takes precedence over `-n` wherever each comes from.
 
 `map-syntax` takes a list of `--map-syntax` values. Unlike the other keys, it does not supply a default that the command line replaces: `--map-syntax` adds to these mappings, and takes precedence over them when both match. An entry that is malformed or names an unknown language gets a warning and is skipped.
 
