@@ -21,7 +21,7 @@ use anyhow::{Result, anyhow, bail};
 use assets::CacheReport;
 use cli::{Args, PagingWhen};
 use config::Config;
-use diag::describe;
+use diag::{describe, escape_controls};
 use highlight::{Highlighter, Limits, find_language, resolve_mappings};
 use lines::{LineHighlight, LineState};
 use pager::Pager;
@@ -36,7 +36,8 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(err) => {
-            eprintln!("hl: {err}");
+            // The message can contain a path or a name from the user.
+            eprintln!("hl: {}", escape_controls(&format!("{err}")));
             ExitCode::FAILURE
         }
     }

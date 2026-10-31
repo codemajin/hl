@@ -19,7 +19,7 @@ use two_face::theme::LazyThemeSet;
 
 use crate::{
     config,
-    diag::{describe, warn},
+    diag::{describe, escape_controls, warn},
     highlight::DEFAULT_THEME,
 };
 
@@ -253,7 +253,8 @@ impl Themes {
                 eprintln!("hl: falling back to {DEFAULT_THEME}");
             }
             None => eprintln!(
-                "hl: unknown theme '{name}', falling back to {DEFAULT_THEME} (see --list-themes)"
+                "hl: unknown theme '{}', falling back to {DEFAULT_THEME} (see --list-themes)",
+                escape_controls(name)
             ),
         }
         self.bundled

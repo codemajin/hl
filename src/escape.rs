@@ -6,6 +6,8 @@ use std::io::{self, BufRead, Read};
 
 const ESC: u8 = 0x1b;
 const BEL: u8 = 0x07;
+/// The first byte of U+0080..=U+009F, the C1 controls, in UTF-8.
+const C1_LEAD: u8 = 0xc2;
 
 /// Where the filter is within an escape sequence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,16 +24,23 @@ enum State {
     Str,
     /// After `ESC` inside a string, which may be the start of ST (`ESC \`).
     StrEsc,
+    /// After `0xC2`, which may be the start of a C1 control.
+    C1,
+    /// After `0xC2` inside a string, which may be the start of ST (U+009C).
+    StrC1,
 }
 
 /// Reads `inner` with its escape sequences removed: CSI, the strings (OSC,
 /// DCS, SOS, PM, APC) ended by BEL or ST, and the other sequences starting
-/// with ESC. A sequence split across reads is still removed.
+/// with ESC. The C1 controls encoded in UTF-8 (U+0080..=U+009F) are removed
+/// too, and the 8-bit CSI and strings among them start a sequence like their
+/// 7-bit forms. A sequence split across reads is still removed.
 ///
 /// A string also ends at a newline, which is kept, so that an unterminated
 /// one does not swallow the rest of the input. A sequence cut off by the end
-/// of the input is dropped. Only ASCII bytes are removed, apart from the
-/// whole content of a string, so valid UTF-8 stays valid.
+/// of the input is dropped. Only ASCII bytes and whole C1 characters are
+/// removed, apart from the whole content of a string, so valid UTF-8 stays
+/// valid.
 pub struct StripEscapes<R> {
     inner: R,
     state: State,
@@ -56,21 +65,42 @@ impl<R: BufRead> StripEscapes<R> {
 fn feed(state: State, b: u8, out: &mut Vec<u8>) -> State {
     match (state, b) {
         (State::Ground | State::EscIntermediate | State::Csi, ESC) => State::Esc,
+        (State::Ground, C1_LEAD) => State::C1,
         (State::Ground, _) => {
             out.push(b);
             State::Ground
         }
         (State::Esc | State::StrEsc, _) => after_esc(state, b, out),
+        (State::C1, _) => after_c1_lead(b, out),
         (State::EscIntermediate, 0x20..=0x2f) | (State::Csi, 0x20..=0x3f) => state,
         (State::EscIntermediate, 0x30..=0x7e) | (State::Csi, 0x40..=0x7e) => State::Ground,
-        // A byte that cannot be part of the sequence ends it and is kept.
-        (State::EscIntermediate | State::Csi, _) | (State::Str, b'\n') => {
+        // A byte that cannot be part of the sequence ends it and is kept,
+        // unless it starts another one.
+        (State::EscIntermediate | State::Csi, _) => feed(State::Ground, b, out),
+        (State::Str | State::StrC1, b'\n') => {
             out.push(b);
             State::Ground
         }
-        (State::Str, BEL) => State::Ground,
-        (State::Str, ESC) => State::StrEsc,
-        (State::Str, _) => State::Str,
+        (State::StrC1, 0x9c) | (State::Str | State::StrC1, BEL) => State::Ground,
+        (State::Str | State::StrC1, ESC) => State::StrEsc,
+        (State::Str | State::StrC1, C1_LEAD) => State::StrC1,
+        (State::Str | State::StrC1, _) => State::Str,
+    }
+}
+
+/// The state after `0xC2 b` outside a string. A C1 control is dropped, and
+/// any other character is kept.
+fn after_c1_lead(b: u8, out: &mut Vec<u8>) -> State {
+    match b {
+        // CSI
+        0x9b => State::Csi,
+        // DCS, SOS, OSC, PM, APC
+        0x90 | 0x98 | 0x9d | 0x9e | 0x9f => State::Str,
+        0x80..=0x9f => State::Ground,
+        _ => {
+            out.push(C1_LEAD);
+            feed(State::Ground, b, out)
+        }
     }
 }
 
@@ -85,10 +115,7 @@ fn after_esc(state: State, b: u8, out: &mut Vec<u8>) -> State {
         0x30..=0x7e => State::Ground,
         ESC => State::Esc,
         // A lone ESC is dropped and the byte after it is kept.
-        _ => {
-            out.push(b);
-            State::Ground
-        }
+        _ => feed(State::Ground, b, out),
     }
 }
 
@@ -111,6 +138,12 @@ impl<R: BufRead> BufRead for StripEscapes<R> {
             self.pos = 0;
             let chunk = self.inner.fill_buf()?;
             if chunk.is_empty() {
+                // A lone 0xC2 is not a sequence, so it is kept like the
+                // other bytes that are not valid UTF-8.
+                if self.state == State::C1 {
+                    self.buf.push(C1_LEAD);
+                    self.state = State::Ground;
+                }
                 break;
             }
             for &b in chunk {
@@ -227,6 +260,40 @@ mod tests {
         assert_strips(b"\x1b[3\x1b[1mb", b"b");
         assert_strips(b"\x1b]0;title\x1b[31mc", b"c");
         assert_strips(b"\x1b(\x1b[1md", b"d");
+    }
+
+    #[test]
+    fn removes_c1_controls() {
+        assert_strips(b"a\xc2\x85b\xc2\x80\xc2\x9c\n", b"ab\n");
+        assert_strips(b"\xc2\xc2\x84a", b"\xc2a");
+    }
+
+    #[test]
+    fn removes_8_bit_csi_and_strings() {
+        assert_strips(b"a\xc2\x9b31mred\n", b"ared\n");
+        assert_strips(b"\xc2\x9d0;title\xc2\x9cx", b"x");
+        assert_strips(b"\xc2\x9d0;title\x07x", b"x");
+        assert_strips(b"\xc2\x9d0;title\x1b\\x", b"x");
+        assert_strips(b"\xc2\x90q\xc2\x9cx\xc2\x9fapc\xc2\x9cy", b"xy");
+        assert_strips(b"\x1b]0;t\xc2\x9cz", b"z");
+        assert_strips("\u{9d}2;日本語\u{a0}\u{9c}x".as_bytes(), b"x");
+        assert_strips(b"\xc2\x9d0;title\nb", b"\nb");
+    }
+
+    #[test]
+    fn c1_starts_a_new_sequence() {
+        assert_strips(b"\x1b[3\xc2\x9b1mb", b"b");
+        assert_strips(b"\x1b(\xc2\x9b1mc", b"c");
+        assert_strips(b"\x1b\xc2\x9b1md", b"d");
+    }
+
+    #[test]
+    fn keeps_other_characters_starting_with_0xc2() {
+        assert_strips("\u{a0}é©\n".as_bytes(), "\u{a0}é©\n".as_bytes());
+        assert_strips("\x1b[3\u{a0}".as_bytes(), "\u{a0}".as_bytes());
+        assert_strips(b"\xc2a", b"\xc2a");
+        assert_strips(b"a\xc2", b"a\xc2");
+        assert_strips(b"\xc2\x1b[1mb", b"\xc2b");
     }
 
     #[test]

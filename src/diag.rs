@@ -1,10 +1,36 @@
 //! Messages on stderr.
 
-use std::{io, path::Path};
+use std::{borrow::Cow, fmt::Write, io, path::Path};
 
 /// Warns about a problem with `path` that does not stop `hl`.
 pub fn warn(path: &Path, msg: &str) {
-    eprintln!("hl: {}: {msg}", path.display());
+    eprintln!("hl: {}: {msg}", display_safe(path));
+}
+
+/// `path` as shown to the user, with its control characters made visible so
+/// that a crafted file name cannot control the terminal.
+pub fn display_safe(path: &Path) -> Cow<'_, str> {
+    match path.to_string_lossy() {
+        Cow::Borrowed(s) => escape_controls(s),
+        Cow::Owned(s) => Cow::Owned(escape_controls(&s).into_owned()),
+    }
+}
+
+/// `s` with the C0 controls, DEL and the C1 controls written as `\x1b`.
+pub fn escape_controls(s: &str) -> Cow<'_, str> {
+    // `char::is_control` is exactly C0, DEL and C1.
+    if !s.contains(char::is_control) {
+        return Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        if c.is_control() {
+            let _ = write!(out, "\\x{:02x}", u32::from(c));
+        } else {
+            out.push(c);
+        }
+    }
+    Cow::Owned(out)
 }
 
 /// Strips the "(os error N)" suffix to match coreutils-style messages.
@@ -30,6 +56,34 @@ mod tests {
             "{full}"
         );
         assert!(!msg.contains("os error"), "{msg}");
+    }
+
+    #[test]
+    fn escapes_control_characters() {
+        assert_eq!(
+            escape_controls("a\x1b]0;t\x07\tb\x7f\u{9b}c"),
+            r"a\x1b]0;t\x07\x09b\x7f\x9bc"
+        );
+    }
+
+    #[test]
+    fn keeps_text_without_control_characters() {
+        let text = "日本語 é\u{a0}~";
+        assert!(matches!(escape_controls(text), Cow::Borrowed(s) if s == text));
+    }
+
+    #[test]
+    fn displays_paths_safely() {
+        assert_eq!(display_safe(Path::new("dir/a\x1b[2Jb")), r"dir/a\x1b[2Jb");
+        assert_eq!(display_safe(Path::new("dir/a.rs")), "dir/a.rs");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn displays_non_utf8_paths_safely() {
+        use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+        let path = Path::new(OsStr::from_bytes(b"\xff\x1b"));
+        assert_eq!(display_safe(path), "\u{FFFD}\\x1b");
     }
 
     #[test]

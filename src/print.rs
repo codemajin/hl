@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::{
-    diag::describe,
+    diag::{describe, display_safe},
     encoding::{UTF8_BOM, Utf16Decoder, is_utf8_prefix, utf16_bom},
     escape::StripEscapes,
     highlight::{Highlighter, Limits, Syntax},
@@ -43,7 +43,7 @@ pub fn print_all<'p, W: Write>(
             // The output is gone, so there is no point in reading more input.
             Err(e) if out.failed() => return (failed, Some(e)),
             Err(e) => {
-                eprintln!("hl: {}: {}", input.display(), describe(&e));
+                eprintln!("hl: {}: {}", display_safe(input), describe(&e));
                 failed = true;
             }
         }
@@ -120,7 +120,7 @@ impl Headers {
         let name = if is_stdin(path) {
             "standard input".into()
         } else {
-            path.display().to_string()
+            display_safe(path)
         };
         if self.bold {
             writeln!(out, "\x1b[1m==> {name} <==\x1b[0m")
@@ -170,15 +170,15 @@ impl<'a> Printer<'a> {
         }
         let head = reader.fill_buf()?;
         if let Some(endian) = utf16_bom(head) {
-            let Some(hl) = hl else {
-                // UTF-16 printed as is keeps its escape sequences, because
-                // dropping single bytes would break it.
-                return write_plain(&mut reader, out, lines, self.vis);
-            };
             // Terminals expect UTF-8, so UTF-16 is converted for highlighting.
+            // It is also converted to remove its escape sequences, because
+            // dropping single bytes of UTF-16 would break it.
             reader.consume(2);
             let decoded = BufReader::new(Utf16Decoder::new(&mut reader, endian));
-            return self.filtered(decoded, |r| self.highlight(hl, r, path, out, lines));
+            return match hl {
+                Some(hl) => self.filtered(decoded, |r| self.highlight(hl, r, path, out, lines)),
+                None => self.filtered(decoded, |mut r| write_plain(&mut r, out, lines, self.vis)),
+            };
         }
         let peek = &head[..head.len().min(PEEK_LEN)];
         let binary = peek.contains(&0) || !is_utf8_prefix(peek);
