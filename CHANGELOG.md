@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `--completions <SHELL>` to print a completion script (bash, zsh, fish, elvish, PowerShell) and `--man` to print the man page.
 - Completion scripts for bash, zsh and fish and the man page in the release archives.
+- `-H`/`--highlight-line` to show some lines with a background color.
 
 ## [0.1.0] - 2026-10-30
 

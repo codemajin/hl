@@ -1,5 +1,8 @@
 use std::io::{self, BufRead, Write};
 
+/// Resets all colors.
+pub const RESET: &str = "\x1b[0m";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Numbering {
     None,
@@ -37,6 +40,20 @@ impl LineRange {
     }
 }
 
+/// The lines of each input to show with a background (`--highlight-line`).
+#[derive(Debug, Clone)]
+pub struct LineHighlight {
+    pub lines: Vec<LineRange>,
+    /// The escape sequence that sets the background.
+    pub sgr: String,
+}
+
+impl LineHighlight {
+    fn contains(&self, line: u64) -> bool {
+        self.lines.iter().any(|r| r.contains(line))
+    }
+}
+
 /// Where the output is within the current line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Cursor {
@@ -51,14 +68,20 @@ enum Cursor {
 ///
 /// With a line range, each input is counted on its own instead, and the line
 /// numbers are those of the input, including the lines outside the range.
+/// Highlighted lines are also those of each input, but leave the numbering
+/// as it is.
 pub struct LineState {
     numbering: Numbering,
     squeeze: bool,
     range: Option<LineRange>,
+    highlight: Option<LineHighlight>,
     line_no: u64,
-    /// Lines started in the current input, counted only with a range.
+    /// Lines started in the current input, counted only with a range or
+    /// highlighted lines.
     input_line: u64,
     prev_blank: bool,
+    /// Whether the current line was started with the highlight background.
+    highlighted: bool,
     cursor: Cursor,
 }
 
@@ -68,16 +91,28 @@ impl LineState {
             numbering,
             squeeze,
             range,
+            highlight: None,
             line_no: 0,
             input_line: 0,
             prev_blank: false,
+            highlighted: false,
             cursor: Cursor::LineStart,
         }
     }
 
-    /// True when lines pass through without numbering, squeezing or a range.
+    /// Shows the lines of `highlight` with its background.
+    pub fn with_highlight(mut self, highlight: LineHighlight) -> Self {
+        self.highlight = Some(highlight);
+        self
+    }
+
+    /// True when lines pass through without numbering, squeezing, a range or
+    /// highlighting.
     pub fn is_passthrough(&self) -> bool {
-        self.numbering == Numbering::None && !self.squeeze && self.range.is_none()
+        self.numbering == Numbering::None
+            && !self.squeeze
+            && self.range.is_none()
+            && self.highlight.is_none()
     }
 
     /// True when the rest of the current input is past the line range, so
@@ -93,13 +128,16 @@ impl LineState {
     /// Called before each input. With a line range, ends a line left
     /// unfinished by the previous input and restarts the counting, so that
     /// the range and the line numbers apply to each input on its own.
+    /// Highlighted lines only restart the counting of the input lines; a
+    /// line left unfinished continues as line 1 of the new input.
     pub fn start_input(&mut self, out: &mut impl Write) -> io::Result<()> {
-        if self.range.is_none() {
-            return Ok(());
+        if self.range.is_some() {
+            self.separate(out)?;
+            self.line_no = 0;
+            self.input_line = 0;
+        } else if self.highlight.is_some() {
+            self.input_line = u64::from(self.cursor != Cursor::LineStart);
         }
-        self.separate(out)?;
-        self.line_no = 0;
-        self.input_line = 0;
         Ok(())
     }
 
@@ -127,8 +165,11 @@ impl LineState {
             Numbering::All => true,
             Numbering::NonBlank => !blank,
         };
-        if let Some(range) = self.range {
+        self.highlighted = false;
+        if self.range.is_some() || self.highlight.is_some() {
             self.input_line += 1;
+        }
+        if let Some(range) = self.range {
             // Skipped and squeezed lines are counted too, to keep the
             // numbers of the input.
             if numbered {
@@ -142,6 +183,12 @@ impl LineState {
             return Ok(false);
         }
         self.prev_blank = blank;
+        if let Some(highlight) = &self.highlight
+            && highlight.contains(self.input_line)
+        {
+            out.write_all(highlight.sgr.as_bytes())?;
+            self.highlighted = true;
+        }
         if numbered {
             if self.range.is_none() {
                 self.line_no += 1;
@@ -161,6 +208,21 @@ impl LineState {
         self.cursor = Cursor::LineStart;
         self.prev_blank = false;
         Ok(())
+    }
+
+    /// Writes a chunk of the current line as it is, ending the highlight
+    /// background before the newline.
+    pub fn write_raw(&self, line: &[u8], out: &mut impl Write) -> io::Result<()> {
+        if !self.highlighted {
+            return out.write_all(line);
+        }
+        let (body, newline) = match line.strip_suffix(b"\n") {
+            Some(body) => (body, &b"\n"[..]),
+            None => (line, &b""[..]),
+        };
+        out.write_all(body)?;
+        out.write_all(RESET.as_bytes())?;
+        out.write_all(newline)
     }
 }
 
@@ -191,7 +253,7 @@ pub fn write_plain(
         if vis.any() {
             write_visible(&buf, vis, out)?;
         } else {
-            out.write_all(&buf)?;
+            lines.write_raw(&buf, out)?;
         }
     }
 }
@@ -333,6 +395,81 @@ mod tests {
         lines.start_input(&mut out).unwrap();
         out.extend(plain(b"b\n", &mut lines, Visibility::default()));
         assert_eq!(out, b"     1\tab\n");
+    }
+
+    fn highlight(lines: &[LineRange]) -> LineHighlight {
+        LineHighlight {
+            lines: lines.to_vec(),
+            sgr: "<bg>".to_string(),
+        }
+    }
+
+    fn line(n: u64) -> LineRange {
+        LineRange {
+            start: n,
+            end: Some(n),
+        }
+    }
+
+    #[test]
+    fn highlights_the_line_and_its_number() {
+        let mut lines = numbered(Numbering::All, None).with_highlight(highlight(&[line(2)]));
+        assert_eq!(
+            plain(b"a\nb\nc", &mut lines, Visibility::default()),
+            b"     1\ta\n<bg>     2\tb\x1b[0m\n     3\tc"
+        );
+    }
+
+    #[test]
+    fn ends_the_highlight_on_a_line_without_newline() {
+        let mut lines = numbered(Numbering::None, None).with_highlight(highlight(&[line(1)]));
+        assert_eq!(
+            plain(b"a", &mut lines, Visibility::default()),
+            b"<bg>a\x1b[0m"
+        );
+    }
+
+    #[test]
+    fn does_not_highlight_skipped_or_squeezed_lines() {
+        let range = LineRange {
+            start: 2,
+            end: None,
+        };
+        let squeezed = LineRange {
+            start: 3,
+            end: Some(4),
+        };
+        let mut lines = LineState::new(Numbering::None, true, Some(range))
+            .with_highlight(highlight(&[line(1), squeezed]));
+        assert_eq!(
+            plain(b"a\n\n\n\n", &mut lines, Visibility::default()),
+            b"\n"
+        );
+    }
+
+    #[test]
+    fn highlights_the_lines_of_each_input() {
+        let mut lines = numbered(Numbering::All, None).with_highlight(highlight(&[line(2)]));
+        let mut out = Vec::new();
+        for input in [&b"a\nb\n"[..], b"c\nd\n"] {
+            lines.start_input(&mut out).unwrap();
+            out.extend(plain(input, &mut lines, Visibility::default()));
+        }
+        assert_eq!(
+            out,
+            b"     1\ta\n<bg>     2\tb\x1b[0m\n     3\tc\n<bg>     4\td\x1b[0m\n"
+        );
+    }
+
+    #[test]
+    fn counts_an_unfinished_line_as_line_1_of_the_next_input() {
+        let mut lines = numbered(Numbering::None, None).with_highlight(highlight(&[line(2)]));
+        let mut out = Vec::new();
+        for input in [&b"a"[..], b"b\nc\n"] {
+            lines.start_input(&mut out).unwrap();
+            out.extend(plain(input, &mut lines, Visibility::default()));
+        }
+        assert_eq!(out, b"ab\n<bg>c\x1b[0m\n");
     }
 
     #[test]

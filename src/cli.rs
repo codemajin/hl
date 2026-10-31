@@ -71,6 +71,11 @@ pub struct Args {
     #[arg(short = 'r', long, value_name = "N:M", value_parser = parse_range)]
     pub line_range: Option<LineRange>,
 
+    /// Show lines N to M of each input with a background color, in the same
+    /// forms as --line-range. Can be repeated. Only applies to colored output.
+    #[arg(short = 'H', long, value_name = "N:M", value_parser = parse_range)]
+    pub highlight_line: Vec<LineRange>,
+
     /// Print a `==> FILE <==` header before each input.
     #[arg(long)]
     pub header: bool,
@@ -456,6 +461,24 @@ mod tests {
         assert!(!PagingWhen::Never.should_page(true));
         assert!(!PagingWhen::Always.should_page(false));
         assert_eq!(args(&["-p"]).paging(), PagingWhen::Always);
+    }
+
+    #[test]
+    fn highlight_line_can_be_repeated() {
+        let ranges = args(&["-H", "3", "--highlight-line", "5:6"]).highlight_line;
+        assert_eq!(
+            ranges,
+            [
+                LineRange {
+                    start: 3,
+                    end: Some(3),
+                },
+                LineRange {
+                    start: 5,
+                    end: Some(6),
+                },
+            ]
+        );
     }
 
     #[test]

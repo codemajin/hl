@@ -22,7 +22,7 @@ use cli::{Args, PagingWhen};
 use config::Config;
 use diag::describe;
 use highlight::{Highlighter, Limits, find_language, resolve_mappings};
-use lines::LineState;
+use lines::{LineHighlight, LineState};
 use pager::Pager;
 use print::{Headers, Input, Printer, TrackedWriter, is_stdin, print_all};
 
@@ -112,7 +112,15 @@ fn run(args: &Args) -> Result<ExitCode> {
     } else {
         args.files.clone()
     };
-    let lines = LineState::new(args.numbering(), args.squeeze_blank, args.line_range);
+    let mut lines = LineState::new(args.numbering(), args.squeeze_blank, args.line_range);
+    if let Some(hl) = &printer.highlighter
+        && !args.highlight_line.is_empty()
+    {
+        lines = lines.with_highlight(LineHighlight {
+            lines: args.highlight_line.clone(),
+            sgr: hl.line_highlight_sgr(),
+        });
+    }
     let headers = args.header.then(|| Headers::new(color));
     let limits = printer.limits;
     let open = |path| open_input(path, limits);

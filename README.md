@@ -108,6 +108,7 @@ hl src/main.rs Cargo.toml        # highlight with automatic language detection
 hl -n file.py                    # number lines (continuous across files)
 hl --header src/*.rs             # print a header with the file name before each file
 hl -n -r 120:160 src/main.rs     # print only lines 120 to 160, with their line numbers
+hl -r 110:130 -H 120 src/main.rs # print lines 110 to 130 and highlight line 120
 cat script | hl -l bash          # read stdin with an explicit language
 hl --map-syntax '*.conf:INI' app.conf  # highlight *.conf files as INI
 hl --theme Nord file.rs          # choose a theme
@@ -127,6 +128,7 @@ hl --build-cache                 # cache custom syntaxes so that they load fast
 | `-b`, `--number-nonblank` | Number non-empty output lines. Overrides `-n` |
 | `-s`, `--squeeze-blank` | Squeeze repeated empty lines into one |
 | `-r`, `--line-range <N:M>` | Print only lines N to M of each input. `N:` runs to the end, `:M` starts at line 1, and `N` prints a single line |
+| `-H`, `--highlight-line <N:M>` | Show lines N to M of each input with the background color of the theme's line highlight. Takes the same forms as `-r` and can be given more than once. The line number from `-n` or `-b` is highlighted too, but not the rest of the line beyond its text. Only applies when the output is colored, so it does not change plain output |
 | `--header` | Print a `==> FILE <==` header before each input |
 | `-v`, `--show-nonprinting` | Show control characters and bytes 128 and above in `^` and `M-` notation (except newline and tab) |
 | `-E`, `--show-ends` | Print `$` at the end of each line |

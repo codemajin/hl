@@ -47,8 +47,16 @@ pub fn as_256_terminal_escaped(ranges: &[(Style, &str)]) -> String {
     s
 }
 
+/// The escape sequence that sets `color` as the background.
+pub fn background_sgr(color: Color, depth: Depth) -> String {
+    match depth {
+        Depth::TrueColor => format!("\x1b[48;2;{};{};{}m", color.r, color.g, color.b),
+        Depth::Ansi256 => format!("\x1b[48;5;{}m", to_ansi256(color.r, color.g, color.b)),
+    }
+}
+
 /// Mixes a translucent foreground into the background, as syntect does.
-fn blend(fg: Color, bg: Color) -> Color {
+pub fn blend(fg: Color, bg: Color) -> Color {
     let a = u32::from(fg.a);
     let mix = |f: u8, b: u8| {
         let mixed = (u32::from(f) * a + u32::from(b) * (255 - a)) / 255;
@@ -156,6 +164,21 @@ mod tests {
         // 114 is closer to 95 than to 135; 116 is closer to 135.
         assert_eq!(to_ansi256(114, 0, 0), 16 + 36);
         assert_eq!(to_ansi256(116, 0, 0), 16 + 36 * 2);
+    }
+
+    #[test]
+    fn writes_the_background_in_either_depth() {
+        let color = Color {
+            r: 255,
+            g: 0,
+            b: 0,
+            a: 255,
+        };
+        assert_eq!(
+            background_sgr(color, Depth::TrueColor),
+            "\x1b[48;2;255;0;0m"
+        );
+        assert_eq!(background_sgr(color, Depth::Ansi256), "\x1b[48;5;196m");
     }
 
     #[test]
