@@ -1098,6 +1098,51 @@ fn starts_a_header_on_a_new_line() {
         ));
 }
 
+/// Runs `hl --header` with `opts` and returns stdout without SGR sequences.
+fn header_output(opts: &[&str], files: &[std::path::PathBuf]) -> String {
+    let out = hl()
+        .arg("--header")
+        .args(opts)
+        .args(files)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "hl {opts:?} failed");
+    String::from_utf8(strip_ansi(&out.stdout)).unwrap()
+}
+
+#[test]
+fn separates_files_the_same_way_in_every_mode() {
+    let dir = tempdir();
+    let files = write_files(dir.path(), &[("a.txt", "x"), ("b.txt", "y\n")]);
+    let (a, b) = (files[0].display(), files[1].display());
+    let expected = format!("==> {a} <==\nx\n\n==> {b} <==\ny\n");
+    for opts in [
+        &[][..],
+        &["--strip-ansi", "always"],
+        &["--color", "always"],
+        &["--color", "always", "--strip-ansi", "never"],
+    ] {
+        assert_eq!(header_output(opts, &files), expected, "options {opts:?}");
+    }
+    assert_eq!(
+        header_output(&["-n"], &files),
+        format!("==> {a} <==\n     1\tx\n\n==> {b} <==\n     2\ty\n")
+    );
+}
+
+#[test]
+fn separates_unterminated_utf16_files() {
+    let dir = tempdir();
+    let path = dir.path().join("utf16.txt");
+    fs::write(&path, utf16_with_bom("x", false)).unwrap();
+    let files = [path.clone(), path];
+    let name = files[0].display();
+    let expected = format!("==> {name} <==\nx\n\n==> {name} <==\nx");
+    for opts in [&["--strip-ansi", "always"][..], &["--color", "always"]] {
+        assert_eq!(header_output(opts, &files), expected, "options {opts:?}");
+    }
+}
+
 #[test]
 fn does_not_squeeze_across_a_header() {
     let dir = tempdir();

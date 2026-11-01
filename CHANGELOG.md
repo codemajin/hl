@@ -27,6 +27,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - JavaScript no longer hangs on a comment after an expression, such as `x /*`, also inside HTML, Markdown, Vue, Svelte and QML. The bundled JavaScript syntax carries a fix for it until it is fixed upstream.
 - A line that takes longer than 3 seconds to highlight no longer freezes `hl`: it warns and prints the rest of the input without highlighting.
 - `hl` no longer panics (exit status 101) when stderr can't be written, such as a pipe closed by the reader. The message is dropped, and the output and the exit status stay the same; before, a warning about the config file stopped `hl` before it printed anything.
+- With `--header`, a file that does not end with a newline is now followed by the blank line before the next header in every mode. Before, the blank line was missing without options and with `--strip-ansi=always`.
 - A closed stdout (`hl file >&-`) is reported as `hl: write error: Bad file descriptor` with exit status 1, like `cat`, instead of throwing the output away and exiting with 0.
 
 ### Security

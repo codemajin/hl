@@ -211,6 +211,16 @@ impl LineState {
         Ok(())
     }
 
+    /// Called after input was copied without going through `begin_line`,
+    /// with whether its last byte was a newline.
+    fn passed_through(&mut self, ends_line: bool) {
+        self.cursor = if ends_line {
+            Cursor::LineStart
+        } else {
+            Cursor::InLine { printing: true }
+        };
+    }
+
     /// Writes a chunk of the current line as it is, ending the highlight
     /// background before the newline. A chunk without a newline leaves the
     /// background on for the rest of the line.
@@ -258,8 +268,7 @@ fn write_plain_chunked(
     limit: usize,
 ) -> io::Result<()> {
     if lines.is_passthrough() && !vis.any() {
-        io::copy(reader, out)?;
-        return Ok(());
+        return copy_through(reader, out, lines);
     }
     let mut buf = Vec::new();
     loop {
@@ -279,6 +288,34 @@ fn write_plain_chunked(
             lines.write_raw(&buf, out)?;
         }
     }
+}
+
+/// Copies `reader` as it is, like `io::copy`, and tells `lines` whether the
+/// last byte ended a line, so that a header after it starts on its own line.
+fn copy_through(
+    reader: &mut impl BufRead,
+    out: &mut impl Write,
+    lines: &mut LineState,
+) -> io::Result<()> {
+    let mut last = None;
+    loop {
+        let available = match reader.fill_buf() {
+            Ok(available) => available,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        let Some(&byte) = available.last() else {
+            break;
+        };
+        out.write_all(available)?;
+        let len = available.len();
+        reader.consume(len);
+        last = Some(byte);
+    }
+    if let Some(byte) = last {
+        lines.passed_through(byte == b'\n');
+    }
+    Ok(())
 }
 
 /// Reads up to and including the next newline like `read_until(b'\n')`, but
@@ -394,6 +431,24 @@ mod tests {
         let input = b"a\n\xffb";
         let mut lines = numbered(Numbering::None, None);
         assert_eq!(plain(input, &mut lines, Visibility::default()), input);
+    }
+
+    #[test]
+    fn ends_a_line_left_open_by_passthrough_before_a_header() {
+        let mut lines = numbered(Numbering::None, None);
+        let mut out = plain(b"a\nb", &mut lines, Visibility::default());
+        lines.separate(&mut out).unwrap();
+        assert_eq!(out, b"a\nb\n");
+    }
+
+    #[test]
+    fn adds_nothing_after_a_finished_or_empty_passthrough() {
+        for input in [&b"a\n"[..], b""] {
+            let mut lines = numbered(Numbering::None, None);
+            let mut out = plain(input, &mut lines, Visibility::default());
+            lines.separate(&mut out).unwrap();
+            assert_eq!(out, input, "input {input:?}");
+        }
     }
 
     #[test]
