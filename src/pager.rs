@@ -1,8 +1,11 @@
 use std::{
-    env,
+    fmt,
     io::{self, Write},
+    path::Path,
     process::{Child, ChildStdin, Command, Stdio},
 };
+
+use crate::diag::describe;
 
 /// A running pager process whose stdin receives our output.
 ///
@@ -13,13 +16,41 @@ pub struct Pager {
     stdin: Option<ChildStdin>,
 }
 
+/// Why the pager could not be started.
+#[derive(Debug)]
+pub enum SpawnError {
+    /// `$PAGER` has an unclosed quote.
+    Parse(shell_words::ParseError),
+    /// The pager program could not be run.
+    Start { program: String, err: io::Error },
+}
+
+impl fmt::Display for SpawnError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Parse(err) => write!(f, "invalid PAGER: {err}"),
+            Self::Start { program, err } => {
+                write!(f, "failed to start pager '{program}': {}", describe(err))
+            }
+        }
+    }
+}
+
+impl std::error::Error for SpawnError {}
+
 impl Pager {
-    /// Starts `$PAGER`, falling back to `less -RX`. With `quit_if_one_screen`
-    /// the fallback is `less -RFX`, which exits at once when the output fits
-    /// on one screen; `$PAGER` is run as given either way.
-    pub fn spawn(quit_if_one_screen: bool) -> io::Result<Self> {
-        let (program, args) = command(env::var("PAGER").ok().as_deref(), quit_if_one_screen);
-        Self::start(&program, &args)
+    /// Starts the pager for `pager`, the value of `$PAGER` (see [`command`]).
+    /// `less_set` tells whether `$LESS` is set, and `quit_if_one_screen`
+    /// whether the pager should exit at once when the output fits on one
+    /// screen.
+    pub fn spawn(
+        pager: Option<&str>,
+        less_set: bool,
+        quit_if_one_screen: bool,
+    ) -> Result<Self, SpawnError> {
+        let (program, args) =
+            command(pager, less_set, quit_if_one_screen).map_err(SpawnError::Parse)?;
+        Self::start(&program, &args).map_err(|err| SpawnError::Start { program, err })
     }
 
     /// Starts `program` with `args`, piping our output to its stdin.
@@ -51,18 +82,32 @@ impl Pager {
     }
 }
 
-/// The program and arguments to run for `$PAGER` (`pager`), split at
-/// whitespace, or the `less` fallback when it is unset or blank.
-fn command(pager: Option<&str>, quit_if_one_screen: bool) -> (String, Vec<String>) {
-    let mut parts = pager
-        .unwrap_or_default()
-        .split_whitespace()
-        .map(String::from);
-    if let Some(program) = parts.next() {
-        return (program, parts.collect());
+/// The flags `less` needs to show our colors (`-R`) and to leave the output
+/// on the screen (`-X`), plus `-F` to exit at once when it fits on one screen.
+fn less_flags(quit_if_one_screen: bool) -> &'static str {
+    if quit_if_one_screen { "-RFX" } else { "-RX" }
+}
+
+/// The program and arguments to run for `$PAGER` (`pager`), split with the
+/// word splitting rules of the shell, or `less` when it is unset or blank.
+///
+/// A bare `less` (no arguments, `$LESS` unset) gets the same flags as the
+/// fallback; otherwise the user's own options are respected.
+fn command(
+    pager: Option<&str>,
+    less_set: bool,
+    quit_if_one_screen: bool,
+) -> Result<(String, Vec<String>), shell_words::ParseError> {
+    let mut words = shell_words::split(pager.unwrap_or_default())?.into_iter();
+    let Some(program) = words.next() else {
+        return Ok(("less".into(), vec![less_flags(quit_if_one_screen).into()]));
+    };
+    let mut args: Vec<String> = words.collect();
+    let is_less = Path::new(&program).file_name().is_some_and(|n| n == "less");
+    if is_less && args.is_empty() && !less_set {
+        args.push(less_flags(quit_if_one_screen).into());
     }
-    let flags = if quit_if_one_screen { "-RFX" } else { "-RX" };
-    ("less".to_string(), vec![flags.to_string()])
+    Ok((program, args))
 }
 
 impl Drop for Pager {
@@ -76,27 +121,73 @@ impl Drop for Pager {
 mod tests {
     use super::*;
 
+    /// `command` with `$LESS` unset, unwrapped.
+    fn cmd(pager: Option<&str>, quit_if_one_screen: bool) -> (String, Vec<String>) {
+        command(pager, false, quit_if_one_screen).unwrap()
+    }
+
+    fn words(program: &str, args: &[&str]) -> (String, Vec<String>) {
+        (program.into(), args.iter().map(|&a| a.into()).collect())
+    }
+
     #[test]
     fn falls_back_to_less() {
-        assert_eq!(command(None, false), ("less".into(), vec!["-RX".into()]));
-        assert_eq!(command(None, true), ("less".into(), vec!["-RFX".into()]));
+        assert_eq!(cmd(None, false), words("less", &["-RX"]));
+        assert_eq!(cmd(None, true), words("less", &["-RFX"]));
+        assert_eq!(cmd(Some(""), true), words("less", &["-RFX"]));
+        assert_eq!(cmd(Some(" \t"), false), words("less", &["-RX"]));
+        // The fallback is the same with `$LESS` set.
+        assert_eq!(command(None, true, true).unwrap(), words("less", &["-RFX"]));
+    }
+
+    #[test]
+    fn pager_is_split_like_the_shell() {
+        assert_eq!(cmd(Some("more"), true), words("more", &[]));
         assert_eq!(
-            command(Some(""), true),
-            ("less".into(), vec!["-RFX".into()])
+            cmd(Some("  less  -R   -S "), true),
+            words("less", &["-R", "-S"])
         );
         assert_eq!(
-            command(Some(" \t"), false),
-            ("less".into(), vec!["-RX".into()])
+            cmd(Some("sh -c 'exit 3'"), false),
+            words("sh", &["-c", "exit 3"])
+        );
+        assert_eq!(
+            cmd(Some(r#""/opt/my pager/bin/pg" -x"#), false),
+            words("/opt/my pager/bin/pg", &["-x"])
         );
     }
 
     #[test]
-    fn pager_is_split_at_whitespace() {
-        assert_eq!(command(Some("more"), true), ("more".into(), vec![]));
+    fn rejects_an_unclosed_quote() {
+        assert!(command(Some("sh -c 'exit 3"), false, false).is_err());
+        let err = Pager::spawn(Some("sh -c 'exit 3"), false, false)
+            .err()
+            .unwrap();
+        assert_eq!(err.to_string(), "invalid PAGER: missing closing quote");
+    }
+
+    #[test]
+    fn bare_less_gets_the_default_flags() {
+        assert_eq!(cmd(Some("less"), false), words("less", &["-RX"]));
+        assert_eq!(cmd(Some("less"), true), words("less", &["-RFX"]));
         assert_eq!(
-            command(Some("  less  -R   -S "), true),
-            ("less".into(), vec!["-R".into(), "-S".into()])
+            cmd(Some("/usr/bin/less"), true),
+            words("/usr/bin/less", &["-RFX"])
         );
+    }
+
+    #[test]
+    fn respects_the_users_less_options() {
+        // Arguments of its own.
+        assert_eq!(cmd(Some("less -S"), true), words("less", &["-S"]));
+        // Options in `$LESS`.
+        assert_eq!(
+            command(Some("less"), true, true).unwrap(),
+            words("less", &[])
+        );
+        // Other programs, even with a similar name.
+        assert_eq!(cmd(Some("lesspipe"), true), words("lesspipe", &[]));
+        assert_eq!(cmd(Some("most"), true), words("most", &[]));
     }
 
     /// A pager that copies its input to `path` instead of the terminal.
@@ -133,9 +224,30 @@ mod tests {
     }
 
     #[test]
-    fn reports_a_missing_pager() {
-        let err = Pager::start("hl-no-such-pager", &[]).err().unwrap();
-        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+    fn reports_a_missing_pager_by_name() {
+        let err = Pager::spawn(Some("hl-no-such-pager --flag"), false, false)
+            .err()
+            .unwrap();
+        let SpawnError::Start {
+            program,
+            err: source,
+        } = &err
+        else {
+            panic!("{err:?}");
+        };
+        assert_eq!(program, "hl-no-such-pager");
+        assert_eq!(source.kind(), io::ErrorKind::NotFound);
+        let msg = err.to_string();
+        assert!(
+            msg.starts_with("failed to start pager 'hl-no-such-pager': "),
+            "{msg}"
+        );
+        assert!(!msg.contains("os error"), "{msg}");
+        #[cfg(unix)]
+        assert_eq!(
+            msg,
+            "failed to start pager 'hl-no-such-pager': No such file or directory"
+        );
     }
 
     #[cfg(unix)]

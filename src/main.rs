@@ -12,6 +12,7 @@ mod print;
 mod stdout;
 
 use std::{
+    env,
     fs::File,
     io::{self, BufWriter, IsTerminal, Write},
     path::{Path, PathBuf},
@@ -107,7 +108,10 @@ fn run(args: &Args, stdout: io::Result<()>) -> Result<ExitCode> {
     };
 
     check_write(stdout)?;
-    let mut pager = start_pager(args.paging(), tty)?;
+    let pager_env = env::var("PAGER").ok();
+    // An empty `LESS` gives `less` no options, so it counts as unset.
+    let less_set = env::var_os("LESS").is_some_and(|v| !v.is_empty());
+    let mut pager = start_pager(args.paging(), tty, pager_env.as_deref(), less_set)?;
     let mut out = TrackedWriter::new(BufWriter::new(match pager.as_mut() {
         Some(p) => Box::new(p.stdin()) as Box<dyn Write>,
         None => Box::new(io::stdout().lock()),
@@ -149,13 +153,21 @@ fn run(args: &Args, stdout: io::Result<()>) -> Result<ExitCode> {
 }
 
 /// Starts the pager when `when` asks for one and there is a terminal.
-fn start_pager(when: PagingWhen, tty: bool) -> Result<Option<Pager>> {
+/// `pager` is the value of `$PAGER`, and `less_set` whether `$LESS` is set.
+fn start_pager(
+    when: PagingWhen,
+    tty: bool,
+    pager: Option<&str>,
+    less_set: bool,
+) -> Result<Option<Pager>> {
     if !when.should_page(tty) {
         return Ok(None);
     }
-    let pager = Pager::spawn(when == PagingWhen::Auto)
-        .map_err(|e| anyhow!("failed to start pager: {e}"))?;
-    Ok(Some(pager))
+    Ok(Some(Pager::spawn(
+        pager,
+        less_set,
+        when == PagingWhen::Auto,
+    )?))
 }
 
 fn open_input(path: &Path, limits: Limits) -> io::Result<Input<'_>> {
@@ -232,4 +244,39 @@ fn list_languages(out: &mut dyn Write) -> io::Result<()> {
         writeln!(out, "{name}: {}", extensions.join(", "))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MISSING: Option<&str> = Some("hl-no-such-pager");
+
+    #[test]
+    fn starts_no_pager_unless_asked_and_on_a_terminal() {
+        // A missing pager would fail if it were started.
+        for (when, tty) in [
+            (PagingWhen::Never, true),
+            (PagingWhen::Always, false),
+            (PagingWhen::Auto, false),
+        ] {
+            let pager = start_pager(when, tty, MISSING, false).unwrap();
+            assert!(pager.is_none(), "{when:?}, tty {tty}");
+        }
+    }
+
+    /// The error goes up through `run`, and `main` turns every error into
+    /// `hl: <message>` and exit status 1.
+    #[test]
+    fn reports_a_pager_that_fails_to_start() {
+        for when in [PagingWhen::Always, PagingWhen::Auto] {
+            let err = start_pager(when, true, MISSING, false).err().unwrap();
+            let msg = err.to_string();
+            assert!(
+                msg.starts_with("failed to start pager 'hl-no-such-pager': "),
+                "{msg}"
+            );
+            assert!(!msg.contains("os error"), "{msg}");
+        }
+    }
 }

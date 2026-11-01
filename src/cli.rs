@@ -158,7 +158,8 @@ pub struct Args {
     pub max_line_length: u64,
 
     /// When to send output through a pager ($PAGER, or `less`): `auto` pages
-    /// only when the output does not fit on one screen.
+    /// only when the output does not fit on one screen. A bare `less` in
+    /// $PAGER gets -RX (-RFX with `auto`) unless $LESS is set.
     #[arg(long, value_enum, value_name = "WHEN", default_value_t = PagingWhen::Never, overrides_with = "page")]
     paging: PagingWhen,
 
@@ -556,6 +557,24 @@ mod tests {
         assert!(!PagingWhen::Never.should_page(true));
         assert!(!PagingWhen::Always.should_page(false));
         assert_eq!(args(&["-p"]).paging(), PagingWhen::Always);
+    }
+
+    #[test]
+    fn last_of_p_and_paging_wins() {
+        assert_eq!(args(&["-p", "--paging=never"]).paging(), PagingWhen::Never);
+        assert_eq!(args(&["--paging=never", "-p"]).paging(), PagingWhen::Always);
+        assert_eq!(args(&["-p", "--paging=auto"]).paging(), PagingWhen::Auto);
+    }
+
+    #[test]
+    fn config_sets_paging() {
+        let auto = config(r#"paging = "auto""#);
+        assert_eq!(args_with(&auto, &[]).paging(), PagingWhen::Auto);
+        assert_eq!(
+            args_with(&auto, &["--paging=never"]).paging(),
+            PagingWhen::Never
+        );
+        assert_eq!(args_with(&auto, &["-p"]).paging(), PagingWhen::Always);
     }
 
     #[test]

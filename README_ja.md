@@ -143,7 +143,7 @@ hl --build-cache                 # ユーザー定義の構文をキャッシュ
 | `--theme <THEME>` | テーマを指定します（大文字・小文字は区別しません）。組み込みのテーマとユーザー定義のテーマが使えます。既定は `base16-ocean.dark` です。見つからないテーマ名を指定した場合は警告を出し、既定のテーマで表示します |
 | `--max-size <SIZE>` | これより大きい入力はハイライトせずに出力します。既定は `512K` です。`K`、`M`、`G`（1024 倍）の単位が使えます。`0` で上限をなくします |
 | `--max-line-length <LEN>` | これより長い行（改行を除いたバイト数）が出てきたら、その行から先をハイライトせずに出力します。既定は `16K` です。`0` で上限をなくします |
-| `--paging <WHEN>` | ページャを使うかどうか。`auto`、`always`、`never`（既定）から選びます。`auto` では、出力が 1 画面に収まらないときだけページャで表示します。ページャは `$PAGER`、未設定なら `less -RFX`（`auto`）か `less -RX`（`always`）です。標準出力が端末でなければページャは起動しません |
+| `--paging <WHEN>` | ページャを使うかどうか。`auto`、`always`、`never`（既定）から選びます。`auto` では、出力が 1 画面に収まらないときだけページャで表示します。ページャは `$PAGER`、未設定なら `less -RFX`（`auto`）か `less -RX`（`always`）です。`$PAGER` はシェルと同じ規則で単語に分けるので、クォートが使えます（`PAGER="less -R -S"`、`PAGER="'/opt/my pager/pg'"`）。`$PAGER` が引数のない `less` なら、`LESS` が未設定のときに限り同じ `-RFX` か `-RX` を補います。それ以外は `$PAGER` と `LESS` のオプションをそのまま使うので、色を表示するには `-R` を含めてください。標準出力が端末でなければページャは起動しません |
 | `-p` | `--paging=always` と同じ |
 | `--color <WHEN>` | 色を付ける条件を `auto`、`always`、`never` から選びます。既定の `auto` では、出力先が端末のときだけ色を付けます |
 | `--color-depth <DEPTH>` | 色深度を `auto`、`truecolor`（別名 `24bit`）、`256` から選びます。既定の `auto` では、`COLORTERM` が `truecolor` か `24bit` のとき、`TERM` が `-direct` で終わるとき、`WT_SESSION` が設定されているとき（Windows Terminal）に 24bit カラーを使い、それ以外では 256 色に近い色に置き換えて表示します |
@@ -167,6 +167,7 @@ hl --build-cache                 # ユーザー定義の構文をキャッシュ
 | `HL_COLOR_DEPTH` | `--color-depth` の既定値 |
 | `HL_CONFIG` | 設定ファイルの場所 |
 | `PAGER` | `--paging` と `-p` で使うページャ |
+| `LESS` | `less` のオプション。設定されていれば、`$PAGER` が引数のない `less` でもオプションを補いません |
 
 ### 設定ファイル
 
@@ -270,7 +271,7 @@ push と pull request のたびに、GitHub Actions が `cargo fmt --check`、`c
 | `build.rs` | two-face の JavaScript 構文の修正と、構文の同梱 |
 | `src/highlight.rs` | 言語判定、`--map-syntax` の対応付け、サイズの上限、ハイライト出力（syntect。専用のスレッドで、時間の上限付き） |
 | `src/lines.rs` | 行番号、空行の圧縮、`cat -v`/`-E`/`-T` の表記 |
-| `src/pager.rs` | ページャの起動と終了待ち |
+| `src/pager.rs` | `$PAGER` からのページャのコマンドの組み立て、起動、終了待ち |
 | `src/print.rs` | 各入力の順次出力（ハイライトありかなしか）、ヘッダ、文字コードの扱い |
 | `src/stdout.rs` | 起動時に標準出力が閉じられていたかの判定（std が `/dev/null` で開き直す前に確かめる） |
 

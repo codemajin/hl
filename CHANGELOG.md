@@ -21,6 +21,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- `PAGER=less` (without arguments, and with `LESS` unset) now shows the colors instead of raw escape sequences, and `--paging=auto` no longer pages output that fits on one screen: `less` gets the same `-RX` / `-RFX` as when `PAGER` is unset. `less` with arguments of its own, or with `LESS` set, is run as given.
+- `$PAGER` is split into words like the shell does, so quotes work (`PAGER="sh -c 'less -R'"`). An unclosed quote is reported as `hl: invalid PAGER: missing closing quote`.
+- A pager that fails to start is reported by name and without the OS error code, such as `hl: failed to start pager 'less': No such file or directory`.
 - JavaScript no longer hangs on a comment after an expression, such as `x /*`, also inside HTML, Markdown, Vue, Svelte and QML. The bundled JavaScript syntax carries a fix for it until it is fixed upstream.
 - A line that takes longer than 3 seconds to highlight no longer freezes `hl`: it warns and prints the rest of the input without highlighting.
 - `hl` no longer panics (exit status 101) when stderr can't be written, such as a pipe closed by the reader. The message is dropped, and the output and the exit status stay the same; before, a warning about the config file stopped `hl` before it printed anything.

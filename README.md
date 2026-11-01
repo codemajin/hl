@@ -143,7 +143,7 @@ hl --build-cache                 # cache custom syntaxes so that they load fast
 | `--theme <THEME>` | Color theme (case-insensitive), bundled or custom. Defaults to `base16-ocean.dark`, which is also used with a warning if the theme is not found |
 | `--max-size <SIZE>` | Print inputs larger than this without highlighting. Default `512K`. Accepts `K`, `M` and `G` (powers of 1024); `0` removes the limit |
 | `--max-line-length <LEN>` | Stop highlighting at the first line longer than this many bytes (excluding the newline). Default `16K`; `0` removes the limit |
-| `--paging <WHEN>` | When to show output in a pager: `auto`, `always`, or `never` (default). `auto` pages only when the output does not fit on one screen. The pager is `$PAGER`, or `less -RFX` (`auto`) / `less -RX` (`always`) if unset. No pager is started when stdout is not a terminal |
+| `--paging <WHEN>` | When to show output in a pager: `auto`, `always`, or `never` (default). `auto` pages only when the output does not fit on one screen. The pager is `$PAGER`, or `less -RFX` (`auto`) / `less -RX` (`always`) if unset. `$PAGER` is split into words like the shell does, so quotes work (`PAGER="less -R -S"`, `PAGER="'/opt/my pager/pg'"`). A bare `less` in `$PAGER` (no arguments) gets the same `-RFX` / `-RX` unless `LESS` is set; otherwise the options of `$PAGER` and `LESS` are used as they are, so include `-R` to see the colors. No pager is started when stdout is not a terminal |
 | `-p` | Same as `--paging=always` |
 | `--color <WHEN>` | When to use colors: `auto`, `always`, or `never`. The default `auto` colors output only when stdout is a terminal |
 | `--color-depth <DEPTH>` | Color depth: `auto`, `truecolor` (alias `24bit`), or `256`. The default `auto` uses 24-bit color when `COLORTERM` is `truecolor` or `24bit`, `TERM` ends in `-direct`, or `WT_SESSION` is set (Windows Terminal), and approximates colors to the 256 color palette otherwise |
@@ -167,6 +167,7 @@ With no file, or when the file is `-`, `hl` reads from standard input.
 | `HL_COLOR_DEPTH` | Default for `--color-depth` |
 | `HL_CONFIG` | Path of the configuration file |
 | `PAGER` | Pager used by `--paging` and `-p` |
+| `LESS` | Options for `less`. When set, hl adds no flags to a bare `less` in `$PAGER` |
 
 ### Configuration file
 
@@ -270,7 +271,7 @@ GitHub Actions runs `cargo fmt --check`, `cargo clippy` (warnings are errors) an
 | `build.rs` | Fixes the JavaScript syntax of two-face and bundles the syntaxes |
 | `src/highlight.rs` | Language detection, `--map-syntax` mappings, size limits, and highlighted output (syntect, on a thread of its own with a time limit) |
 | `src/lines.rs` | Line numbering, blank-line squeezing, and `cat -v`/`-E`/`-T` notation |
-| `src/pager.rs` | Starting the pager and waiting for it to exit |
+| `src/pager.rs` | Building the pager command from `$PAGER`, starting the pager and waiting for it to exit |
 | `src/print.rs` | Printing each input in turn, highlighted or plain, with headers and encoding handling |
 | `src/stdout.rs` | Telling whether stdout was closed at startup, before std reopens it on `/dev/null` |
 
