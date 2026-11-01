@@ -219,6 +219,8 @@ Run `hl --build-cache` again after adding, changing or removing a syntax, and af
 - Input that is not valid UTF-8, such as Shift_JIS or EUC-JP, is printed as-is without highlighting, from the first invalid line on (or entirely, if the first 8 KB are invalid), so no bytes are replaced. hl does not guess other encodings.
 - UTF-16 files with a BOM are converted to UTF-8 when output is colored or escape sequences are removed, and highlighted when output is colored and the file is within `--max-size`. Without color and with escape sequences kept, they are printed as-is. A UTF-8 BOM is kept in the output and ignored for language detection.
 - Highlighting only manages a few hundred KB per second, so hl limits it to stay fast on huge files and minified JS/CSS. A file larger than `--max-size` is not highlighted at all; for input of unknown size such as stdin, highlighting stops once the limit is reached. When a line longer than `--max-line-length` appears, highlighting stops from that line on. In both cases hl prints the same bytes as `cat`, without a warning.
+- If highlighting a line takes longer than 3 seconds, hl warns (`cannot highlight: a line took longer than 3s, printing the rest as plain text`) and prints that line and the rest of the input without highlighting, as it does after an error in a syntax. This happens when a syntax definition makes the highlighter loop forever on some input, as the Scala syntax does on `:a@<`. The stuck highlighting runs on a thread of its own that cannot be stopped, so it keeps a CPU core busy until hl exits, also while a pager shows the output.
+- The bundled JavaScript syntax, also used for JavaScript inside HTML, Markdown, Vue, Svelte and QML, has a fix on top of bat's: a comment after an expression, as in `x /*`, made it loop forever.
 - When output is colored, escape sequences in the input are removed, so that they neither mix with the highlight colors nor control the terminal (window title, hyperlinks, clipboard, ...). This covers CSI (`ESC [ ... m`, etc.), OSC, DCS and the other strings ended by BEL or ST, and the other sequences starting with ESC, as well as the C1 control characters encoded in UTF-8 (U+0080–U+009F; the 8-bit CSI U+009B and OSC U+009D start a sequence like `ESC [` and `ESC ]`), also in UTF-16 input after conversion and in the parts printed without highlighting (binary files, input past `--max-size` or `--max-line-length`, lines after one that is not valid UTF-8). A string without its terminator ends at the end of the line, and a sequence cut off by the end of the input is dropped. Without color, the output is the same as `cat`'s. `--strip-ansi=always` removes them from uncolored output too, and `--strip-ansi=never` keeps them. Carriage returns (`\r`) are kept as with `cat`, so a line can still be overwritten on the terminal.
 - Control characters in file names and theme names are shown as `\x1b` and the like in headers and messages, so a crafted name cannot control the terminal.
 - With `-v`, `-E`, `-T` (or `-A`, `-e`, `-t`), output is not highlighted, so it is identical to `cat`'s. `-n`, `-b` and `-s` work together with highlighting.
@@ -257,13 +259,14 @@ GitHub Actions runs `cargo fmt --check`, `cargo clippy` (warnings are errors) an
 | File | Role |
 | --- | --- |
 | `src/main.rs` | Entry point: builds the printer from the arguments and config, picks the pager or stdout, handles errors and the exit code |
-| `src/assets.rs` | Custom syntaxes and themes from the config directory, merged with the bundled ones, and the syntax cache (`--build-cache`/`--clear-cache`) |
+| `src/assets.rs` | The bundled syntaxes, custom syntaxes and themes from the config directory, merged with the bundled ones, and the syntax cache (`--build-cache`/`--clear-cache`) |
 | `src/cli.rs` | Command-line argument definitions (clap) and defaults from the config file |
 | `src/color.rs` | Terminal color depth detection and the 256-color fallback |
 | `src/config.rs` | Config file loading and the config/cache directory paths |
 | `src/diag.rs` | Warning and error messages on stderr |
 | `src/encoding.rs` | UTF-8/UTF-16 BOM detection and UTF-16 decoding |
-| `src/highlight.rs` | Language detection, `--map-syntax` mappings, size limits, and highlighted output (syntect) |
+| `build.rs` | Fixes the JavaScript syntax of two-face and bundles the syntaxes |
+| `src/highlight.rs` | Language detection, `--map-syntax` mappings, size limits, and highlighted output (syntect, on a thread of its own with a time limit) |
 | `src/lines.rs` | Line numbering, blank-line squeezing, and `cat -v`/`-E`/`-T` notation |
 | `src/pager.rs` | Starting the pager and waiting for it to exit |
 | `src/print.rs` | Printing each input in turn, highlighted or plain, with headers and encoding handling |
@@ -278,6 +281,8 @@ Dependabot (`.github/dependabot.yml`) opens update PRs every week, for the crate
 cargo install cargo-deny --locked
 cargo deny check
 ```
+
+The syntaxes come from two-face, but `build.rs` fixes its JavaScript syntax at build time (see Behavior details). If an update of two-face changes that syntax so that the fix no longer applies, the build fails. Then check whether `printf 'x /*' | hl --color=always -l js` still hangs with two-face's own syntaxes (for example by having `assets::bundled_syntaxes` return `two_face::syntax::extra_newlines()`), and update `build.rs`, or remove it once the fix is upstream.
 
 The minimum supported Rust version (MSRV, `rust-version` in `Cargo.toml`) may be raised when an update needs it, to a version at least six releases behind the latest stable; to get a fix for a vulnerability, it is always raised. Such an update fails the CI job with the MSRV. When raising it, update `rust-version` in `Cargo.toml`, the matrix in `.github/workflows/ci.yml`, the version in this README (Requirements and Development) and `CHANGELOG.md` together.
 

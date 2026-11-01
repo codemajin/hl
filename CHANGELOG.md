@@ -19,6 +19,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - When output is colored, escape sequences in the input (colors, OSC, ...) are removed by default, so that they no longer break the highlighting or control the terminal. Uncolored output is unchanged.
 - The removal also covers the C1 control characters encoded in UTF-8 (U+0080–U+009F, such as the 8-bit CSI and OSC), and UTF-16 input, which is converted to UTF-8 for it even when it is not highlighted (over `--max-size`, or with `--strip-ansi=always` and no color).
 
+### Fixed
+
+- JavaScript no longer hangs on a comment after an expression, such as `x /*`, also inside HTML, Markdown, Vue, Svelte and QML. The bundled JavaScript syntax carries a fix for it until it is fixed upstream.
+- A line that takes longer than 3 seconds to highlight no longer freezes `hl`: it warns and prints the rest of the input without highlighting.
+
 ### Security
 
 - Control characters in file names, theme names and error messages are shown as `\x1b` and the like in headers and on stderr, so that a crafted file name cannot control the terminal.

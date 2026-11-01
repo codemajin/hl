@@ -1,4 +1,4 @@
-use std::{fs, path::Path, sync::OnceLock};
+use std::{fs, path::Path, sync::OnceLock, time::Duration};
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -1961,6 +1961,52 @@ fn prints_the_rest_after_a_syntax_error() {
     );
 }
 
+/// A syntax that hands `x` back and forth between two contexts without
+/// consuming it, which makes syntect loop forever.
+const LOOPING_SYNTAX: &str = "%YAML 1.2
+---
+name: Loop
+file_extensions: [loop]
+scope: source.loop
+contexts:
+  main:
+    - match: (?=x)
+      set: other
+  other:
+    - match: (?=x)
+      set: main
+";
+
+#[test]
+fn prints_the_rest_plain_when_highlighting_hangs() {
+    let assets = Assets::new();
+    assets.syntax("Loop", LOOPING_SYNTAX);
+    let file = assets.file("a.loop", "a\nx\nb\n");
+    let out = assets
+        .hl()
+        .args(["--color", "always", "-n", &file])
+        .timeout(Duration::from_secs(20))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stdout = out.stdout;
+    let plain = b"     2\tx\n     3\tb\n";
+    assert!(stdout.ends_with(plain), "{stdout:?}");
+    assert!(
+        has_escape(&stdout[..stdout.len() - plain.len()]),
+        "{stdout:?}"
+    );
+    assert_eq!(strip_ansi(&stdout), b"     1\ta\n     2\tx\n     3\tb\n");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains(
+            "cannot highlight: a line took longer than 3s, printing the rest as plain text"
+        ),
+        "{stderr}"
+    );
+}
+
 #[test]
 fn caches_custom_syntaxes() {
     let assets = Assets::new();
@@ -2310,4 +2356,51 @@ fn reads_strip_ansi_from_the_config() {
             .write_stdin(ESCAPED_INPUT),
     );
     assert!(String::from_utf8_lossy(&out).contains("\x1b[31mred"));
+}
+
+/// Runs `hl` on `input` as `language`, failing the test if it takes long.
+fn colored_in_time(args: &[&str], input: &str) -> Vec<u8> {
+    let out = hl()
+        .args(["--color", "always"])
+        .args(args)
+        .write_stdin(input)
+        .timeout(Duration::from_secs(10))
+        .assert()
+        .success()
+        .stderr("")
+        .get_output()
+        .stdout
+        .clone();
+    assert!(has_escape(&out), "{out:?}");
+    assert_eq!(strip_ansi(&out), input.as_bytes());
+    out
+}
+
+#[test]
+fn highlights_a_comment_after_an_expression_in_javascript() {
+    colored_in_time(&["-l", "js"], "x /*");
+    colored_in_time(&["-l", "js"], "foo /* comment */\n");
+    colored_in_time(&["-l", "JavaScript (Rails)"], "a /* c */\n");
+    colored_in_time(&["-l", "html"], "<script>\nx /*\n</script>\n");
+    colored_in_time(&["-l", "md"], "```js\nx /*\n```\n");
+    // Detected from the first line rather than given.
+    colored_in_time(&[], "<html {t\r/*");
+}
+
+#[test]
+fn highlights_a_comment_after_an_expression_in_a_javascript_file() {
+    let dir = tempdir();
+    let file = dir.path().join("t.js");
+    fs::write(&file, "x /*").unwrap();
+    let out = hl()
+        .args(["--color", "always"])
+        .arg(&file)
+        .timeout(Duration::from_secs(10))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert!(has_escape(&out), "{out:?}");
+    assert_eq!(strip_ansi(&out), b"x /*");
 }

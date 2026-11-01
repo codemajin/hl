@@ -144,18 +144,18 @@ pub fn is_stdin(path: &Path) -> bool {
 }
 
 /// What every input is printed with.
-pub struct Printer<'a> {
+pub struct Printer {
     /// `None` when the output is not colored.
-    pub highlighter: Option<Highlighter<'a>>,
+    pub highlighter: Option<Highlighter>,
     /// The syntax given by `--language`.
-    pub forced: Option<&'a Syntax>,
+    pub forced: Option<&'static Syntax>,
     pub vis: Visibility,
     pub limits: Limits,
     /// Whether to remove the escape sequences of the input.
     pub strip: bool,
 }
 
-impl<'a> Printer<'a> {
+impl Printer {
     fn print(&self, input: Input, out: &mut impl Write, lines: &mut LineState) -> io::Result<()> {
         let Input {
             source,
@@ -204,7 +204,7 @@ impl<'a> Printer<'a> {
 
     fn highlight(
         &self,
-        hl: &Highlighter<'a>,
+        hl: &Highlighter,
         mut reader: &mut dyn BufRead,
         path: Option<&Path>,
         out: &mut impl Write,
@@ -218,10 +218,10 @@ impl<'a> Printer<'a> {
     /// Uses the forced syntax, or detects one from the path and the first line.
     fn choose_syntax(
         &self,
-        hl: &Highlighter<'a>,
+        hl: &Highlighter,
         reader: &mut impl BufRead,
         path: Option<&Path>,
-    ) -> io::Result<&'a Syntax> {
+    ) -> io::Result<&'static Syntax> {
         if let Some(syntax) = self.forced {
             return Ok(syntax);
         }
@@ -239,7 +239,7 @@ mod tests {
     use super::*;
     use crate::lines::Numbering;
 
-    fn plain() -> Printer<'static> {
+    fn plain() -> Printer {
         Printer {
             highlighter: None,
             forced: None,

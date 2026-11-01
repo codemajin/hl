@@ -3,7 +3,9 @@
 
 use std::{
     fmt::Write as _,
-    fs, io,
+    fs,
+    hash::{DefaultHasher, Hash, Hasher},
+    io,
     path::{Path, PathBuf},
     process,
     time::UNIX_EPOCH,
@@ -27,13 +29,22 @@ const SYNTAX_EXTENSION: &str = "sublime-syntax";
 const THEME_EXTENSION: &str = "tmTheme";
 const CACHE_FILE: &str = "syntaxes.bin";
 
+/// The syntaxes of two-face with the fix from `build.rs`.
+const BUNDLED_SYNTAXES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/syntaxes.bin"));
+
+/// The bundled syntaxes: two-face's, with JavaScript fixed so that it no
+/// longer hangs on `x /*` (see `build.rs`).
+pub fn bundled_syntaxes() -> SyntaxSet {
+    dumps::from_uncompressed_data(BUNDLED_SYNTAXES).expect("the bundled syntaxes are valid")
+}
+
 /// The bundled syntaxes plus the custom ones. Custom syntaxes come from the
 /// cache when it matches the files, and are merged on the spot otherwise,
 /// which is much slower.
 pub fn syntaxes() -> SyntaxSet {
     let files = syntax_files();
     if files.is_empty() {
-        return two_face::syntax::extra_newlines();
+        return bundled_syntaxes();
     }
     let fingerprint = fingerprint(&files);
     if let Some(syntaxes) = cache_path().and_then(|path| read_cache(&path, &fingerprint)) {
@@ -123,10 +134,13 @@ fn files_in(dir: &Path, extension: &str) -> Vec<PathBuf> {
 }
 
 /// Identifies the custom syntaxes by their paths, sizes and modification
-/// times, along with the version of `hl` whose bundled syntaxes they are
-/// merged with.
+/// times, along with the version of `hl` and the bundled syntaxes they are
+/// merged with. The hash of the bundled syntaxes catches a change of them
+/// within the same version.
 fn fingerprint(files: &[PathBuf]) -> String {
-    let mut fingerprint = format!("hl {}", env!("CARGO_PKG_VERSION"));
+    let mut hasher = DefaultHasher::new();
+    BUNDLED_SYNTAXES.hash(&mut hasher);
+    let mut fingerprint = format!("hl {} {:016x}", env!("CARGO_PKG_VERSION"), hasher.finish());
     for file in files {
         let meta = fs::metadata(file).ok();
         let len = meta.as_ref().map_or(0, fs::Metadata::len);
@@ -143,7 +157,7 @@ fn fingerprint(files: &[PathBuf]) -> String {
 /// The bundled syntaxes with the custom ones added, and how many were
 /// added. A custom syntax that cannot be loaded warns and is skipped.
 fn merge(files: &[PathBuf]) -> (SyntaxSet, usize) {
-    let mut builder = two_face::syntax::extra_newlines().into_builder();
+    let mut builder = bundled_syntaxes().into_builder();
     let mut added = 0;
     for file in files {
         match load_syntax(file) {

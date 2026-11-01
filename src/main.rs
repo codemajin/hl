@@ -26,6 +26,7 @@ use highlight::{Highlighter, Limits, find_language, resolve_mappings};
 use lines::{LineHighlight, LineState};
 use pager::Pager;
 use print::{Headers, Input, Printer, TrackedWriter, is_stdin, print_all};
+use syntect::parsing::SyntaxSet;
 
 fn main() -> ExitCode {
     let args = cli::parse_with(Config::load().as_ref());
@@ -72,23 +73,25 @@ fn run(args: &Args) -> Result<ExitCode> {
 
     let tty = io::stdout().is_terminal();
     let color = args.use_color(tty);
-    let syntaxes = args.needs_syntaxes(color).then(assets::syntaxes);
+    // Leaked so that highlighting threads can share them; they live as long
+    // as the process anyway.
+    let syntaxes: Option<&'static SyntaxSet> = args
+        .needs_syntaxes(color)
+        .then(|| &*Box::leak(Box::new(assets::syntaxes())));
     let forced = args
         .language
         .as_deref()
         .map(|lang| {
-            let syntaxes = syntaxes
-                .as_ref()
-                .expect("syntaxes are loaded with --language");
+            let syntaxes = syntaxes.expect("syntaxes are loaded with --language");
             find_language(syntaxes, lang)
                 .ok_or_else(|| anyhow!("unknown language '{lang}' (see --list-languages)"))
         })
         .transpose()?;
-    let mappings = match &syntaxes {
+    let mappings = match syntaxes {
         Some(syntaxes) => resolve_mappings(syntaxes, args.mappings()).map_err(|e| anyhow!(e))?,
         None => Vec::new(),
     };
-    let highlighter = syntaxes.as_ref().filter(|_| color).map(|syntaxes| {
+    let highlighter = syntaxes.filter(|_| color).map(|syntaxes| {
         let theme = assets::Themes::load().get_or_default(&args.theme);
         Highlighter::new(syntaxes, theme, args.depth(), mappings)
     });

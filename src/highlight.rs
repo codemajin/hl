@@ -1,12 +1,20 @@
 use std::{
+    collections::VecDeque,
     io::{self, BufRead, Read, Write},
     path::{self, Path, PathBuf},
+    sync::{
+        Arc, Mutex, PoisonError,
+        atomic::{AtomicU64, Ordering},
+        mpsc::{self, Receiver, RecvTimeoutError, Sender},
+    },
+    thread,
+    time::{Duration, Instant},
 };
 
 use globset::{GlobBuilder, GlobMatcher};
 use syntect::{
     easy::HighlightLines,
-    highlighting::{Color, Theme},
+    highlighting::{Color, Style, Theme},
     parsing::{SyntaxReference, SyntaxSet},
     util::as_24_bit_terminal_escaped,
 };
@@ -26,6 +34,25 @@ pub type Syntax = SyntaxReference;
 /// How much of the foreground tints the background for highlighted lines
 /// when the theme has no `lineHighlight` color.
 const FALLBACK_HIGHLIGHT_ALPHA: u8 = 0x33;
+
+/// How long highlighting may go without finishing a line before it is given
+/// up. syntect can loop forever on some syntaxes and inputs, and cannot be
+/// interrupted, so it runs on a thread of its own that is left behind.
+const STALL_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// How many times per `STALL_TIMEOUT` the highlighting thread is checked
+/// for progress.
+const STALL_POLLS: u32 = 10;
+
+/// Lines are handed to the highlighting thread in batches of up to this
+/// many lines or bytes, because handing over each line on its own costs
+/// more than highlighting it.
+const BATCH_LINES: usize = 64;
+const BATCH_BYTES: usize = 64 * 1024;
+
+/// The most batches handed over and not printed yet, which bounds the
+/// memory used by input read ahead.
+const MAX_IN_FLIGHT: usize = 4;
 
 /// Inputs beyond these limits are printed without highlighting, because
 /// syntect gets very slow on huge files and very long lines.
@@ -88,26 +115,31 @@ impl SyntaxMapping {
     }
 }
 
-pub struct Highlighter<'a> {
-    syntaxes: &'a SyntaxSet,
-    theme: Theme,
+/// Highlights inputs. The syntaxes are `'static` because they are shared
+/// with the highlighting thread, which may outlive the input it was started
+/// for (see `STALL_TIMEOUT`).
+pub struct Highlighter {
+    syntaxes: &'static SyntaxSet,
+    theme: Arc<Theme>,
     depth: Depth,
     /// User mappings with their languages resolved; the last match wins.
-    mappings: Vec<(SyntaxMapping, &'a Syntax)>,
+    mappings: Vec<(SyntaxMapping, &'static Syntax)>,
+    stall_timeout: Duration,
 }
 
-impl<'a> Highlighter<'a> {
+impl Highlighter {
     pub fn new(
-        syntaxes: &'a SyntaxSet,
+        syntaxes: &'static SyntaxSet,
         theme: Theme,
         depth: Depth,
-        mappings: Vec<(SyntaxMapping, &'a Syntax)>,
+        mappings: Vec<(SyntaxMapping, &'static Syntax)>,
     ) -> Self {
         Self {
             syntaxes,
-            theme,
+            theme: Arc::new(theme),
             depth,
             mappings,
+            stall_timeout: STALL_TIMEOUT,
         }
     }
 
@@ -127,7 +159,7 @@ impl<'a> Highlighter<'a> {
     /// Detects the syntax from the user mappings, then the file name
     /// (extension, then full name) and finally the first line (shebang,
     /// modelines). Falls back to plain text.
-    pub fn detect(&self, path: Option<&Path>, first_line: &str) -> &'a Syntax {
+    pub fn detect(&self, path: Option<&Path>, first_line: &str) -> &'static Syntax {
         let by_path = path.and_then(|p| {
             let mapped = self.mappings.iter().rev().find(|(m, _)| m.matches(p));
             let ext = p.extension().and_then(|e| e.to_str());
@@ -146,36 +178,42 @@ impl<'a> Highlighter<'a> {
     /// that are not printed (outside the line range, squeezed) are still
     /// highlighted, so that the printed ones get the right colors.
     ///
+    /// The lines are read and printed here, and highlighted on another
+    /// thread a few batches ahead (see `Pipeline`).
+    ///
     /// Once the input exceeds `limits.max_size` or a line exceeds
     /// `limits.max_line`, the rest is copied as is: syntect's state carries
     /// over between lines, so highlighting cannot resume after a skipped line.
     /// A line that is not valid UTF-8 switches to plain output the same way,
-    /// and so does an error in the syntax, after a warning about `name`.
+    /// and so does an error in the syntax or a line that takes longer than
+    /// `STALL_TIMEOUT` to highlight, after a warning about `name`.
     pub fn write(
         &self,
         reader: &mut impl BufRead,
         name: &Path,
         out: &mut impl Write,
-        syntax: &Syntax,
+        syntax: &'static Syntax,
         lines: &mut LineState,
         limits: Limits,
     ) -> io::Result<()> {
-        let mut hl = HighlightLines::new(syntax, &self.theme);
+        let mut pipeline = Pipeline::new(self.spawn_worker(syntax)?, name);
         let max_line = limits.max_line.unwrap_or(u64::MAX);
         let mut total: u64 = 0;
-        let mut buf = Vec::new();
         loop {
             if lines.is_done() {
                 return Ok(());
             }
-            buf.clear();
+            let mut buf = Vec::new();
             // Reading at most one byte past the limit keeps a huge line out of memory.
             let n = reader
                 .by_ref()
                 .take(max_line.saturating_add(1))
                 .read_until(b'\n', &mut buf)?;
             if n == 0 {
-                return Ok(());
+                return match pipeline.finish(out, lines)? {
+                    Flow::Continue | Flow::Done => Ok(()),
+                    Flow::Plain => write_plain(reader, out, lines, Visibility::default()),
+                };
             }
             let n = u64::try_from(n).expect("a line read into memory fits in u64");
             total += n;
@@ -183,48 +221,314 @@ impl<'a> Highlighter<'a> {
             // Input that is not UTF-8 (Shift_JIS, ...) is copied unchanged
             // rather than replacing its bytes with U+FFFD.
             let text = std::str::from_utf8(&buf).ok();
-            let Some(mut line) = text.filter(|_| !too_long && !limits.exceeds_size(total)) else {
+            let Some(line) = text.filter(|_| !too_long && !limits.exceeds_size(total)) else {
+                match pipeline.finish(out, lines)? {
+                    Flow::Continue => {}
+                    Flow::Done => return Ok(()),
+                    Flow::Plain => return write_plain(reader, out, lines, Visibility::default()),
+                }
                 if lines.begin_line(&buf, out)? {
                     lines.write_raw(&buf, out)?;
                 }
                 return write_plain(reader, out, lines, Visibility::default());
             };
-            let print = lines.begin_line(&buf, out)?;
-            if total == n
-                && let Some(rest) = line.strip_prefix('\u{FEFF}')
-            {
-                // Keep the BOM in the output, but out of syntect's way.
-                if print {
-                    out.write_all(UTF8_BOM)?;
-                }
-                line = rest;
-            }
-            let newline = if line.ends_with('\n') { "\n" } else { "" };
-            // Highlight including the newline so syntect's state stays correct,
-            // but print the newline after the reset sequence.
-            let ranges = match hl.highlight_line(line, self.syntaxes) {
-                Ok(ranges) => ranges,
-                Err(e) => {
-                    diag::warn(
-                        name,
-                        &format!("cannot highlight: {e}, printing the rest as plain text"),
-                    );
-                    if print {
-                        lines.write_raw(line.as_bytes(), out)?;
-                    }
-                    return write_plain(reader, out, lines, Visibility::default());
-                }
+            // Keep the BOM in the output, but out of syntect's way.
+            let bom = total == n && line.starts_with('\u{FEFF}');
+            let text = if bom {
+                &line['\u{FEFF}'.len_utf8()..]
+            } else {
+                line
             };
-            if !print {
-                continue;
+            // Highlight including the newline so syntect's state stays correct.
+            let text = text.to_owned();
+            match pipeline.push(text, PendingLine { raw: buf, bom }, out, lines)? {
+                Flow::Continue => {}
+                Flow::Done => return Ok(()),
+                Flow::Plain => return write_plain(reader, out, lines, Visibility::default()),
             }
-            let escaped = match self.depth {
-                Depth::TrueColor => as_24_bit_terminal_escaped(&ranges, false),
-                Depth::Ansi256 => as_256_terminal_escaped(&ranges),
-            };
-            let escaped = escaped.strip_suffix('\n').unwrap_or(&escaped);
-            write!(out, "{escaped}{RESET}{newline}")?;
         }
+    }
+
+    /// Starts the thread that highlights the lines of one input with `syntax`.
+    fn spawn_worker(&self, syntax: &'static Syntax) -> io::Result<Worker> {
+        let (batch_tx, batch_rx) = mpsc::channel::<Vec<String>>();
+        let (result_tx, result_rx) = mpsc::channel();
+        let progress = Arc::new(AtomicU64::new(0));
+        let done = Arc::new(Mutex::new(Vec::new()));
+        let syntaxes = self.syntaxes;
+        let theme = Arc::clone(&self.theme);
+        let depth = self.depth;
+        let (finished, results) = (Arc::clone(&progress), Arc::clone(&done));
+        thread::Builder::new()
+            .name("highlight".to_string())
+            .spawn(move || {
+                let mut hl = HighlightLines::new(syntax, &theme);
+                for batch in batch_rx {
+                    let mut failed = false;
+                    for line in &batch {
+                        let result = hl
+                            .highlight_line(line, syntaxes)
+                            .map(|ranges| escape(&ranges, depth))
+                            .map_err(|e| e.to_string());
+                        failed = result.is_err();
+                        lock(&results).push(result);
+                        finished.fetch_add(1, Ordering::Relaxed);
+                        if failed {
+                            break;
+                        }
+                    }
+                    let results = std::mem::take(&mut *lock(&results));
+                    // syntect's state is broken after an error, and the other
+                    // end hangs up once it stops highlighting.
+                    if result_tx.send(results).is_err() || failed {
+                        return;
+                    }
+                }
+            })?;
+        Ok(Worker {
+            batches: batch_tx,
+            results: result_rx,
+            done,
+            progress,
+            stall_timeout: self.stall_timeout,
+        })
+    }
+}
+
+/// `ranges` as escape sequences for `depth`, without the newline, which is
+/// printed after the reset sequence.
+fn escape(ranges: &[(Style, &str)], depth: Depth) -> String {
+    let mut escaped = match depth {
+        Depth::TrueColor => as_24_bit_terminal_escaped(ranges, false),
+        Depth::Ansi256 => as_256_terminal_escaped(ranges),
+    };
+    if escaped.ends_with('\n') {
+        escaped.pop();
+    }
+    escaped
+}
+
+/// The escape sequences of a highlighted line, or why it could not be
+/// highlighted.
+type LineResult = Result<String, String>;
+
+/// The results of a batch cut short: those of the lines highlighted before
+/// the worker stopped, and why it stopped.
+struct Stopped {
+    done: Vec<LineResult>,
+    reason: String,
+}
+
+/// Locks `mutex`, even after a panic on the worker, whose results are
+/// still whole: a line is added in one push.
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The highlighting thread of one input. Dropping it hangs up, so that the
+/// thread ends after its current batch, or never if it is stuck in syntect.
+struct Worker {
+    batches: Sender<Vec<String>>,
+    results: Receiver<Vec<LineResult>>,
+    /// The results of the batch being highlighted, so far.
+    done: Arc<Mutex<Vec<LineResult>>>,
+    /// The number of lines highlighted so far.
+    progress: Arc<AtomicU64>,
+    stall_timeout: Duration,
+}
+
+impl Worker {
+    fn send(&self, batch: Vec<String>) {
+        // A thread that has ended is noticed when receiving.
+        let _ = self.batches.send(batch);
+    }
+
+    /// The results of the oldest batch not received yet. Waits as long as
+    /// lines keep being highlighted.
+    ///
+    /// When the worker is stuck on a line, it is still on that batch, since
+    /// the earlier ones were received, so the results it has so far belong
+    /// to it.
+    fn recv(&self) -> Result<Vec<LineResult>, Stopped> {
+        // Checking for progress a few times per timeout keeps the wait for
+        // a stuck line close to the timeout.
+        let poll = self.stall_timeout / STALL_POLLS;
+        let mut seen = self.progress.load(Ordering::Relaxed);
+        let mut since = Instant::now();
+        let reason = loop {
+            match self.results.recv_timeout(poll) {
+                Ok(results) => return Ok(results),
+                Err(RecvTimeoutError::Timeout) => {
+                    let now = self.progress.load(Ordering::Relaxed);
+                    if now != seen {
+                        seen = now;
+                        since = Instant::now();
+                    } else if since.elapsed() >= self.stall_timeout {
+                        break format!("a line took longer than {:?}", self.stall_timeout);
+                    }
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    break "the highlighter stopped".to_string();
+                }
+            }
+        };
+        // The batch may have been finished right after the timeout.
+        if let Ok(results) = self.results.try_recv() {
+            return Ok(results);
+        }
+        let done = std::mem::take(&mut *lock(&self.done));
+        Err(Stopped { done, reason })
+    }
+}
+
+/// A line handed to the worker and not printed yet.
+struct PendingLine {
+    /// The line as read, including any BOM, for the line state and for
+    /// printing it plain.
+    raw: Vec<u8>,
+    /// Whether the line starts with a BOM, which is printed before the colors.
+    bom: bool,
+}
+
+/// What to do after printing what the worker has highlighted.
+#[derive(Debug, PartialEq)]
+enum Flow {
+    /// Keep reading.
+    Continue,
+    /// The line range has ended.
+    Done,
+    /// Highlighting failed and the pending lines were printed plain: copy the
+    /// rest of the input.
+    Plain,
+}
+
+/// Lines on their way through the worker, in input order: those in the
+/// batch being filled, then those of the batches handed over.
+struct Pipeline<'n> {
+    worker: Worker,
+    name: &'n Path,
+    batch: Vec<String>,
+    batch_bytes: usize,
+    in_flight: usize,
+    pending: VecDeque<PendingLine>,
+}
+
+impl<'n> Pipeline<'n> {
+    fn new(worker: Worker, name: &'n Path) -> Self {
+        Self {
+            worker,
+            name,
+            batch: Vec::new(),
+            batch_bytes: 0,
+            in_flight: 0,
+            pending: VecDeque::new(),
+        }
+    }
+
+    /// Queues `text` for highlighting, printing earlier lines when too many
+    /// are waiting.
+    fn push(
+        &mut self,
+        text: String,
+        line: PendingLine,
+        out: &mut impl Write,
+        lines: &mut LineState,
+    ) -> io::Result<Flow> {
+        self.batch_bytes += text.len();
+        self.batch.push(text);
+        self.pending.push_back(line);
+        if self.batch.len() >= BATCH_LINES || self.batch_bytes >= BATCH_BYTES {
+            self.send_batch();
+        }
+        while self.in_flight > MAX_IN_FLIGHT {
+            match self.print_batch(out, lines)? {
+                Flow::Continue => {}
+                flow => return Ok(flow),
+            }
+        }
+        Ok(Flow::Continue)
+    }
+
+    /// Prints all the queued lines.
+    fn finish(&mut self, out: &mut impl Write, lines: &mut LineState) -> io::Result<Flow> {
+        self.send_batch();
+        while self.in_flight > 0 {
+            match self.print_batch(out, lines)? {
+                Flow::Continue => {}
+                flow => return Ok(flow),
+            }
+        }
+        Ok(Flow::Continue)
+    }
+
+    fn send_batch(&mut self) {
+        if self.batch.is_empty() {
+            return;
+        }
+        self.worker.send(std::mem::take(&mut self.batch));
+        self.batch_bytes = 0;
+        self.in_flight += 1;
+    }
+
+    /// Prints the oldest batch handed over, once it is highlighted.
+    fn print_batch(&mut self, out: &mut impl Write, lines: &mut LineState) -> io::Result<Flow> {
+        let (results, stopped) = match self.worker.recv() {
+            Ok(results) => (results, None),
+            Err(Stopped { done, reason }) => (done, Some(reason)),
+        };
+        self.in_flight -= 1;
+        for result in results {
+            let line = self
+                .pending
+                .pop_front()
+                .expect("each result is for a pending line");
+            if lines.is_done() {
+                return Ok(Flow::Done);
+            }
+            let print = lines.begin_line(&line.raw, out)?;
+            match result {
+                Ok(escaped) if print => {
+                    if line.bom {
+                        out.write_all(UTF8_BOM)?;
+                    }
+                    let newline = if line.raw.ends_with(b"\n") { "\n" } else { "" };
+                    write!(out, "{escaped}{RESET}{newline}")?;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    if print {
+                        lines.write_raw(&line.raw, out)?;
+                    }
+                    return self.give_up(&e, out, lines);
+                }
+            }
+        }
+        match stopped {
+            Some(reason) => self.give_up(&reason, out, lines),
+            None => Ok(Flow::Continue),
+        }
+    }
+
+    /// Warns that highlighting failed and prints the pending lines plain.
+    fn give_up(
+        &mut self,
+        reason: &str,
+        out: &mut impl Write,
+        lines: &mut LineState,
+    ) -> io::Result<Flow> {
+        diag::warn(
+            self.name,
+            &format!("cannot highlight: {reason}, printing the rest as plain text"),
+        );
+        while let Some(line) = self.pending.pop_front() {
+            if lines.is_done() {
+                return Ok(Flow::Done);
+            }
+            if lines.begin_line(&line.raw, out)? {
+                lines.write_raw(&line.raw, out)?;
+            }
+        }
+        Ok(Flow::Plain)
     }
 }
 
@@ -275,17 +579,18 @@ pub fn languages(syntaxes: &SyntaxSet) -> Vec<(&str, &[String])> {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::{io::Cursor, sync::LazyLock};
 
     use super::*;
     use crate::lines::{LineHighlight, LineRange, Numbering};
 
     /// The bundled syntaxes only, so the user's custom ones stay out.
-    fn syntaxes() -> SyntaxSet {
-        two_face::syntax::extra_newlines()
+    fn syntaxes() -> &'static SyntaxSet {
+        static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(crate::assets::bundled_syntaxes);
+        &SYNTAXES
     }
 
-    fn highlighter<'a>(syntaxes: &'a SyntaxSet, mappings: &[&str]) -> Highlighter<'a> {
+    fn highlighter(syntaxes: &'static SyntaxSet, mappings: &[&str]) -> Highlighter {
         let mappings: Vec<_> = mappings
             .iter()
             .map(|m| SyntaxMapping::parse(m).unwrap())
@@ -297,7 +602,7 @@ mod tests {
     /// The name of the syntax detected for `path` and `first_line`.
     fn detect(mappings: &[&str], path: Option<&str>, first_line: &str) -> String {
         let syntaxes = syntaxes();
-        let hl = highlighter(&syntaxes, mappings);
+        let hl = highlighter(syntaxes, mappings);
         hl.detect(path.map(Path::new), first_line).name.clone()
     }
 
@@ -341,7 +646,7 @@ mod tests {
         use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
 
         let syntaxes = syntaxes();
-        let hl = highlighter(&syntaxes, &[]);
+        let hl = highlighter(syntaxes, &[]);
         let path = Path::new(OsStr::from_bytes(b"a.\xff"));
         let syntax = hl.detect(Some(path), "#!/bin/sh");
         assert_eq!(syntax.name, "Bourne Again Shell (bash)");
@@ -381,7 +686,7 @@ mod tests {
     #[test]
     fn finds_a_language_by_name_or_extension() {
         let syntaxes = syntaxes();
-        let name = |lang| find_language(&syntaxes, lang).map(|s| s.name.as_str());
+        let name = |lang| find_language(syntaxes, lang).map(|s| s.name.as_str());
         assert_eq!(name("Rust"), Some("Rust"));
         assert_eq!(name("rust"), Some("Rust"));
         assert_eq!(name("py"), Some("Python"));
@@ -411,7 +716,7 @@ mod tests {
     fn unknown_language_is_an_error_on_the_command_line() {
         let syntaxes = syntaxes();
         let mapping = SyntaxMapping::parse("*.x:no-such-language").unwrap();
-        let err = resolve_mappings(&syntaxes, [&mapping]).unwrap_err();
+        let err = resolve_mappings(syntaxes, [&mapping]).unwrap_err();
         assert!(err.contains("see --list-languages"), "{err}");
     }
 
@@ -421,7 +726,7 @@ mod tests {
         let mut unknown = SyntaxMapping::parse("*.x:no-such-language").unwrap();
         unknown.origin = Some(PathBuf::from("config.toml"));
         let known = SyntaxMapping::parse("*.y:Rust").unwrap();
-        let resolved = resolve_mappings(&syntaxes, [&unknown, &known]).unwrap();
+        let resolved = resolve_mappings(syntaxes, [&unknown, &known]).unwrap();
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].0.spec, "*.y:Rust");
     }
@@ -445,7 +750,7 @@ mod tests {
     /// Highlights `input` as plain text.
     fn write(input: &[u8], lines: &mut LineState, limits: Limits, depth: Depth) -> Vec<u8> {
         let syntaxes = syntaxes();
-        let mut hl = highlighter(&syntaxes, &[]);
+        let mut hl = highlighter(syntaxes, &[]);
         hl.depth = depth;
         let mut out = Vec::new();
         let syntax = syntaxes.find_syntax_plain_text();
@@ -571,7 +876,7 @@ mod tests {
     /// Highlights `input` with line 2 shown with the background.
     fn write_highlighted(input: &[u8], limits: Limits, depth: Depth) -> String {
         let syntaxes = syntaxes();
-        let mut hl = highlighter(&syntaxes, &[]);
+        let mut hl = highlighter(syntaxes, &[]);
         hl.depth = depth;
         let highlight = LineHighlight {
             lines: vec![LineRange {
@@ -622,7 +927,7 @@ mod tests {
     #[test]
     fn highlights_a_long_line_in_one_piece() {
         let syntaxes = syntaxes();
-        let sgr = highlighter(&syntaxes, &[]).line_highlight_sgr();
+        let sgr = highlighter(syntaxes, &[]).line_highlight_sgr();
         let out = write_highlighted(b"a\nbbbbbbbbbb\nc\n", max_line(4), Depth::TrueColor);
         let lines: Vec<_> = out.split_inclusive('\n').collect();
         assert_eq!(lines[1], format!("{sgr}bbbbbbbbbb\x1b[0m\n"), "{out:?}");
@@ -632,11 +937,12 @@ mod tests {
     #[test]
     fn tints_the_background_without_a_line_highlight_color() {
         let syntaxes = syntaxes();
-        let mut hl = highlighter(&syntaxes, &[]);
-        hl.theme.settings.background = Some(Color::BLACK);
-        hl.theme.settings.foreground = Some(Color::WHITE);
+        let mut hl = highlighter(syntaxes, &[]);
+        let theme = Arc::make_mut(&mut hl.theme);
+        theme.settings.background = Some(Color::BLACK);
+        theme.settings.foreground = Some(Color::WHITE);
         assert_eq!(hl.line_highlight_sgr(), "\x1b[48;2;51;51;51m");
-        hl.theme.settings.line_highlight = Some(Color {
+        Arc::make_mut(&mut hl.theme).settings.line_highlight = Some(Color {
             r: 10,
             g: 20,
             b: 30,
@@ -652,5 +958,146 @@ mod tests {
         let out = String::from_utf8(out).unwrap();
         assert!(out.contains("\x1b[38;5;"), "{out:?}");
         assert!(!out.contains("38;2;"), "{out:?}");
+    }
+
+    /// Whether parsing `text` as `language` ends within a few seconds. The
+    /// parser runs on a thread of its own, left behind if it hangs.
+    fn parses_in_time(language: &str, text: &str) -> bool {
+        let syntaxes = syntaxes();
+        let syntax = syntaxes.find_syntax_by_name(language).unwrap();
+        let text = text.to_string();
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let mut state = syntect::parsing::ParseState::new(syntax);
+            for line in text.split_inclusive('\n') {
+                state.parse_line(line, syntaxes).unwrap();
+            }
+            let _ = tx.send(());
+        });
+        rx.recv_timeout(Duration::from_secs(5)).is_ok()
+    }
+
+    #[test]
+    fn javascript_does_not_hang_on_a_comment_after_an_expression() {
+        let cases = [
+            ("JavaScript", "x /*"),
+            ("JavaScript", "1 /*\n"),
+            ("JavaScript", "foo /* comment */\n"),
+            ("JavaScript (Rails)", "x /*\n"),
+            ("QML", "1 /*\n"),
+            ("HTML", "<script>\nx /*\n</script>\n"),
+            ("Markdown", "```js\nx /*\n```\n"),
+            ("Vue Component", "<script>\nx /*\n</script>\n"),
+            ("Svelte", "<script>\nx /*\n</script>\n"),
+            ("Svelte", "{x /*\n"),
+        ];
+        for (language, text) in cases {
+            assert!(parses_in_time(language, text), "{language}: {text:?}");
+        }
+    }
+
+    #[test]
+    fn javascript_still_continues_an_expression_on_the_next_line() {
+        let syntaxes = syntaxes();
+        let js = syntaxes.find_syntax_by_name("JavaScript").unwrap();
+        let scopes = |text: &str| {
+            let mut state = syntect::parsing::ParseState::new(js);
+            let mut stack = syntect::parsing::ScopeStack::new();
+            let mut all = Vec::new();
+            for line in text.split_inclusive('\n') {
+                for (_, op) in state.parse_line(line, syntaxes).unwrap() {
+                    stack.apply(&op).unwrap();
+                    all.push(format!("{stack:?}"));
+                }
+            }
+            all.join("\n")
+        };
+        assert!(scopes("a\n/ 2\n").contains("keyword.operator"));
+        assert!(scopes("a\n// c\n").contains("comment.line"));
+    }
+
+    /// A syntax whose two contexts hand `x` back and forth without
+    /// consuming it, which makes syntect loop forever.
+    const LOOPING_SYNTAX: &str = r#"%YAML 1.2
+---
+name: Loop
+scope: source.loop
+contexts:
+  main:
+    - match: (?=x)
+      set: other
+  other:
+    - match: (?=x)
+      set: main
+"#;
+
+    #[test]
+    fn prints_the_rest_plain_when_a_line_takes_too_long() {
+        let definition =
+            syntect::parsing::SyntaxDefinition::load_from_str(LOOPING_SYNTAX, true, None).unwrap();
+        let mut builder = syntect::parsing::SyntaxSetBuilder::new();
+        builder.add(definition);
+        let looping: &'static SyntaxSet = Box::leak(Box::new(builder.build()));
+        let syntax = looping.find_syntax_by_name("Loop").unwrap();
+        let mut hl = highlighter(syntaxes(), &[]);
+        hl.syntaxes = looping;
+        hl.stall_timeout = Duration::from_millis(200);
+        let mut lines = LineState::new(Numbering::All, false, None);
+        let mut out = Vec::new();
+        hl.write(
+            &mut Cursor::new("a\nb\nx\nc\n"),
+            Path::new("-"),
+            &mut out,
+            syntax,
+            &mut lines,
+            NO_LIMITS,
+        )
+        .unwrap();
+        let (highlighted, plain) = out.split_at(out.len() - "     3\tx\n     4\tc\n".len());
+        assert_eq!(plain, b"     3\tx\n     4\tc\n", "{out:?}");
+        assert!(has_escape(highlighted), "{out:?}");
+        assert_eq!(strip_ansi(highlighted), b"     1\ta\n     2\tb\n");
+    }
+
+    #[test]
+    fn highlights_across_batches() {
+        let line = "abcdefghij\n";
+        let input = line.repeat(BATCH_LINES * (MAX_IN_FLIGHT + 2) + 3);
+        let out = write_simple(input.as_bytes(), Numbering::None, NO_LIMITS);
+        assert_eq!(strip_ansi(&out), input.as_bytes());
+        let out = String::from_utf8(out).unwrap();
+        assert_eq!(out.matches("\x1b[0m\n").count(), input.lines().count());
+    }
+
+    #[test]
+    fn highlights_lines_that_fill_a_batch_by_size() {
+        let line = format!("{}\n", "a".repeat(BATCH_BYTES / 2));
+        let input = line.repeat(MAX_IN_FLIGHT * 3);
+        let out = write_simple(input.as_bytes(), Numbering::All, NO_LIMITS);
+        let expected: String = (1..=MAX_IN_FLIGHT * 3)
+            .map(|n| format!("{n:>6}\t{line}"))
+            .collect();
+        assert_eq!(strip_ansi(&out), expected.as_bytes());
+    }
+
+    #[test]
+    fn stops_at_the_end_of_the_line_range_within_a_batch() {
+        let range = LineRange {
+            start: 70,
+            end: Some(72),
+        };
+        let mut lines = LineState::new(Numbering::All, false, Some(range));
+        let input: String = (1..=200).map(|n| format!("{n}\n")).collect();
+        let out = write(input.as_bytes(), &mut lines, NO_LIMITS, Depth::TrueColor);
+        assert_eq!(strip_ansi(&out), b"    70\t70\n    71\t71\n    72\t72\n");
+    }
+
+    #[test]
+    fn switches_to_plain_after_a_batch_is_queued() {
+        let mut input = "a\n".repeat(BATCH_LINES * 2 + 5).into_bytes();
+        input.extend_from_slice(b"\xff\nz\n");
+        let out = write_simple(&input, Numbering::None, NO_LIMITS);
+        assert!(out.ends_with(b"a\x1b[0m\n\xff\nz\n"), "{out:?}");
+        assert_eq!(strip_ansi(&out), input);
     }
 }
