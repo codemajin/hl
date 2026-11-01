@@ -61,6 +61,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
+        # As in ci.yml: ubuntu-24.04 and Homebrew's coreutils provide the GNU
+        # `cat` that one test compares `hl` with.
         os: [ubuntu-24.04, macos-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

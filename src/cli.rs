@@ -582,14 +582,23 @@ mod tests {
 
     use super::*;
 
+    /// Parses `argv`. Like `args_with`, it ignores the `HL_*` variables, so
+    /// that the developer's environment can't change the result; the
+    /// integration tests check how they are read.
     fn args(argv: &[&str]) -> Args {
-        Args::try_parse_from(["hl"].iter().chain(argv)).unwrap()
+        let matches = without_env(Args::command())
+            .try_get_matches_from(["hl"].iter().chain(argv))
+            .unwrap();
+        Args::from_arg_matches(&matches).unwrap()
     }
 
-    /// Parses `argv` with `config` applied, as `parse_with` does.
+    /// Parses `argv` with `config` applied, as `parse_with` does, but
+    /// without the environment.
     fn args_with(config: &Config, argv: &[&str]) -> Args {
         let (cmd, extras) = apply_config(Args::command(), config);
-        let matches = cmd.try_get_matches_from(["hl"].iter().chain(argv)).unwrap();
+        let matches = without_env(cmd)
+            .try_get_matches_from(["hl"].iter().chain(argv))
+            .unwrap();
         let mut parsed = Args::from_arg_matches(&matches).unwrap();
         parsed.apply_extras(extras);
         parsed

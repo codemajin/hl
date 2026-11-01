@@ -260,7 +260,7 @@ cargo clippy
 cargo fmt --check   # フォーマットの確認（rustfmt.toml）
 ```
 
-push と pull request のたびに、GitHub Actions が `cargo fmt --check`、`cargo clippy`（警告はエラー扱い）、`cargo test` を実行します。Linux と macOS の両方で、stable と最小対応バージョン（1.88）の Rust を使います。テストは `hl` の出力を GNU coreutils の `cat` と比べるので、macOS では先に `brew install coreutils` で `gcat` を入れておいてください。`rustfmt.toml` には nightly でしか効かないオプションがあるため、フォーマットの確認には nightly の rustfmt を使います。手元で揃えるときは `cargo +nightly fmt` を実行してください。clippy は固定した Rust のバージョンで実行します（`.github/workflows/ci.yml` と `release.yml` の `clippy` ジョブ）。新しい Rust のリリースで lint が増えても、それだけで CI が失敗しないようにするためです。バージョンは両方のファイルで手動で上げ、新しく出た警告も同じ変更で直してください。
+push と pull request のたびに、GitHub Actions が `cargo fmt --check`、`cargo clippy`（警告はエラー扱い）、`cargo test` を実行します。Linux と macOS の両方で、stable と最小対応バージョン（1.88）の Rust を使います。`cat` 互換のオプションについては、期待する出力をテストに直接書いています。それとは別に、GNU coreutils 9.0 以降の `cat`（`gcat` または `cat`）が見つかれば `hl` の出力と比べるテストも動きます。見つからないときは、メッセージを出してスキップします。macOS では `brew install coreutils` で `gcat` が入ります。テストは `HL_*` 環境変数、`HL_CONFIG`、XDG ディレクトリを読まないので、手元の設定や設定ファイル、カスタムシンタックスの影響を受けません。`rustfmt.toml` には nightly でしか効かないオプションがあるため、フォーマットの確認には nightly の rustfmt を使います。手元で揃えるときは `cargo +nightly fmt` を実行してください。clippy は固定した Rust のバージョンで実行します（`.github/workflows/ci.yml` と `release.yml` の `clippy` ジョブ）。新しい Rust のリリースで lint が増えても、それだけで CI が失敗しないようにするためです。バージョンは両方のファイルで手動で上げ、新しく出た警告も同じ変更で直してください。
 
 | ファイル | 役割 |
 | --- | --- |

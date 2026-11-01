@@ -56,9 +56,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The tests compare `hl` with GNU coreutils `cat`. ubuntu-24.04 still
-        # ships it as `cat` (later releases use uutils), and on macOS it is
-        # installed from Homebrew as `gcat`.
+        # One test compares `hl` with GNU coreutils `cat` and is skipped
+        # without it. ubuntu-24.04 still ships it as `cat` (later releases use
+        # uutils), and on macOS it is installed from Homebrew as `gcat`, so
+        # that the comparison runs on both.
         os: [ubuntu-24.04, macos-latest]
         # "1.88" is the MSRV; keep it in sync with `rust-version` in Cargo.toml.
         rust: [stable, "1.88"]

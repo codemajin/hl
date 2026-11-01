@@ -6,9 +6,12 @@ use tempfile::TempDir;
 
 const ESC: &str = "\x1b[";
 
-fn hl() -> Command {
-    let mut cmd = Command::cargo_bin("hl").unwrap();
-    cmd.env_remove("HL_THEME")
+/// `hl` with `args`, run without `assert_cmd` to control its standard
+/// streams. Like `hl()`, it does not see the developer's environment.
+fn raw_hl(args: &[&str]) -> std::process::Command {
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_hl"));
+    cmd.args(args)
+        .env_remove("HL_THEME")
         .env_remove("HL_MAX_SIZE")
         .env_remove("HL_MAX_LINE_LENGTH")
         .env_remove("HL_COLOR_DEPTH")
@@ -21,6 +24,12 @@ fn hl() -> Command {
         .env("XDG_CONFIG_HOME", "/nonexistent/hl-test-config")
         .env("XDG_CACHE_HOME", "/nonexistent/hl-test-cache");
     cmd
+}
+
+/// `hl` with none of the variables it reads set from the developer's
+/// environment, except `TERM` set to a fixed value.
+fn hl() -> Command {
+    Command::from_std(raw_hl(&[]))
 }
 
 /// A directory for test files, removed when the returned value is dropped.
@@ -202,8 +211,11 @@ fn prints_man_page_without_config() {
         .stdout(predicate::str::contains(r"[default: base16\-ocean.dark]"));
 }
 
-/// Writes two fixture files exercising the cases `cat` options care about.
-/// With `binary`, the first one also has control characters and high bytes.
+/// Writes two fixture files exercising the cases `cat` options care about:
+/// a CRLF ending, tabs, runs of blank lines, a line of spaces (not blank),
+/// and a first file without a final newline, whose last line the second
+/// file finishes. With `binary`, the first one also has control characters
+/// and high bytes.
 fn cat_fixtures(dir: &Path, prefix: &str, binary: bool) -> Vec<std::path::PathBuf> {
     let first = dir.join(format!("{prefix}-1.rs"));
     let second = dir.join(format!("{prefix}-2.txt"));
@@ -215,35 +227,6 @@ fn cat_fixtures(dir: &Path, prefix: &str, binary: bool) -> Vec<std::path::PathBu
     fs::write(&first, bytes).unwrap();
     fs::write(&second, "\n\nnext\tline\n\n\n").unwrap();
     vec![first, second]
-}
-
-/// The GNU coreutils `cat` that `hl` is compared with. Other implementations
-/// differ: BSD `cat` (macOS) has no `-A`, and uutils `cat` (Ubuntu 25.10 and
-/// later) squeezes blank lines across files differently. `gcat` is the name
-/// Homebrew's coreutils uses.
-fn gnu_cat() -> &'static str {
-    static CAT: OnceLock<&str> = OnceLock::new();
-    CAT.get_or_init(|| {
-        ["gcat", "cat"]
-            .into_iter()
-            .find(|cat| {
-                std::process::Command::new(cat)
-                    .arg("--version")
-                    .output()
-                    .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains("GNU coreutils"))
-            })
-            .expect("GNU coreutils cat is required (as `gcat` or `cat`)")
-    })
-}
-
-fn cat_output(opts: &[&str], files: &[std::path::PathBuf]) -> Vec<u8> {
-    let out = std::process::Command::new(gnu_cat())
-        .args(opts)
-        .args(files)
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "cat {opts:?} failed");
-    out.stdout
 }
 
 fn hl_output(color: &str, opts: &[&str], files: &[std::path::PathBuf]) -> Vec<u8> {
@@ -275,6 +258,271 @@ fn strip_ansi(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
+/// What the notation options print for `cat_fixtures(.., true)`, as GNU
+/// coreutils 9.x `cat` does. One output line per source line.
+const NOTATION_CASES: &[(&str, &[u8])] = &[
+    (
+        "-A",
+        b"fn main() {^M$\n\
+          ^Ilet x = 1;$\n\
+          $\n\
+          $\n\
+          $\n  \
+          $\n\
+          ^A^[^?M-^@M-^IM- M-^?$\n\
+          }$\n\
+          $\n\
+          $\n\
+          no newline$\n\
+          $\n\
+          next^Iline$\n\
+          $\n\
+          $\n",
+    ),
+    (
+        "-v",
+        b"fn main() {^M\n\
+          \tlet x = 1;\n\
+          \n\
+          \n\
+          \n  \
+          \n\
+          ^A^[^?M-^@M-^IM- M-^?\n\
+          }\n\
+          \n\
+          \n\
+          no newline\n\
+          \n\
+          next\tline\n\
+          \n\
+          \n",
+    ),
+    (
+        // A CRLF ending shows as `^M$` even without -v.
+        "-E",
+        b"fn main() {^M$\n\
+          \tlet x = 1;$\n\
+          $\n\
+          $\n\
+          $\n  \
+          $\n\
+          \x01\x1b\x7f\x80\x89\xa0\xff$\n\
+          }$\n\
+          $\n\
+          $\n\
+          no newline$\n\
+          $\n\
+          next\tline$\n\
+          $\n\
+          $\n",
+    ),
+    (
+        "-T",
+        b"fn main() {\r\n\
+          ^Ilet x = 1;\n\
+          \n\
+          \n\
+          \n  \
+          \n\
+          \x01\x1b\x7f\x80\x89\xa0\xff\n\
+          }\n\
+          \n\
+          \n\
+          no newline\n\
+          \n\
+          next^Iline\n\
+          \n\
+          \n",
+    ),
+];
+
+/// These options show the input in cat's notation, which the highlighting
+/// would break, so colored output is the same.
+#[test]
+fn shows_the_cat_notation() {
+    let dir = tempdir();
+    let files = cat_fixtures(dir.path(), "notation", true);
+    for &(opt, expected) in NOTATION_CASES {
+        for color in ["never", "always"] {
+            assert_eq!(
+                hl_output(color, &[opt], &files),
+                expected,
+                "hl --color {color} {opt}"
+            );
+        }
+    }
+}
+
+#[test]
+fn combines_the_notation_options() {
+    let dir = tempdir();
+    let files = cat_fixtures(dir.path(), "combined", true);
+    for (short, long) in [
+        (&["-e"][..], &["-v", "-E"][..]),
+        (&["-t"], &["-v", "-T"]),
+        (&["-A"], &["-v", "-E", "-T"]),
+        (&["--show-all"], &["-A"]),
+    ] {
+        assert_eq!(
+            hl_output("never", short, &files),
+            hl_output("never", long, &files),
+            "hl {short:?} should be hl {long:?}"
+        );
+    }
+}
+
+/// What the numbering and squeezing options print for
+/// `cat_fixtures(.., false)`. A line of spaces is not blank, and the last
+/// line of the first file is numbered once, as the second file ends it.
+const NUMBERING_CASES: &[(&[&str], &[u8])] = &[
+    (
+        &["-s"],
+        b"fn main() {\r\n\
+          \tlet x = 1;\n\
+          \n  \
+          \n\
+          }\n\
+          \n\
+          no newline\n\
+          \n\
+          next\tline\n\
+          \n",
+    ),
+    (
+        &["-b"],
+        b"     1\tfn main() {\r\n\
+          \x20    2\t\tlet x = 1;\n\
+          \n\
+          \n\
+          \n\
+          \x20    3\t  \n\
+          \x20    4\t}\n\
+          \n\
+          \n\
+          \x20    5\tno newline\n\
+          \n\
+          \x20    6\tnext\tline\n\
+          \n\
+          \n",
+    ),
+    (
+        &["-n"],
+        b"     1\tfn main() {\r\n\
+          \x20    2\t\tlet x = 1;\n\
+          \x20    3\t\n\
+          \x20    4\t\n\
+          \x20    5\t\n\
+          \x20    6\t  \n\
+          \x20    7\t}\n\
+          \x20    8\t\n\
+          \x20    9\t\n\
+          \x20   10\tno newline\n\
+          \x20   11\t\n\
+          \x20   12\tnext\tline\n\
+          \x20   13\t\n\
+          \x20   14\t\n",
+    ),
+    (
+        &["-sn"],
+        b"     1\tfn main() {\r\n\
+          \x20    2\t\tlet x = 1;\n\
+          \x20    3\t\n\
+          \x20    4\t  \n\
+          \x20    5\t}\n\
+          \x20    6\t\n\
+          \x20    7\tno newline\n\
+          \x20    8\t\n\
+          \x20    9\tnext\tline\n\
+          \x20   10\t\n",
+    ),
+    (
+        &["-sb"],
+        b"     1\tfn main() {\r\n\
+          \x20    2\t\tlet x = 1;\n\
+          \n\
+          \x20    3\t  \n\
+          \x20    4\t}\n\
+          \n\
+          \x20    5\tno newline\n\
+          \n\
+          \x20    6\tnext\tline\n\
+          \n",
+    ),
+];
+
+#[test]
+fn numbers_and_squeezes_lines_like_cat() {
+    let dir = tempdir();
+    let files = cat_fixtures(dir.path(), "numbering", false);
+    for &(opts, expected) in NUMBERING_CASES {
+        assert_eq!(hl_output("never", opts, &files), expected, "hl {opts:?}");
+        let colored = hl_output("always", opts, &files);
+        assert!(
+            has_escape(&colored),
+            "hl --color always {opts:?} should be highlighted"
+        );
+        assert_eq!(strip_ansi(&colored), expected, "hl --color always {opts:?}");
+    }
+}
+
+#[test]
+fn ignores_the_options_cat_ignores() {
+    let dir = tempdir();
+    let files = cat_fixtures(dir.path(), "ignored", true);
+    assert_eq!(
+        hl_output("never", &["-u"], &files),
+        hl_output("never", &[], &files)
+    );
+    // -b wins over -n in either order.
+    assert_eq!(
+        hl_output("never", &["-bn"], &files),
+        hl_output("never", &["-b"], &files)
+    );
+    assert_eq!(
+        hl_output("never", &["-nb"], &files),
+        hl_output("never", &["-b"], &files)
+    );
+}
+
+/// The GNU coreutils `cat` to compare `hl` with, if there is one. Other
+/// implementations differ: BSD `cat` (macOS) has no `-A`, and uutils `cat`
+/// (Ubuntu 25.10 and later) squeezes blank lines across files differently.
+/// Before 9.0, `-E` did not show a CRLF ending as `^M$`. `gcat` is the name
+/// Homebrew's coreutils uses.
+fn gnu_cat() -> Option<&'static str> {
+    static CAT: OnceLock<Option<&str>> = OnceLock::new();
+    *CAT.get_or_init(|| {
+        ["gcat", "cat"].into_iter().find(|cat| {
+            std::process::Command::new(cat)
+                .arg("--version")
+                .output()
+                .is_ok_and(|out| is_gnu_cat_9(&String::from_utf8_lossy(&out.stdout)))
+        })
+    })
+}
+
+/// Whether `version`, the output of `cat --version`, is GNU coreutils 9.0
+/// or later. Its first line is like "cat (GNU coreutils) 9.4".
+fn is_gnu_cat_9(version: &str) -> bool {
+    let first = version.lines().next().unwrap_or_default();
+    first.contains("(GNU coreutils)")
+        && first
+            .rsplit(' ')
+            .next()
+            .and_then(|v| v.split('.').next())
+            .and_then(|major| major.parse::<u32>().ok())
+            .is_some_and(|major| major >= 9)
+}
+
+#[test]
+fn recognizes_gnu_cat_9_or_later() {
+    assert!(is_gnu_cat_9("cat (GNU coreutils) 9.4\nCopyright"));
+    assert!(is_gnu_cat_9("cat (GNU coreutils) 10.0\n"));
+    assert!(!is_gnu_cat_9("cat (GNU coreutils) 8.32\n"));
+    assert!(!is_gnu_cat_9("cat (uutils coreutils) 0.2.2\n"));
+    assert!(!is_gnu_cat_9(""));
+}
+
 const CAT_OPTIONS: &[&[&str]] = &[
     &["-A"],
     &["-v"],
@@ -294,46 +542,33 @@ const CAT_OPTIONS: &[&[&str]] = &[
     &["--show-all", "--number"],
 ];
 
+/// Compares `hl` with GNU `cat` itself, for the combinations the tests above
+/// don't spell out. Skipped when there is no GNU `cat` 9.0 or later.
 #[test]
-fn matches_cat_options_without_color() {
+fn matches_gnu_cat() {
+    use std::io::Write;
+
+    let Some(cat) = gnu_cat() else {
+        // Written to stderr directly, as `eprintln!` would be captured.
+        let _ = writeln!(
+            std::io::stderr(),
+            "skipping matches_gnu_cat: GNU coreutils cat 9.0 or later not found (as `gcat` or `cat`)"
+        );
+        return;
+    };
     let dir = tempdir();
-    let files = cat_fixtures(dir.path(), "plain", true);
+    let files = cat_fixtures(dir.path(), "gnu", true);
     for opts in CAT_OPTIONS {
+        let out = std::process::Command::new(cat)
+            .args(*opts)
+            .args(&files)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{cat} {opts:?} failed");
         assert_eq!(
             hl_output("never", opts, &files),
-            cat_output(opts, &files),
-            "hl {opts:?} differs from cat"
-        );
-    }
-}
-
-#[test]
-fn visualizing_options_disable_highlighting() {
-    let dir = tempdir();
-    let files = cat_fixtures(dir.path(), "visual", true);
-    for opts in [["-A"], ["-v"], ["-e"], ["-E"], ["-t"], ["-T"]] {
-        assert_eq!(
-            hl_output("always", &opts, &files),
-            cat_output(&opts, &files),
-            "hl --color always {opts:?} differs from cat"
-        );
-    }
-}
-
-#[test]
-fn squeeze_and_numbering_work_with_highlighting() {
-    let dir = tempdir();
-    let files = cat_fixtures(dir.path(), "color", false);
-    for opts in [&["-s"][..], &["-b"], &["-sn"], &["-sb"], &["-n"]] {
-        let out = hl_output("always", opts, &files);
-        assert!(
-            has_escape(&out),
-            "hl --color always {opts:?} should be highlighted"
-        );
-        assert_eq!(
-            strip_ansi(&out),
-            cat_output(opts, &files),
-            "hl --color always {opts:?} differs from cat"
+            out.stdout,
+            "hl {opts:?} differs from {cat}"
         );
     }
 }
@@ -601,8 +836,8 @@ fn keeps_numbering_and_squeezing_across_the_switch() {
         );
         assert_eq!(
             strip_ansi(&out),
-            cat_output(opts, &files),
-            "hl {opts:?} differs from cat"
+            hl_output("never", opts, &files),
+            "hl {opts:?} should print the same text as without color"
         );
     }
 }
@@ -721,8 +956,8 @@ fn stops_highlighting_at_a_non_utf8_line() {
         );
         assert_eq!(
             strip_ansi(&out),
-            cat_output(opts, &files),
-            "hl {opts:?} differs from cat"
+            hl_output("never", opts, &files),
+            "hl {opts:?} should print the same text as without color"
         );
     }
 }
@@ -754,7 +989,7 @@ fn highlights_utf16_as_utf8() {
             hl_output("always", &[], &utf8)
         );
         let numbered = hl_output("always", &["-n"], &utf16);
-        assert_eq!(strip_ansi(&numbered), cat_output(&["-n"], &utf8));
+        assert_eq!(strip_ansi(&numbered), hl_output("never", &["-n"], &utf8));
     }
 }
 
@@ -881,8 +1116,7 @@ fn keeps_the_text_with_256_colors() {
 #[test]
 fn reports_write_errors_without_blaming_the_input() {
     let full = fs::File::create("/dev/full").unwrap();
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_hl"))
-        .args(["src/main.rs", "Cargo.toml"])
+    let output = raw_hl(&["src/main.rs", "Cargo.toml"])
         .stdout(full)
         .output()
         .unwrap();
@@ -901,17 +1135,6 @@ const EARLY_EXIT_COMMANDS: [&[&str]; 5] = [
     &["--list-themes"],
     &["--build-cache"],
 ];
-
-/// `hl` with `args` and a config and cache that do not exist, run without
-/// `assert_cmd` to control its standard streams.
-fn raw_hl(args: &[&str]) -> std::process::Command {
-    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_hl"));
-    cmd.args(args)
-        .env_remove("HL_CONFIG")
-        .env("XDG_CONFIG_HOME", "/nonexistent/hl-test-config")
-        .env("XDG_CACHE_HOME", "/nonexistent/hl-test-cache");
-    cmd
-}
 
 /// `raw_hl` with stderr captured.
 fn early_exit_command(args: &[&str]) -> std::process::Command {
