@@ -264,7 +264,7 @@ GitHub Actions runs `cargo fmt --check`, `cargo clippy` (warnings are errors) an
 
 | File | Role |
 | --- | --- |
-| `src/main.rs` | Entry point: builds the printer from the arguments and config, picks the pager or stdout, handles errors and the exit code |
+| `src/main.rs` | Entry point: runs the commands that print no inputs (`--list-themes`, ...), builds the printer and the line state from the arguments and config, picks the pager or stdout, handles errors and the exit code. The only place that reads the environment (`PAGER`, `LESS`, the color depth) |
 | `src/assets.rs` | The bundled syntaxes, custom syntaxes and themes from the config directory, merged with the bundled ones, and the syntax cache (`--build-cache`/`--clear-cache`) |
 | `src/cli.rs` | Command-line argument definitions (clap) and defaults from the config file |
 | `src/color.rs` | Terminal color depth detection and the 256-color fallback |

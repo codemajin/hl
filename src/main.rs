@@ -28,7 +28,7 @@ use highlight::{Highlighter, Limits, find_language, resolve_mappings};
 use lines::{LineHighlight, LineState};
 use pager::Pager;
 use print::{Headers, Input, Printer, TrackedWriter, is_stdin, print_all};
-use syntect::parsing::SyntaxSet;
+use syntect::{highlighting::Theme, parsing::SyntaxSet};
 
 fn main() -> ExitCode {
     let args = cli::parse_with(Config::load().as_ref());
@@ -49,30 +49,8 @@ fn main() -> ExitCode {
 /// Runs `hl`. `stdout` tells whether stdout is open, and is checked only by
 /// the commands that write to it.
 fn run(args: &Args, stdout: io::Result<()>) -> Result<ExitCode> {
-    if let Some(shell) = args.completions {
-        return print_and_exit(stdout, |out| cli::print_completions(shell, out));
-    }
-
-    if args.man {
-        return print_and_exit(stdout, |out| cli::print_man(out));
-    }
-
-    if args.build_cache {
-        let report = assets::build_cache()?;
-        return print_and_exit(stdout, |out| print_cache_report(&report, out));
-    }
-
-    if args.clear_cache {
-        assets::clear_cache()?;
-        return Ok(ExitCode::SUCCESS);
-    }
-
-    if args.list_themes {
-        return print_and_exit(stdout, list_themes);
-    }
-
-    if args.list_languages {
-        return print_and_exit(stdout, list_languages);
+    if let Some(code) = run_info_command(args, &stdout)? {
+        return Ok(code);
     }
 
     let tty = io::stdout().is_terminal();
@@ -82,31 +60,100 @@ fn run(args: &Args, stdout: io::Result<()>) -> Result<ExitCode> {
     let syntaxes: Option<&'static SyntaxSet> = args
         .needs_syntaxes(color)
         .then(|| &*Box::leak(Box::new(assets::syntaxes())));
-    let forced = args
-        .language
-        .as_deref()
-        .map(|lang| {
-            let syntaxes = syntaxes.expect("syntaxes are loaded with --language");
-            find_language(syntaxes, lang)
-                .ok_or_else(|| anyhow!("unknown language '{lang}' (see --list-languages)"))
-        })
-        .transpose()?;
-    let mappings = match syntaxes {
-        Some(syntaxes) => resolve_mappings(syntaxes, args.mappings()).map_err(|e| anyhow!(e))?,
-        None => Vec::new(),
+    let printer = build_printer(args, color, syntaxes, || {
+        assets::Themes::load().get_or_default(&args.theme)
+    })?;
+    let lines = build_line_state(args, printer.highlighter.as_ref());
+    print_inputs(args, &printer, lines, color, tty, &stdout)
+}
+
+/// Runs the command that prints something other than the inputs
+/// (`--completions`, `--list-themes`, ...), if one is given.
+fn run_info_command(args: &Args, stdout: &io::Result<()>) -> Result<Option<ExitCode>> {
+    let code = if let Some(shell) = args.completions {
+        print_and_exit(stdout, |out| cli::print_completions(shell, out))?
+    } else if args.man {
+        print_and_exit(stdout, |out| cli::print_man(out))?
+    } else if args.build_cache {
+        let report = assets::build_cache()?;
+        print_and_exit(stdout, |out| print_cache_report(&report, out))?
+    } else if args.clear_cache {
+        assets::clear_cache()?;
+        ExitCode::SUCCESS
+    } else if args.list_themes {
+        print_and_exit(stdout, list_themes)?
+    } else if args.list_languages {
+        print_and_exit(stdout, list_languages)?
+    } else {
+        return Ok(None);
+    };
+    Ok(Some(code))
+}
+
+/// The printer for `args`. `syntaxes` are those loaded when
+/// `Args::needs_syntaxes` asks for them, and `theme` is called only when the
+/// output is highlighted.
+fn build_printer(
+    args: &Args,
+    color: bool,
+    syntaxes: Option<&'static SyntaxSet>,
+    theme: impl FnOnce() -> Theme,
+) -> Result<Printer> {
+    let (forced, mappings) = match syntaxes {
+        Some(syntaxes) => {
+            let forced = args
+                .language
+                .as_deref()
+                .map(|lang| {
+                    find_language(syntaxes, lang)
+                        .ok_or_else(|| anyhow!("unknown language '{lang}' (see --list-languages)"))
+                })
+                .transpose()?;
+            let mappings = resolve_mappings(syntaxes, args.mappings()).map_err(|e| anyhow!(e))?;
+            (forced, mappings)
+        }
+        None => (None, Vec::new()),
     };
     let highlighter = syntaxes.filter(|_| color).map(|syntaxes| {
-        let theme = assets::Themes::load().get_or_default(&args.theme);
-        Highlighter::new(syntaxes, theme, args.depth(), mappings)
+        Highlighter::new(
+            syntaxes,
+            theme(),
+            args.depth(color::detect_from_env),
+            mappings,
+        )
     });
-    let printer = Printer {
+    Ok(Printer {
         highlighter,
         forced,
         vis: args.visibility(),
         limits: args.limits(),
         strip: args.strip_escapes(color),
-    };
+    })
+}
 
+/// The line numbering, squeezing and range of `args`. `--highlight-line`
+/// needs the theme's colors, so it applies only with a `highlighter`.
+fn build_line_state(args: &Args, highlighter: Option<&Highlighter>) -> LineState {
+    let lines = LineState::new(args.numbering(), args.squeeze_blank, args.line_range);
+    match highlighter {
+        Some(hl) if !args.highlight_line.is_empty() => lines.with_highlight(LineHighlight {
+            lines: args.highlight_line.clone(),
+            sgr: hl.line_highlight_sgr(),
+        }),
+        _ => lines,
+    }
+}
+
+/// Prints the inputs to the pager or stdout, and returns the exit code:
+/// failure when an input could not be read.
+fn print_inputs(
+    args: &Args,
+    printer: &Printer,
+    lines: LineState,
+    color: bool,
+    tty: bool,
+    stdout: &io::Result<()>,
+) -> Result<ExitCode> {
     check_write(stdout)?;
     let pager_env = env::var("PAGER").ok();
     // An empty `LESS` gives `less` no options, so it counts as unset.
@@ -122,25 +169,16 @@ fn run(args: &Args, stdout: io::Result<()>) -> Result<ExitCode> {
     } else {
         args.files.clone()
     };
-    let mut lines = LineState::new(args.numbering(), args.squeeze_blank, args.line_range);
-    if let Some(hl) = &printer.highlighter
-        && !args.highlight_line.is_empty()
-    {
-        lines = lines.with_highlight(LineHighlight {
-            lines: args.highlight_line.clone(),
-            sgr: hl.line_highlight_sgr(),
-        });
-    }
     let headers = args.header.then(|| Headers::new(color));
     let limits = printer.limits;
     let open = |path| open_input(path, limits);
-    let (failed, write_error) = print_all(&inputs, open, &printer, &mut out, lines, headers);
+    let (failed, write_error) = print_all(&inputs, open, printer, &mut out, lines, headers);
 
     let flushed = match write_error {
         Some(e) => Err(e),
         None => out.flush(),
     };
-    check_write(flushed)?;
+    check_write(&flushed)?;
     drop(out);
     if let Some(p) = pager {
         p.finish()?;
@@ -192,9 +230,9 @@ fn is_broken_pipe(err: &io::Error) -> bool {
 
 /// Turns the result of writing the output into the error `hl` reports. A
 /// closed pipe (`hl ... | head`) is a normal way to stop reading.
-fn check_write(result: io::Result<()>) -> Result<()> {
+fn check_write(result: &io::Result<()>) -> Result<()> {
     match result {
-        Err(e) if !is_broken_pipe(&e) => bail!("write error: {}", describe(&e)),
+        Err(e) if !is_broken_pipe(e) => bail!("write error: {}", describe(e)),
         _ => Ok(()),
     }
 }
@@ -202,12 +240,12 @@ fn check_write(result: io::Result<()>) -> Result<()> {
 /// Writes the output of a command that exits without printing the inputs
 /// (`--list-themes`, ...), with write errors handled like the normal output.
 fn print_and_exit(
-    stdout: io::Result<()>,
+    stdout: &io::Result<()>,
     write: impl FnOnce(&mut dyn Write) -> io::Result<()>,
 ) -> Result<ExitCode> {
     check_write(stdout)?;
     let mut out = io::stdout().lock();
-    check_write(write(&mut out).and_then(|()| out.flush()))?;
+    check_write(&write(&mut out).and_then(|()| out.flush()))?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -248,7 +286,105 @@ fn list_languages(out: &mut dyn Write) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::LazyLock;
+
     use super::*;
+    use crate::color::Depth;
+
+    /// two-face's syntaxes, so that the user's custom ones stay out.
+    fn syntaxes() -> &'static SyntaxSet {
+        static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(two_face::syntax::extra_newlines);
+        &SYNTAXES
+    }
+
+    /// `argv` with a fixed color depth, so that the terminal of the
+    /// developer does not matter.
+    fn args(argv: &[&str]) -> Args {
+        let argv: Vec<&str> = ["--color-depth=256"].iter().chain(argv).copied().collect();
+        cli::parse_without_env(&argv)
+    }
+
+    fn printer(argv: &[&str], color: bool) -> Result<Printer> {
+        let args = args(argv);
+        let syntaxes = args.needs_syntaxes(color).then(syntaxes);
+        build_printer(&args, color, syntaxes, Theme::default)
+    }
+
+    fn highlighter() -> Highlighter {
+        Highlighter::new(syntaxes(), Theme::default(), Depth::Ansi256, Vec::new())
+    }
+
+    #[test]
+    fn rejects_an_unknown_language() {
+        for color in [true, false] {
+            let err = printer(&["--language=nope"], color).err().unwrap();
+            assert_eq!(
+                err.to_string(),
+                "unknown language 'nope' (see --list-languages)"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_an_unknown_language_in_a_mapping() {
+        let err = printer(&["--map-syntax=*.foo:nope"], false).err().unwrap();
+        assert_eq!(
+            err.to_string(),
+            "unknown language 'nope' in map-syntax '*.foo:nope' (see --list-languages)"
+        );
+    }
+
+    #[test]
+    fn forces_the_language_even_without_color() {
+        for color in [true, false] {
+            let printer = printer(&["--language=rust"], color).unwrap();
+            assert_eq!(printer.forced.unwrap().name, "Rust");
+            assert_eq!(printer.highlighter.is_some(), color);
+        }
+    }
+
+    #[test]
+    fn loads_no_theme_without_color() {
+        let args = args(&[]);
+        let printer = build_printer(&args, false, None, || -> Theme {
+            panic!("the theme must not be loaded")
+        })
+        .unwrap();
+        assert!(printer.highlighter.is_none());
+        assert!(printer.forced.is_none());
+        assert!(!printer.strip);
+    }
+
+    #[test]
+    fn highlights_and_strips_escapes_with_color() {
+        let printer = printer(&[], true).unwrap();
+        assert!(printer.highlighter.is_some());
+        assert!(printer.forced.is_none());
+        assert!(printer.strip);
+
+        let printer = self::printer(&["--strip-ansi=never"], true).unwrap();
+        assert!(!printer.strip);
+    }
+
+    #[test]
+    fn highlights_lines_only_with_a_highlighter() {
+        let args = args(&["-H", "2"]);
+        assert!(build_line_state(&args, None).is_passthrough());
+        assert!(!build_line_state(&args, Some(&highlighter())).is_passthrough());
+    }
+
+    #[test]
+    fn passes_lines_through_without_line_options() {
+        let args = args(&[]);
+        assert!(build_line_state(&args, None).is_passthrough());
+        assert!(build_line_state(&args, Some(&highlighter())).is_passthrough());
+    }
+
+    #[test]
+    fn numbers_lines_without_a_highlighter() {
+        let args = args(&["-n"]);
+        assert!(!build_line_state(&args, None).is_passthrough());
+    }
 
     const MISSING: Option<&str> = Some("hl-no-such-pager");
 

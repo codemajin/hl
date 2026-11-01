@@ -16,7 +16,7 @@ use clap_complete::Shell;
 use toml::Value;
 
 use crate::{
-    color::{self, Depth},
+    color::Depth,
     config::Config,
     diag::escape_controls,
     highlight::{DEFAULT_THEME, Limits, SyntaxMapping},
@@ -269,6 +269,17 @@ pub fn parse_with(config: Option<&Config>) -> Args {
     args
 }
 
+/// Parses `argv` (without the program name) like the command line, but
+/// ignores the `HL_*` variables, so that the developer's environment can't
+/// change what the unit tests see.
+#[cfg(test)]
+pub fn parse_without_env(argv: &[&str]) -> Args {
+    let matches = without_env(Args::command())
+        .try_get_matches_from(["hl"].iter().chain(argv))
+        .unwrap();
+    Args::from_arg_matches(&matches).unwrap()
+}
+
 /// `cmd` without the environment variables of its options.
 fn without_env(cmd: Command) -> Command {
     cmd.mut_args(|arg| arg.env(None))
@@ -493,10 +504,11 @@ impl Args {
         }
     }
 
-    /// The color depth, with `auto` resolved from the environment.
-    pub fn depth(&self) -> Depth {
+    /// The color depth, with `auto` resolved by `detected` (main passes
+    /// `color::detect_from_env`, so that only main reads the environment).
+    pub fn depth(&self, detected: impl FnOnce() -> Depth) -> Depth {
         match self.color_depth {
-            ColorDepth::Auto => color::detect_from_env(),
+            ColorDepth::Auto => detected(),
             ColorDepth::TrueColor => Depth::TrueColor,
             ColorDepth::Ansi256 => Depth::Ansi256,
         }
@@ -586,10 +598,7 @@ mod tests {
     /// that the developer's environment can't change the result; the
     /// integration tests check how they are read.
     fn args(argv: &[&str]) -> Args {
-        let matches = without_env(Args::command())
-            .try_get_matches_from(["hl"].iter().chain(argv))
-            .unwrap();
-        Args::from_arg_matches(&matches).unwrap()
+        parse_without_env(argv)
     }
 
     /// Parses `argv` with `config` applied, as `parse_with` does, but
@@ -621,6 +630,24 @@ mod tests {
         assert!(!args(&[]).use_color(false));
         assert!(args(&["--color=always"]).use_color(false));
         assert!(!args(&["--color=never"]).use_color(true));
+    }
+
+    #[test]
+    fn auto_depth_comes_from_the_detector() {
+        for detected in [Depth::TrueColor, Depth::Ansi256] {
+            assert_eq!(args(&[]).depth(|| detected), detected);
+            assert_eq!(args(&["--color-depth=auto"]).depth(|| detected), detected);
+        }
+    }
+
+    #[test]
+    fn explicit_depth_ignores_the_detector() {
+        let detected = || -> Depth { panic!("the detector must not be called") };
+        assert_eq!(
+            args(&["--color-depth=truecolor"]).depth(detected),
+            Depth::TrueColor
+        );
+        assert_eq!(args(&["--color-depth=256"]).depth(detected), Depth::Ansi256);
     }
 
     #[test]
