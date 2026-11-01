@@ -260,7 +260,7 @@ cargo clippy
 cargo fmt --check   # フォーマットの確認（rustfmt.toml）
 ```
 
-push と pull request のたびに、GitHub Actions が `cargo fmt --check`、`cargo clippy`（警告はエラー扱い）、`cargo test` を実行します。Linux と macOS の両方で、stable と最小対応バージョン（1.88）の Rust を使います。テストは `hl` の出力を GNU coreutils の `cat` と比べるので、macOS では先に `brew install coreutils` で `gcat` を入れておいてください。`rustfmt.toml` には nightly でしか効かないオプションがあるため、フォーマットの確認には nightly の rustfmt を使います。手元で揃えるときは `cargo +nightly fmt` を実行してください。
+push と pull request のたびに、GitHub Actions が `cargo fmt --check`、`cargo clippy`（警告はエラー扱い）、`cargo test` を実行します。Linux と macOS の両方で、stable と最小対応バージョン（1.88）の Rust を使います。テストは `hl` の出力を GNU coreutils の `cat` と比べるので、macOS では先に `brew install coreutils` で `gcat` を入れておいてください。`rustfmt.toml` には nightly でしか効かないオプションがあるため、フォーマットの確認には nightly の rustfmt を使います。手元で揃えるときは `cargo +nightly fmt` を実行してください。clippy は固定した Rust のバージョンで実行します（`.github/workflows/ci.yml` と `release.yml` の `clippy` ジョブ）。新しい Rust のリリースで lint が増えても、それだけで CI が失敗しないようにするためです。バージョンは両方のファイルで手動で上げ、新しく出た警告も同じ変更で直してください。
 
 | ファイル | 役割 |
 | --- | --- |
@@ -281,6 +281,8 @@ push と pull request のたびに、GitHub Actions が `cargo fmt --check`、`c
 ### 依存関係
 
 Dependabot（`.github/dependabot.yml`）が、依存クレートと GitHub Actions の更新 PR を毎週作ります。クレートのマイナー・パッチ更新は 1 本の PR にまとめ、メジャー更新は個別の PR にします。Actions の更新も 1 本にまとめます。
+
+タグは付け替えられるので、ワークフローでは各 Action をコミットの SHA で固定し、バージョンをコメントに書いています（`uses: actions/checkout@<sha> # v7.0.1`）。Dependabot は SHA とコメントを一緒に更新します。Action を追加するときも同じ形で固定してください。ワークフローの `GITHUB_TOKEN` は読み取り専用です（書き込めるのはリリースを公開するジョブだけ）。`actions/checkout` には `persist-credentials: false` を付けているので、トークンが `.git/config` に残ってビルドから読まれることはありません。
 
 [cargo-deny](https://github.com/EmbarkStudios/cargo-deny)（`.github/workflows/deny.yml`）は push と pull request のたびに依存を確認します。確認するのは、既知の脆弱性と yank されたバージョン（advisories）、ライセンス、bans、取得元（crates.io 以外は不可）です。依存が変わらなくても新しい脆弱性は公開されるので、advisories は毎日も確認します。許可するライセンスと、理由を付けて当面無視する advisory は `deny.toml` に書いてあります。手元で実行するときは次のようにします。
 
@@ -306,7 +308,9 @@ cargo deny check
    git push origin vX.Y.Z
    ```
 
-すると `.github/workflows/release.yml` が 4 つのプラットフォーム向けにバイナリをビルドし、`hl` 自身で生成した補完スクリプトと man ページとまとめてアーカイブし、SHA-256 のチェックサムとともに GitHub のリリースとして公開します。リリースノートは CHANGELOG の該当の節です。タグが `Cargo.toml` のバージョンと一致しない場合や、CHANGELOG にそのバージョンの節がない場合は、何も公開せずに失敗します。
+すると `.github/workflows/release.yml` が 4 つのプラットフォーム向けにバイナリをビルドし、`hl` 自身で生成した補完スクリプトと man ページとまとめてアーカイブし、SHA-256 のチェックサムとともに GitHub のリリースとして公開します。リリースノートは CHANGELOG の該当の節です。タグが `Cargo.toml` のバージョンと一致しない場合や、CHANGELOG にそのバージョンの節がない場合は、何も公開せずに失敗します。CI のワークフローの結果は待たないので、ビルドの前にテスト（Linux と macOS）と clippy を自分で実行し、失敗したら何も公開しません。ビルドキャッシュは使わず、タグのソースだけからビルドします。
+
+`v*` のタグを push できる人は誰でもリリースを公開できます。これを制限するには、リポジトリの設定（Settings → Rules → Rulesets）で `v*` を対象にしたタグのルールセットを作り、タグの作成・更新・削除をメンテナーに限ってください。
 
 ### テストカバレッジ
 
