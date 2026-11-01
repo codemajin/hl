@@ -255,7 +255,7 @@ export HL_THEME='Monokai Extended'
 
 ```sh
 cargo build
-cargo test          # src/ のユニットテストと tests/cli.rs の結合テスト
+cargo test          # src/ のユニットテストと tests/cli/ の結合テスト（機能ごとに 1 ファイル）
 cargo clippy
 cargo fmt --check   # フォーマットの確認（rustfmt.toml）
 ```

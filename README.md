@@ -255,7 +255,7 @@ To run the real `cat` without going through the alias, use `\cat` or `command ca
 
 ```sh
 cargo build
-cargo test          # unit tests in src/ and integration tests in tests/cli.rs
+cargo test          # unit tests in src/ and integration tests in tests/cli/ (one file per feature)
 cargo clippy
 cargo fmt --check   # formatting (rustfmt.toml)
 ```

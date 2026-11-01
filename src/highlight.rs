@@ -658,6 +658,18 @@ mod tests {
     }
 
     #[test]
+    fn maps_an_exact_file_name() {
+        assert_eq!(
+            detect(&["Settings:Ruby"], Some("conf/Settings"), ""),
+            "Ruby"
+        );
+        assert_ne!(
+            detect(&["Settings:Ruby"], Some("conf/MySettings"), ""),
+            "Ruby"
+        );
+    }
+
+    #[test]
     fn later_mapping_wins() {
         let mappings = ["*.rs:Python", "main.*:Ruby"];
         assert_eq!(detect(&mappings, Some("main.rs"), ""), "Ruby");
