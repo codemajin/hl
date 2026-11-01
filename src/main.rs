@@ -9,6 +9,7 @@ mod highlight;
 mod lines;
 mod pager;
 mod print;
+mod stdout;
 
 use std::{
     fs::File,
@@ -30,7 +31,7 @@ use syntect::parsing::SyntaxSet;
 
 fn main() -> ExitCode {
     let args = cli::parse_with(Config::load().as_ref());
-    match run(&args) {
+    match run(&args, stdout::check()) {
         Ok(code) => code,
         // A closed pipe (`hl ... | head`) is a normal way to stop reading.
         Err(err) if err.downcast_ref::<io::Error>().is_some_and(is_broken_pipe) => {
@@ -38,24 +39,26 @@ fn main() -> ExitCode {
         }
         Err(err) => {
             // The message can contain a path or a name from the user.
-            eprintln!("hl: {}", escape_controls(&format!("{err}")));
+            diag::note(escape_controls(&format!("{err}")));
             ExitCode::FAILURE
         }
     }
 }
 
-fn run(args: &Args) -> Result<ExitCode> {
+/// Runs `hl`. `stdout` tells whether stdout is open, and is checked only by
+/// the commands that write to it.
+fn run(args: &Args, stdout: io::Result<()>) -> Result<ExitCode> {
     if let Some(shell) = args.completions {
-        return print_and_exit(|out| cli::print_completions(shell, out));
+        return print_and_exit(stdout, |out| cli::print_completions(shell, out));
     }
 
     if args.man {
-        return print_and_exit(|out| cli::print_man(out));
+        return print_and_exit(stdout, |out| cli::print_man(out));
     }
 
     if args.build_cache {
         let report = assets::build_cache()?;
-        return print_and_exit(|out| print_cache_report(&report, out));
+        return print_and_exit(stdout, |out| print_cache_report(&report, out));
     }
 
     if args.clear_cache {
@@ -64,11 +67,11 @@ fn run(args: &Args) -> Result<ExitCode> {
     }
 
     if args.list_themes {
-        return print_and_exit(list_themes);
+        return print_and_exit(stdout, list_themes);
     }
 
     if args.list_languages {
-        return print_and_exit(list_languages);
+        return print_and_exit(stdout, list_languages);
     }
 
     let tty = io::stdout().is_terminal();
@@ -103,6 +106,7 @@ fn run(args: &Args) -> Result<ExitCode> {
         strip: args.strip_escapes(color),
     };
 
+    check_write(stdout)?;
     let mut pager = start_pager(args.paging(), tty)?;
     let mut out = TrackedWriter::new(BufWriter::new(match pager.as_mut() {
         Some(p) => Box::new(p.stdin()) as Box<dyn Write>,
@@ -185,7 +189,11 @@ fn check_write(result: io::Result<()>) -> Result<()> {
 
 /// Writes the output of a command that exits without printing the inputs
 /// (`--list-themes`, ...), with write errors handled like the normal output.
-fn print_and_exit(write: impl FnOnce(&mut dyn Write) -> io::Result<()>) -> Result<ExitCode> {
+fn print_and_exit(
+    stdout: io::Result<()>,
+    write: impl FnOnce(&mut dyn Write) -> io::Result<()>,
+) -> Result<ExitCode> {
+    check_write(stdout)?;
     let mut out = io::stdout().lock();
     check_write(write(&mut out).and_then(|()| out.flush()))?;
     Ok(ExitCode::SUCCESS)

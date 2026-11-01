@@ -846,14 +846,20 @@ const EARLY_EXIT_COMMANDS: [&[&str]; 5] = [
 ];
 
 /// `hl` with `args` and a config and cache that do not exist, run without
-/// `assert_cmd` to control its stdout.
-fn early_exit_command(args: &[&str]) -> std::process::Command {
+/// `assert_cmd` to control its standard streams.
+fn raw_hl(args: &[&str]) -> std::process::Command {
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_hl"));
     cmd.args(args)
         .env_remove("HL_CONFIG")
         .env("XDG_CONFIG_HOME", "/nonexistent/hl-test-config")
-        .env("XDG_CACHE_HOME", "/nonexistent/hl-test-cache")
-        .stderr(std::process::Stdio::piped());
+        .env("XDG_CACHE_HOME", "/nonexistent/hl-test-cache");
+    cmd
+}
+
+/// `raw_hl` with stderr captured.
+fn early_exit_command(args: &[&str]) -> std::process::Command {
+    let mut cmd = raw_hl(args);
+    cmd.stderr(std::process::Stdio::piped());
     cmd
 }
 
@@ -897,6 +903,85 @@ fn early_exit_commands_stop_quietly_when_the_pipe_closes() {
         assert_eq!(output.status.code(), Some(0), "{args:?}");
         assert_eq!(String::from_utf8_lossy(&output.stderr), "", "{args:?}");
     }
+}
+
+/// A pipe whose reading end is already closed, so writing to it fails with
+/// a broken pipe.
+#[cfg(unix)]
+fn closed_pipe() -> std::io::PipeWriter {
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    writer
+}
+
+#[cfg(unix)]
+#[test]
+fn keeps_the_exit_code_when_stderr_is_a_closed_pipe() {
+    let status = raw_hl(&["nonexistent-file"])
+        .stderr(closed_pipe())
+        .status()
+        .unwrap();
+    assert_eq!(status.code(), Some(1));
+}
+
+/// The warnings about the config file come before any output.
+#[cfg(unix)]
+#[test]
+fn prints_the_input_when_warnings_cannot_be_written() {
+    let dir = tempdir();
+    let config = dir.path().join("config.toml");
+    fs::write(&config, "foo = 1\n").unwrap();
+    let output = raw_hl(&["--theme", "nope", "--color=always", "Cargo.toml"])
+        .env("HL_CONFIG", &config)
+        .stderr(closed_pipe())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(strip_ansi(&output.stdout), fs::read("Cargo.toml").unwrap());
+}
+
+/// `cmd` with its stdout closed, as with `hl >&-`.
+#[cfg(unix)]
+fn with_closed_stdout(cmd: &mut std::process::Command) -> &mut std::process::Command {
+    use std::os::{
+        fd::{FromRawFd, OwnedFd},
+        unix::process::CommandExt,
+    };
+    // SAFETY: fd 1 of the child is not used by anything else before exec,
+    // and closing it is async-signal-safe.
+    unsafe {
+        cmd.pre_exec(|| {
+            drop(OwnedFd::from_raw_fd(1));
+            Ok(())
+        })
+    }
+}
+
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+#[test]
+fn reports_a_closed_stdout_as_a_write_error() {
+    let normal: &[&str] = &["Cargo.toml"];
+    for args in EARLY_EXIT_COMMANDS.into_iter().chain([normal]) {
+        let output = with_closed_stdout(&mut early_exit_command(args))
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            "hl: write error: Bad file descriptor\n",
+            "{args:?}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn clear_cache_does_not_need_stdout() {
+    let output = with_closed_stdout(&mut early_exit_command(&["--clear-cache"]))
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
 }
 
 #[test]

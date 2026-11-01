@@ -1,10 +1,22 @@
 //! Messages on stderr.
 
-use std::{borrow::Cow, fmt::Write, io, path::Path};
+use std::{
+    borrow::Cow,
+    fmt::{self, Write},
+    io::{self, Write as _},
+    path::Path,
+};
+
+/// Prints `hl: msg` on stderr. A failed write is ignored: there is nowhere
+/// left to report it, and it must change neither the output nor the exit
+/// code (`eprintln!` would panic, for example on a closed pipe).
+pub fn note(msg: impl fmt::Display) {
+    let _ = writeln!(io::stderr().lock(), "hl: {msg}");
+}
 
 /// Warns about a problem with `path` that does not stop `hl`.
 pub fn warn(path: &Path, msg: &str) {
-    eprintln!("hl: {}: {msg}", display_safe(path));
+    note(format_args!("{}: {msg}", display_safe(path)));
 }
 
 /// `path` as shown to the user, with its control characters made visible so

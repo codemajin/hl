@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::{
-    diag::{describe, display_safe},
+    diag::{describe, display_safe, warn},
     encoding::{UTF8_BOM, Utf16Decoder, is_utf8_prefix, utf16_bom},
     escape::StripEscapes,
     highlight::{Highlighter, Limits, Syntax},
@@ -43,7 +43,7 @@ pub fn print_all<'p, W: Write>(
             // The output is gone, so there is no point in reading more input.
             Err(e) if out.failed() => return (failed, Some(e)),
             Err(e) => {
-                eprintln!("hl: {}: {}", display_safe(input), describe(&e));
+                warn(input, &describe(&e));
                 failed = true;
             }
         }

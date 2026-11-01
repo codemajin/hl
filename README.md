@@ -228,6 +228,8 @@ Run `hl --build-cache` again after adding, changing or removing a syntax, and af
 - With `-r`, the lines before the range are still read and highlighted without being printed, so the printed lines get the same colors as when the whole file is shown, and reading stops after the range. The range applies to each input on its own: `-n` and `-b` show the line numbers of that input, counting the lines outside the range (and those squeezed by `-s`), and a file that ends without a newline inside the range gets one before the next input. Without `-r`, numbering continues across files as with `cat`.
 - If a file can't be opened, `hl` prints `hl: <path>: <reason>` to stderr, processes the remaining files, and exits with status 1.
 - If the output is closed early, as in `hl file | head`, `hl` exits successfully without an error.
+- If the output can't be written, as when stdout is closed (`hl file >&-`) or the disk is full, `hl` prints `hl: write error: <reason>` to stderr and exits with status 1, as `cat` does. This also applies to `--list-themes`, `--man` and the other commands that print something and exit.
+- If stderr can't be written, as when it is a pipe closed by the reader, the messages are dropped; the output and the exit status stay the same.
 
 ## Using it as `cat`
 
@@ -270,6 +272,7 @@ GitHub Actions runs `cargo fmt --check`, `cargo clippy` (warnings are errors) an
 | `src/lines.rs` | Line numbering, blank-line squeezing, and `cat -v`/`-E`/`-T` notation |
 | `src/pager.rs` | Starting the pager and waiting for it to exit |
 | `src/print.rs` | Printing each input in turn, highlighted or plain, with headers and encoding handling |
+| `src/stdout.rs` | Telling whether stdout was closed at startup, before std reopens it on `/dev/null` |
 
 ### Dependencies
 

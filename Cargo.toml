@@ -16,6 +16,9 @@ syntect = { version = "5.3.0", default-features = false, features = ["default-fa
 toml = { version = "1.1.8", default-features = false, features = ["std", "parse", "serde"] }
 two-face = { version = "0.5.2", default-features = false, features = ["syntect-fancy"] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.191"
+
 [build-dependencies]
 syntect = { version = "5.3.0", default-features = false, features = ["default-fancy"] }
 two-face = { version = "0.5.2", default-features = false, features = ["syntect-fancy"] }

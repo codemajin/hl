@@ -21,7 +21,7 @@ use two_face::theme::LazyThemeSet;
 
 use crate::{
     config,
-    diag::{describe, escape_controls, warn},
+    diag::{describe, escape_controls, note, warn},
     highlight::DEFAULT_THEME,
 };
 
@@ -51,7 +51,7 @@ pub fn syntaxes() -> SyntaxSet {
         return syntaxes;
     }
     let (syntaxes, _) = merge(&files);
-    eprintln!("hl: custom syntaxes are not cached, run 'hl --build-cache' to speed up startup");
+    note("custom syntaxes are not cached, run 'hl --build-cache' to speed up startup");
     syntaxes
 }
 
@@ -264,12 +264,12 @@ impl Themes {
                     Ok(theme) => return theme,
                     Err(e) => warn_bad_theme(path, &e),
                 }
-                eprintln!("hl: falling back to {DEFAULT_THEME}");
+                note(format_args!("falling back to {DEFAULT_THEME}"));
             }
-            None => eprintln!(
-                "hl: unknown theme '{}', falling back to {DEFAULT_THEME} (see --list-themes)",
+            None => note(format_args!(
+                "unknown theme '{}', falling back to {DEFAULT_THEME} (see --list-themes)",
                 escape_controls(name)
-            ),
+            )),
         }
         self.bundled
             .get(DEFAULT_THEME)
