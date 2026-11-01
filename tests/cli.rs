@@ -614,13 +614,70 @@ fn parses_size_units() {
             .assert()
             .success();
     }
-    for size in ["abc", "1T", "-1", "", "99999999999G"] {
+    let not_a_size = "not a size: use a whole number with an optional K, M or G suffix";
+    for (size, message) in [
+        ("abc", not_a_size),
+        ("1T", not_a_size),
+        ("-1", not_a_size),
+        ("1.5K", not_a_size),
+        ("K", not_a_size),
+        ("1KB", not_a_size),
+        ("", not_a_size),
+        ("99999999999G", "too large"),
+        ("99999999999999999999", "too large"),
+    ] {
         hl().arg(format!("--max-size={size}"))
             .arg("Cargo.toml")
             .assert()
             .code(2)
-            .stderr(predicate::str::contains("--max-size"));
+            .stderr(predicate::str::contains(format!(
+                "invalid value '{size}' for '--max-size <SIZE>': {message}"
+            )));
     }
+}
+
+#[test]
+fn reports_an_invalid_env_value_by_the_variable_name() {
+    for (var, value, message) in [
+        ("HL_MAX_SIZE", "abc", "not a size"),
+        ("HL_MAX_LINE_LENGTH", "1.5K", "not a size"),
+        (
+            "HL_COLOR_DEPTH",
+            "16",
+            "(possible values: auto, truecolor, 256)",
+        ),
+    ] {
+        hl().env(var, value)
+            .arg("Cargo.toml")
+            .assert()
+            .code(2)
+            .stdout("")
+            .stderr(
+                predicate::str::contains(format!("invalid value '{value}' for {var}"))
+                    .and(predicate::str::contains(message))
+                    .and(predicate::str::contains("'--").not()),
+            );
+    }
+}
+
+#[test]
+fn ignores_an_invalid_env_value_overridden_on_the_command_line() {
+    hl().env("HL_MAX_SIZE", "abc")
+        .args(["--max-size", "1K", "Cargo.toml"])
+        .assert()
+        .success()
+        .stderr("");
+}
+
+#[test]
+fn reports_an_invalid_option_before_an_invalid_env_value() {
+    hl().env("HL_MAX_SIZE", "abc")
+        .args(["--max-line-length=x", "Cargo.toml"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "invalid value 'x' for '--max-line-length <LEN>'",
+        ));
 }
 
 /// "// 日本語" in `Shift_JIS` and EUC-JP, which are not valid UTF-8.
@@ -1688,16 +1745,16 @@ fn shows_no_options_only_in_long_help() {
 }
 
 #[test]
-fn reports_an_invalid_env_value_as_before_with_a_config() {
+fn reports_an_invalid_env_value_by_its_name_with_a_config() {
     let dir = tempdir();
     let config = write_config(dir.path(), "color-depth = \"256\"\n");
     hl_with_config(&config)
         .env("HL_COLOR_DEPTH", "16")
         .arg("Cargo.toml")
         .assert()
-        .failure()
+        .code(2)
         .stderr(
-            predicate::str::contains("invalid value '16' for '--color-depth")
+            predicate::str::contains("invalid value '16' for HL_COLOR_DEPTH")
                 .and(predicate::str::contains("config.toml").not()),
         );
 }

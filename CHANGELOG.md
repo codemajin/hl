@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - When output is colored, escape sequences in the input (colors, OSC, ...) are removed by default, so that they no longer break the highlighting or control the terminal. Uncolored output is unchanged.
 - The removal also covers the C1 control characters encoded in UTF-8 (U+0080–U+009F, such as the 8-bit CSI and OSC), and UTF-16 input, which is converted to UTF-8 for it even when it is not highlighted (over `--max-size`, or with `--strip-ansi=always` and no color).
+- An invalid value in `HL_MAX_SIZE`, `HL_MAX_LINE_LENGTH` or `HL_COLOR_DEPTH` is reported by the name of the variable, such as `error: invalid value 'abc' for HL_MAX_SIZE: ...`, instead of the option the user did not write. It is still an error with exit status 2. The README now describes this and what exit statuses 0, 1 and 2 mean.
 
 ### Fixed
 
@@ -28,6 +29,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - A line that takes longer than 3 seconds to highlight no longer freezes `hl`: it warns and prints the rest of the input without highlighting.
 - `hl` no longer panics (exit status 101) when stderr can't be written, such as a pipe closed by the reader. The message is dropped, and the output and the exit status stay the same; before, a warning about the config file stopped `hl` before it printed anything.
 - With `--header`, a file that does not end with a newline is now followed by the blank line before the next header in every mode. Before, the blank line was missing without options and with `--strip-ansi=always`.
+- An invalid size for `--max-size` or `--max-line-length`, such as `-1`, `1.5K` or `1KB`, is reported as `not a size: use a whole number with an optional K, M or G suffix (e.g. 512K)` instead of a misleading `invalid unit '.5K'`, and a number too large for 64 bits as `too large`.
 - A closed stdout (`hl file >&-`) is reported as `hl: write error: Bad file descriptor` with exit status 1, like `cat`, instead of throwing the output away and exiting with 0.
 
 ### Security

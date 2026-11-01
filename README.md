@@ -141,8 +141,8 @@ hl --build-cache                 # cache custom syntaxes so that they load fast
 | `-l`, `--language <LANG>` | Use this language instead of auto-detection, given as a name or an extension (e.g. `rust`, `py`) |
 | `--map-syntax <PATTERN:LANG>` | Use language LANG for files matching the glob PATTERN (e.g. `'*.conf:INI'`). LANG is a name or an extension, as with `-l`. A pattern without `/` matches the file name; a pattern with `/` matches the absolute path (`*` stays within one directory, `**` spans any number). Can be given more than once; when several mappings match, the last one wins. Standard input is never mapped |
 | `--theme <THEME>` | Color theme (case-insensitive), bundled or custom. Defaults to `base16-ocean.dark`, which is also used with a warning if the theme is not found |
-| `--max-size <SIZE>` | Print inputs larger than this without highlighting. Default `512K`. Accepts `K`, `M` and `G` (powers of 1024); `0` removes the limit |
-| `--max-line-length <LEN>` | Stop highlighting at the first line longer than this many bytes (excluding the newline). Default `16K`; `0` removes the limit |
+| `--max-size <SIZE>` | Print inputs larger than this without highlighting. Default `512K`. A whole number of bytes, optionally followed by `K`, `M` or `G` (powers of 1024, either case), such as `1048576` or `1M`; negative numbers and fractions such as `1.5K` are rejected. `0` removes the limit |
+| `--max-line-length <LEN>` | Stop highlighting at the first line longer than this many bytes (excluding the newline). Default `16K`. Written like `--max-size`; `0` removes the limit |
 | `--paging <WHEN>` | When to show output in a pager: `auto`, `always`, or `never` (default). `auto` pages only when the output does not fit on one screen. The pager is `$PAGER`, or `less -RFX` (`auto`) / `less -RX` (`always`) if unset. `$PAGER` is split into words like the shell does, so quotes work (`PAGER="less -R -S"`, `PAGER="'/opt/my pager/pg'"`). A bare `less` in `$PAGER` (no arguments) gets the same `-RFX` / `-RX` unless `LESS` is set; otherwise the options of `$PAGER` and `LESS` are used as they are, so include `-R` to see the colors. No pager is started when stdout is not a terminal |
 | `-p` | Same as `--paging=always` |
 | `--color <WHEN>` | When to use colors: `auto`, `always`, or `never`. The default `auto` colors output only when stdout is a terminal |
@@ -168,6 +168,8 @@ With no file, or when the file is `-`, `hl` reads from standard input.
 | `HL_CONFIG` | Path of the configuration file |
 | `PAGER` | Pager used by `--paging` and `-p` |
 | `LESS` | Options for `less`. When set, hl adds no flags to a bare `less` in `$PAGER` |
+
+An invalid value in `HL_MAX_SIZE`, `HL_MAX_LINE_LENGTH` or `HL_COLOR_DEPTH` is an error, as on the command line: `hl` prints a message naming the variable, such as `error: invalid value 'abc' for HL_MAX_SIZE: ...`, and exits with status 2 without printing anything. This differs from the configuration file, whose invalid values get a warning and are skipped. An option given on the command line replaces the variable, so its value is then not checked. An unknown theme in `HL_THEME` only gets a warning, and the default theme is used, as with `--theme`.
 
 ### Configuration file
 
@@ -231,6 +233,7 @@ Run `hl --build-cache` again after adding, changing or removing a syntax, and af
 - If the output is closed early, as in `hl file | head`, `hl` exits successfully without an error.
 - If the output can't be written, as when stdout is closed (`hl file >&-`) or the disk is full, `hl` prints `hl: write error: <reason>` to stderr and exits with status 1, as `cat` does. This also applies to `--list-themes`, `--man` and the other commands that print something and exit.
 - If stderr can't be written, as when it is a pipe closed by the reader, the messages are dropped; the output and the exit status stay the same.
+- The exit status is 0 on success, also when `hl` warns and goes on with a fallback (an unknown theme, an invalid entry in the configuration file, a line that takes too long to highlight); 1 when something fails while running (a file that can't be opened, an unknown language given to `-l` or `--map-syntax`, a write error, a pager that fails to start); and 2 when the command line, or an environment variable standing in for an option, is rejected before anything runs (an unknown option, an invalid value such as `--max-size=1.5K` or `--color=sometimes`).
 
 ## Using it as `cat`
 

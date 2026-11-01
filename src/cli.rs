@@ -1,15 +1,24 @@
 use std::{
+    env,
+    error::Error as _,
+    ffi::{OsStr, OsString},
+    fmt::Write as _,
     io::{self, Write},
     path::PathBuf,
 };
 
-use clap::{Command, CommandFactory, FromArgMatches, Parser, ValueEnum};
+use clap::{
+    Command, CommandFactory, FromArgMatches, Parser, ValueEnum,
+    error::{ContextKind, ContextValue, ErrorKind},
+    parser::ValueSource,
+};
 use clap_complete::Shell;
 use toml::Value;
 
 use crate::{
     color::{self, Depth},
     config::Config,
+    diag::escape_controls,
     highlight::{DEFAULT_THEME, Limits, SyntaxMapping},
     lines::{LineRange, Numbering, Visibility},
 };
@@ -242,14 +251,86 @@ struct ConfigExtras {
 /// Config values replace the built-in defaults of their options, so clap
 /// itself gives the precedence: command line, environment, config file,
 /// built-in default.
+///
+/// An invalid value is a usage error (exit status 2). When it comes from an
+/// environment variable, the error names the variable instead of the
+/// option, which the user did not write.
 pub fn parse_with(config: Option<&Config>) -> Args {
     let (cmd, extras) = match config {
         Some(config) => apply_config(Args::command(), config),
         None => (Args::command(), ConfigExtras::default()),
     };
-    let mut args = Args::from_arg_matches_mut(&mut cmd.get_matches()).unwrap_or_else(|e| e.exit());
+    let mut matches = cmd
+        .clone()
+        .try_get_matches()
+        .unwrap_or_else(|e| env_error(&cmd, e).exit());
+    let mut args = Args::from_arg_matches_mut(&mut matches).unwrap_or_else(|e| e.exit());
     args.apply_extras(extras);
     args
+}
+
+/// `cmd` without the environment variables of its options.
+fn without_env(cmd: Command) -> Command {
+    cmd.mut_args(|arg| arg.env(None))
+}
+
+/// The error to report for `err`, an error from parsing the command line
+/// with `cmd`. If the value of an environment variable caused it, this is an
+/// error naming the variable; otherwise it is `err` itself.
+fn env_error(cmd: &Command, err: clap::Error) -> clap::Error {
+    if !matches!(
+        err.kind(),
+        ErrorKind::ValueValidation | ErrorKind::InvalidValue
+    ) {
+        return err;
+    }
+    // The config values and the built-in defaults are valid, so if the
+    // command line parses without the environment, a variable is to blame.
+    let probe = without_env(cmd.clone());
+    let Ok(matches) = probe.clone().try_get_matches() else {
+        return err;
+    };
+    for arg in cmd.get_arguments() {
+        let (Some(name), Some(long)) = (arg.get_env(), arg.get_long()) else {
+            continue;
+        };
+        // A variable is used only when the command line lacks the option.
+        if matches.value_source(arg.get_id().as_str()) == Some(ValueSource::CommandLine) {
+            continue;
+        }
+        let Some(value) = env::var_os(name) else {
+            continue;
+        };
+        let mut option = OsString::from(format!("--{long}="));
+        option.push(&value);
+        if let Err(e) = probe
+            .clone()
+            .try_get_matches_from([OsString::from("hl"), option])
+        {
+            let message = format!("{}\n", env_message(name, &value, &e));
+            return clap::Error::raw(e.kind(), message).with_cmd(cmd);
+        }
+    }
+    err
+}
+
+/// The message for the invalid `value` of the environment variable `name`,
+/// with the reason or the possible values from `err`, the error for the
+/// same value given to the option.
+fn env_message(name: &OsStr, value: &OsStr, err: &clap::Error) -> String {
+    let value = value.to_string_lossy();
+    let mut message = format!(
+        "invalid value '{}' for {}",
+        escape_controls(&value),
+        name.to_string_lossy()
+    );
+    if let Some(reason) = err.source() {
+        let _ = write!(message, ": {reason}");
+    }
+    if let Some(ContextValue::Strings(values)) = err.get(ContextKind::ValidValue) {
+        let _ = write!(message, " (possible values: {})", values.join(", "));
+    }
+    message
 }
 
 /// Sets the config values as the defaults of `cmd` and returns the flags
@@ -257,7 +338,7 @@ pub fn parse_with(config: Option<&Config>) -> Args {
 fn apply_config(mut cmd: Command, config: &Config) -> (Command, ConfigExtras) {
     // Checks each value on its own, without the environment, so that a bad
     // value is reported as coming from the config file.
-    let probe = Args::command().mut_args(|arg| arg.env(None));
+    let probe = without_env(Args::command());
     let mut extras = ConfigExtras::default();
     for (key, value) in &config.entries {
         if let Some(&flag) = CONFIG_FLAGS.iter().find(|&&flag| flag == key) {
@@ -444,24 +525,30 @@ pub fn print_man(out: &mut dyn Write) -> io::Result<()> {
     clap_mangen::Man::new(Args::command()).render(out)
 }
 
-/// Parses a byte count such as `512`, `16K`, `2m` or `1G` (powers of 1024).
+/// Parses a byte count such as `512`, `16K`, `2m` or `1G` (powers of 1024):
+/// a whole number of ASCII digits, optionally followed by one of K, M or G
+/// in either case. Signs, fractions, spaces and other units are rejected.
+///
+/// The messages do not repeat the value, as clap prints it before them.
 fn parse_size(s: &str) -> Result<u64, String> {
-    let (digits, unit) = match s.char_indices().find(|(_, c)| !c.is_ascii_digit()) {
-        Some((i, _)) => s.split_at(i),
-        None => (s, ""),
-    };
+    const NOT_A_SIZE: &str =
+        "not a size: use a whole number with an optional K, M or G suffix (e.g. 512K)";
+    let split = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+    let (digits, unit) = s.split_at(split);
     let shift = match unit.to_ascii_lowercase().as_str() {
+        _ if digits.is_empty() => return Err(NOT_A_SIZE.to_string()),
         "" => 0,
         "k" => 10,
         "m" => 20,
         "g" => 30,
-        _ => return Err(format!("invalid unit '{unit}' (use K, M or G)")),
+        _ => return Err(NOT_A_SIZE.to_string()),
     };
-    let n: u64 = digits
-        .parse()
-        .map_err(|_| format!("'{s}' is not a size (e.g. 512K)"))?;
-    n.checked_mul(1 << shift)
-        .ok_or_else(|| format!("'{s}' is too large"))
+    // Only digits are left, so the parse can fail only by overflowing.
+    digits
+        .parse::<u64>()
+        .ok()
+        .and_then(|n| n.checked_mul(1 << shift))
+        .ok_or_else(|| format!("too large (at most {}G)", u64::MAX >> 30))
 }
 
 /// Parses a line range such as `120:160`, `120:`, `:160` or `120`.
