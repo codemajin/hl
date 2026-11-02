@@ -173,7 +173,7 @@ hl --build-cache                 # ユーザー定義の構文をキャッシュ
 
 ### 設定ファイル
 
-一部のオプションの既定値は `$XDG_CONFIG_HOME/hl/config.toml`（`XDG_CONFIG_HOME` が未設定なら `~/.config/hl/config.toml`）で設定できます。別のファイルを使うときは `HL_CONFIG` で場所を指定します。キーにはオプションの長い名前を使います。
+一部のオプションの既定値は `$XDG_CONFIG_HOME/hl/config.toml`（`XDG_CONFIG_HOME` が未設定か絶対パスでなければ `~/.config/hl/config.toml`）で設定できます。別のファイルを使うときは `HL_CONFIG` で場所を指定します。キーにはオプションの長い名前を使います。
 
 ```toml
 theme = "Monokai Extended"
@@ -193,7 +193,7 @@ map-syntax = ["*.conf:INI", "Jenkinsfile:Groovy"]
 
 ### ユーザー定義の構文とテーマ
 
-組み込みのものに加えて、設定ディレクトリ（`$XDG_CONFIG_HOME/hl`、`XDG_CONFIG_HOME` が未設定なら `~/.config/hl`。`HL_CONFIG` の影響は受けません）に置いた Sublime Text の構文と TextMate のテーマも使えます。
+組み込みのものに加えて、設定ディレクトリ（`$XDG_CONFIG_HOME/hl`、`XDG_CONFIG_HOME` が未設定か絶対パスでなければ `~/.config/hl`。`HL_CONFIG` の影響は受けません）に置いた Sublime Text の構文と TextMate のテーマも使えます。
 
 ```text
 ~/.config/hl/
@@ -209,11 +209,11 @@ map-syntax = ["*.conf:INI", "Jenkinsfile:Groovy"]
 ユーザー定義の構文を組み込みのものとまとめるには数百ミリ秒かかるので、結果をキャッシュしておきます。
 
 ```sh
-hl --build-cache   # $XDG_CACHE_HOME/hl/syntaxes.bin（~/.cache/hl/syntaxes.bin）を作る
+hl --build-cache   # $XDG_CACHE_HOME/hl/syntaxes.bin（未設定か絶対パスでなければ ~/.cache/hl/syntaxes.bin）を作る
 hl --clear-cache   # キャッシュを消す
 ```
 
-構文を追加・変更・削除したときや `hl` を更新したときは、もう一度 `hl --build-cache` を実行してください。それまでの間はキャッシュが古いことを `hl` が検出し、毎回その場で構文をまとめたうえで、キャッシュを作り直すよう stderr に表示します。テーマは使うときにだけ読むので、キャッシュは要りません。ユーザー定義の構文がなければ、キャッシュは読みませんし、作る必要もありません。
+構文を追加・変更・削除したときや `hl` を更新したときは、もう一度 `hl --build-cache` を実行してください。それまでの間はキャッシュが古いことを `hl` が検出し、毎回その場で構文をまとめたうえで、キャッシュを作り直すよう stderr に表示します。キャッシュのファイルが壊れているときも同じです。テーマは使うときにだけ読むので、キャッシュは要りません。ユーザー定義の構文がなければ、キャッシュは読みませんし、作る必要もありません。
 
 ### 動作の詳細
 
@@ -260,15 +260,15 @@ cargo clippy
 cargo fmt --check   # フォーマットの確認（rustfmt.toml）
 ```
 
-push と pull request のたびに、GitHub Actions が `cargo fmt --check`、`cargo clippy`（警告はエラー扱い）、`cargo test` を実行します。Linux と macOS の両方で、stable と最小対応バージョン（1.88）の Rust を使います。`cat` 互換のオプションについては、期待する出力をテストに直接書いています。それとは別に、GNU coreutils 9.0 以降の `cat`（`gcat` または `cat`）が見つかれば `hl` の出力と比べるテストも動きます。見つからないときは、メッセージを出してスキップします。macOS では `brew install coreutils` で `gcat` が入ります。テストは `HL_*` 環境変数、`HL_CONFIG`、XDG ディレクトリを読まないので、手元の設定や設定ファイル、カスタムシンタックスの影響を受けません。`rustfmt.toml` には nightly でしか効かないオプションがあるため、フォーマットの確認には nightly の rustfmt を使います。手元で揃えるときは `cargo +nightly fmt` を実行してください。clippy は固定した Rust のバージョンで実行します（`.github/workflows/ci.yml` と `release.yml` の `clippy` ジョブ）。新しい Rust のリリースで lint が増えても、それだけで CI が失敗しないようにするためです。バージョンは両方のファイルで手動で上げ、新しく出た警告も同じ変更で直してください。`Cargo.toml` の `[lints]` で `clippy::pedantic` の lint も有効にしています。その箇所には合わない lint は、そこで `#[expect(clippy::..., reason = "...")]` を付けて止め、理由を書いてください。
+push と pull request のたびに、GitHub Actions が `cargo fmt --check`、`cargo clippy`（警告はエラー扱い）、`cargo test` を実行します。Linux と macOS の両方で、stable と最小対応バージョン（1.88）の Rust を使います。`cat` 互換のオプションについては、期待する出力をテストに直接書いています。それとは別に、GNU coreutils 9.0 以降の `cat`（`gcat` または `cat`）が見つかれば `hl` の出力と比べるテストも動きます。見つからないときは、メッセージを出してスキップします。macOS では `brew install coreutils` で `gcat` が入ります。テストは `HL_*` 環境変数、`HL_CONFIG`、XDG ディレクトリ、`HOME` を読まないので、手元の設定や設定ファイル、カスタムシンタックスの影響を受けません。`rustfmt.toml` には nightly でしか効かないオプションがあるため、フォーマットの確認には nightly の rustfmt を使います。手元で揃えるときは `cargo +nightly fmt` を実行してください。clippy は固定した Rust のバージョンで実行します（`.github/workflows/ci.yml` と `release.yml` の `clippy` ジョブ）。新しい Rust のリリースで lint が増えても、それだけで CI が失敗しないようにするためです。バージョンは両方のファイルで手動で上げ、新しく出た警告も同じ変更で直してください。`Cargo.toml` の `[lints]` で `clippy::pedantic` の lint も有効にしています。その箇所には合わない lint は、そこで `#[expect(clippy::..., reason = "...")]` を付けて止め、理由を書いてください。
 
 | ファイル | 役割 |
 | --- | --- |
-| `src/main.rs` | エントリポイント。入力を表示しないコマンド（`--list-themes` など）の実行、引数と設定からの Printer と行の状態の組み立て、ページャか標準出力かの選択、エラー処理と終了コード。途中で見つかった問題の扱いもここで決める（`--map-syntax` の未知の言語はエラー、設定ファイルの未知の言語は警告、未知のテーマや壊れたテーマは警告してデフォルトに戻す、`src/print.rs` から届いた入力の問題は警告）。環境変数（`PAGER`、`LESS`、色深度）を読むのはここだけ |
-| `src/assets.rs` | デフォルトのテーマ、同梱の構文、設定ディレクトリのカスタム構文・テーマの読み込みと同梱分とのマージ、構文キャッシュ（`--build-cache`/`--clear-cache`） |
+| `src/main.rs` | エントリポイント。入力を表示しないコマンド（`--list-themes` など）の実行、引数と設定からの Printer と行の状態の組み立て、ページャか標準出力かの選択、エラー処理と終了コード。途中で見つかった問題の扱いもここで決める（`--map-syntax` の未知の言語はエラー、設定ファイルの未知の言語は警告、未知のテーマや壊れたテーマは警告してデフォルトに戻す、`src/print.rs` から届いた入力の問題は警告）。環境変数（`PAGER`、`LESS`、色深度）を読むのはここだけ。設定・キャッシュディレクトリもここで 1 回だけ求め（`config::Dirs::from_env`）、設定ファイルと `src/assets.rs` に渡す |
+| `src/assets.rs` | デフォルトのテーマ、同梱の構文、設定ディレクトリのカスタム構文・テーマの読み込みと同梱分とのマージ、構文キャッシュ（`--build-cache`/`--clear-cache`）。ディレクトリは引数で受け取り、環境変数は読まない |
 | `src/cli.rs` | コマンドライン引数の定義（clap）と、設定ファイルの適用（オプションのデフォルト値、フラグ、`map-syntax`）。ほかのモジュールは生のフィールドではなく、関連するオプションをまとめるメソッド（`numbering()`、`visibility()`、`limits()` など）で引数を読む |
 | `src/color.rs` | 端末の色深度の判定、256 色へのフォールバック、色・太字・リセットのエスケープシーケンス |
-| `src/config.rs` | 設定ファイルの読み込みと、設定・キャッシュディレクトリのパス |
+| `src/config.rs` | 設定ファイルの読み込み（`HL_CONFIG` か設定ディレクトリ）と、設定・キャッシュディレクトリ（`Dirs`。`XDG_CONFIG_HOME`/`XDG_CACHE_HOME` と `HOME` から求める） |
 | `src/diag.rs` | 標準エラー出力への警告・エラーメッセージ。標準エラー出力にはすべてここを通して書くので、`hl: ` の書式は 1 か所で決まる。エラーは原因まで含めて表示する（`パス: 理由`） |
 | `src/encoding.rs` | UTF-8/UTF-16 の BOM 判定と UTF-16 のデコード |
 | `build.rs` | two-face の JavaScript 構文の修正と、構文の同梱 |

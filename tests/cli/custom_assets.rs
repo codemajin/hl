@@ -301,6 +301,40 @@ fn caches_custom_syntaxes() {
 }
 
 #[test]
+fn merges_again_when_the_cache_is_broken() {
+    let assets = Assets::new();
+    assets.syntax("HlTest", HLTEST_SYNTAX);
+    let file = files(assets.dir(), &[("a.hltest", "kw other\n")]);
+    let expected = colored(assets.hl().args(&file));
+    for garbage in [&b"not a cache"[..], &[0xff; 64]] {
+        files(assets.dir(), &[("cache/hl/syntaxes.bin", garbage)]);
+        assets
+            .hl()
+            .args(["--color", "always"])
+            .args(&file)
+            .assert()
+            .success()
+            .stderr(predicate::str::contains(NOT_CACHED))
+            .stdout(expected.clone());
+    }
+}
+
+#[test]
+fn build_cache_needs_a_cache_directory() {
+    let assets = Assets::new();
+    assets.syntax("HlTest", HLTEST_SYNTAX);
+    assets
+        .hl()
+        .env_remove("XDG_CACHE_HOME")
+        .env_remove("HOME")
+        .arg("--build-cache")
+        .assert()
+        .failure()
+        .code(1)
+        .stderr("hl: no cache directory (set HOME)\n");
+}
+
+#[test]
 fn build_cache_without_custom_syntaxes_removes_the_cache() {
     let assets = Assets::new();
     assets.syntax("HlTest", HLTEST_SYNTAX);

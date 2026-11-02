@@ -26,10 +26,13 @@ pub fn raw_hl(args: &[&str]) -> std::process::Command {
         .env_remove("WT_SESSION")
         .env("TERM", "xterm-256color")
         // Keeps the user's own config file, syntaxes, themes and cache out of
-        // the tests.
+        // the tests. HOME is set as well, so that a test that unsets an XDG
+        // variable never falls back to the user's `~/.config` or `~/.cache`;
+        // a test that needs it points it to a temporary directory.
         .env_remove("HL_CONFIG")
         .env("XDG_CONFIG_HOME", "/nonexistent/hl-test-config")
-        .env("XDG_CACHE_HOME", "/nonexistent/hl-test-cache");
+        .env("XDG_CACHE_HOME", "/nonexistent/hl-test-cache")
+        .env("HOME", "/nonexistent/hl-test-home");
     cmd
 }
 

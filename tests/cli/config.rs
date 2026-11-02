@@ -35,6 +35,36 @@ fn hl_config_overrides_the_config_location() {
         .stdout(predicate::str::contains(ESC).not());
 }
 
+/// The XDG spec says a relative path is invalid and must be ignored.
+#[test]
+fn ignores_a_relative_xdg_config_home() {
+    let home = tempdir();
+    files(
+        home.path(),
+        &[(".config/hl/config.toml", "color = \"always\"\n")],
+    );
+    hl().env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", "relative")
+        .arg("Cargo.toml")
+        .assert()
+        .success()
+        .stderr("")
+        .stdout(predicate::str::contains(ESC));
+}
+
+#[test]
+fn empty_hl_config_counts_as_unset() {
+    let dir = tempdir();
+    files(dir.path(), &[("hl/config.toml", "color = \"always\"\n")]);
+    hl().env("XDG_CONFIG_HOME", dir.path())
+        .env("HL_CONFIG", "")
+        .arg("Cargo.toml")
+        .assert()
+        .success()
+        .stderr("")
+        .stdout(predicate::str::contains(ESC));
+}
+
 #[test]
 fn prints_nothing_extra_without_a_config_file() {
     let dir = tempdir();

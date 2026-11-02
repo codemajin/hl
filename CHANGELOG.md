@@ -31,6 +31,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - With `--header`, a file that does not end with a newline is now followed by the blank line before the next header in every mode. Before, the blank line was missing without options and with `--strip-ansi=always`.
 - An invalid size for `--max-size` or `--max-line-length`, such as `-1`, `1.5K` or `1KB`, is reported as `not a size: use a whole number with an optional K, M or G suffix (e.g. 512K)` instead of a misleading `invalid unit '.5K'`, and a number too large for 64 bits as `too large`.
 - A closed stdout (`hl file >&-`) is reported as `hl: write error: Bad file descriptor` with exit status 1, like `cat`, instead of throwing the output away and exiting with 0.
+- A broken syntax cache (`syntaxes.bin`) no longer crashes `hl` (exit status 134 after a huge memory allocation, or 101). It is ignored like an out-of-date cache: the custom syntaxes are merged on the spot, with the reminder to run `hl --build-cache`.
 
 ### Security
 

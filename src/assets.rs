@@ -20,7 +20,7 @@ use syntect::{
 use two_face::theme::LazyThemeSet;
 
 use crate::{
-    config,
+    config::Dirs,
     diag::{describe, note, warn},
 };
 
@@ -43,13 +43,13 @@ pub fn bundled_syntaxes() -> SyntaxSet {
 /// The bundled syntaxes plus the custom ones. Custom syntaxes come from the
 /// cache when it matches the files, and are merged on the spot otherwise,
 /// which is much slower.
-pub fn syntaxes() -> SyntaxSet {
-    let files = syntax_files();
+pub fn syntaxes(dirs: &Dirs) -> SyntaxSet {
+    let files = syntax_files(dirs);
     if files.is_empty() {
         return bundled_syntaxes();
     }
     let fingerprint = fingerprint(&files);
-    if let Some(syntaxes) = cache_path().and_then(|path| read_cache(&path, &fingerprint)) {
+    if let Some(syntaxes) = cache_path(dirs).and_then(|path| read_cache(&path, &fingerprint)) {
         return syntaxes;
     }
     let (syntaxes, _) = merge(&files);
@@ -70,12 +70,12 @@ pub enum CacheReport {
 }
 
 /// Merges the custom syntaxes and writes them to the cache.
-pub fn build_cache() -> Result<CacheReport> {
-    let path = cache_path().ok_or_else(|| anyhow!("no cache directory (set HOME)"))?;
-    let files = syntax_files();
+pub fn build_cache(dirs: &Dirs) -> Result<CacheReport> {
+    let path = cache_path(dirs).ok_or_else(|| anyhow!("no cache directory (set HOME)"))?;
+    let files = syntax_files(dirs);
     if files.is_empty() {
         remove_cache(&path)?;
-        let dir = syntax_dir().unwrap_or_default();
+        let dir = syntax_dir(dirs).unwrap_or_default();
         return Ok(CacheReport::Empty { dir });
     }
     let fingerprint = fingerprint(&files);
@@ -89,27 +89,28 @@ pub fn build_cache() -> Result<CacheReport> {
 }
 
 /// Removes the cache, so that custom syntaxes are merged on every run.
-pub fn clear_cache() -> Result<()> {
-    if let Some(path) = cache_path() {
+pub fn clear_cache(dirs: &Dirs) -> Result<()> {
+    if let Some(path) = cache_path(dirs) {
         remove_cache(&path)?;
     }
     Ok(())
 }
 
-fn syntax_dir() -> Option<PathBuf> {
-    Some(config::dir()?.join("syntaxes"))
+fn syntax_dir(dirs: &Dirs) -> Option<PathBuf> {
+    Some(dirs.config.as_ref()?.join("syntaxes"))
 }
 
-fn theme_dir() -> Option<PathBuf> {
-    Some(config::dir()?.join("themes"))
+/// The directory of the custom themes, for `Themes::load`.
+pub fn theme_dir(dirs: &Dirs) -> Option<PathBuf> {
+    Some(dirs.config.as_ref()?.join("themes"))
 }
 
-fn cache_path() -> Option<PathBuf> {
-    Some(config::cache_dir()?.join(CACHE_FILE))
+fn cache_path(dirs: &Dirs) -> Option<PathBuf> {
+    Some(dirs.cache.as_ref()?.join(CACHE_FILE))
 }
 
-fn syntax_files() -> Vec<PathBuf> {
-    syntax_dir().map_or_else(Vec::new, |dir| files_in(&dir, SYNTAX_EXTENSION))
+fn syntax_files(dirs: &Dirs) -> Vec<PathBuf> {
+    syntax_dir(dirs).map_or_else(Vec::new, |dir| files_in(&dir, SYNTAX_EXTENSION))
 }
 
 /// The files in `dir` with the given extension, sorted. A missing directory
@@ -180,10 +181,26 @@ fn load_syntax(file: &Path) -> Result<SyntaxDefinition, String> {
 }
 
 /// Reads the cache, or nothing if it is missing, unreadable or made from
-/// other files.
+/// other files. The fingerprint is checked before the syntaxes are decoded:
+/// decoding a file that `hl` did not write, such as a broken one, can ask
+/// for any amount of memory and abort.
 fn read_cache(path: &Path, fingerprint: &str) -> Option<SyntaxSet> {
-    let (cached, syntaxes): (String, SyntaxSet) = dumps::from_uncompressed_dump_file(path).ok()?;
-    (cached == fingerprint).then_some(syntaxes)
+    let data = fs::read(path).ok()?;
+    if !data.starts_with(&cache_header(fingerprint)) {
+        return None;
+    }
+    let (_, syntaxes): (String, SyntaxSet) = dumps::from_uncompressed_data(&data).ok()?;
+    Some(syntaxes)
+}
+
+/// How a cache made with `fingerprint` starts: `write_cache` dumps it first,
+/// and bincode writes a string as its length (a little-endian `u64`)
+/// followed by its bytes.
+fn cache_header(fingerprint: &str) -> Vec<u8> {
+    let len = u64::try_from(fingerprint.len()).expect("a length fits in 64 bits");
+    let mut header = len.to_le_bytes().to_vec();
+    header.extend_from_slice(fingerprint.as_bytes());
+    header
 }
 
 /// Writes through a temporary file, so that a concurrent `hl` never reads
@@ -233,8 +250,9 @@ enum Found<'a> {
 }
 
 impl Themes {
-    pub fn load() -> Self {
-        let files = theme_dir().map_or_else(Vec::new, |dir| files_in(&dir, THEME_EXTENSION));
+    /// The bundled themes and the custom ones in `theme_dir`.
+    pub fn load(theme_dir: Option<&Path>) -> Self {
+        let files = theme_dir.map_or_else(Vec::new, |dir| files_in(dir, THEME_EXTENSION));
         let custom = files
             .into_iter()
             .filter_map(|path| {
@@ -328,4 +346,222 @@ fn load_theme(path: &Path) -> Result<Theme, String> {
 /// Warns that the custom theme at `path` is skipped because of `err`.
 pub fn warn_bad_theme(path: &Path, err: &str) {
     warn(path, &format!("cannot load theme, skipping it: {err}"));
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::TempDir;
+
+    use super::*;
+
+    const HLTEST_SYNTAX: &str = "%YAML 1.2
+---
+name: HlTest
+file_extensions: [hltest]
+scope: source.hltest
+contexts:
+  main:
+    - match: \\bkw\\b
+      scope: keyword.control.hltest
+";
+
+    const RED_THEME: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>name</key><string>Red</string>
+<key>settings</key><array>
+<dict><key>settings</key><dict><key>foreground</key><string>#FF0000</string></dict></dict>
+</array></dict></plist>
+"#;
+
+    fn tempdir() -> TempDir {
+        tempfile::tempdir().unwrap()
+    }
+
+    /// Writes `content` to `name` in `dir`, creating the directories in the
+    /// name, and returns its path.
+    fn write(dir: &Path, name: &str, content: &str) -> PathBuf {
+        let path = dir.join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, content).unwrap();
+        path
+    }
+
+    /// `Dirs` with the config and cache directories under `root`.
+    fn dirs_in(root: &Path) -> Dirs {
+        Dirs {
+            config: Some(root.join("config")),
+            cache: Some(root.join("cache")),
+        }
+    }
+
+    #[test]
+    fn lists_the_files_with_the_extension_sorted() {
+        let dir = tempdir();
+        let b = write(dir.path(), "b.tmTheme", "");
+        let a = write(dir.path(), "a.TMTHEME", "");
+        write(dir.path(), "c.sublime-syntax", "");
+        write(dir.path(), "tmTheme", "");
+        fs::create_dir(dir.path().join("x.tmTheme")).unwrap();
+        assert_eq!(files_in(dir.path(), THEME_EXTENSION), [a, b]);
+    }
+
+    #[test]
+    fn missing_directory_has_no_files() {
+        let dir = tempdir();
+        assert_eq!(
+            files_in(&dir.path().join("missing"), THEME_EXTENSION),
+            Vec::<PathBuf>::new()
+        );
+    }
+
+    #[test]
+    fn fingerprint_follows_the_files() {
+        let dir = tempdir();
+        let a = write(dir.path(), "a.sublime-syntax", "a");
+        let files = vec![a.clone()];
+        let first = fingerprint(&files);
+        assert_eq!(first, fingerprint(&files));
+        assert!(first.starts_with(&format!("hl {} ", env!("CARGO_PKG_VERSION"))));
+
+        fs::write(&a, "longer").unwrap();
+        let resized = fingerprint(&files);
+        assert_ne!(first, resized);
+
+        let b = write(dir.path(), "b.sublime-syntax", "b");
+        assert_ne!(resized, fingerprint(&[a, b]));
+    }
+
+    #[test]
+    fn reads_the_cache_only_for_the_same_fingerprint() {
+        let dir = tempdir();
+        let path = dir.path().join("sub/syntaxes.bin");
+        assert!(read_cache(&path, "fp").is_none());
+
+        let syntaxes = SyntaxSet::load_defaults_newlines();
+        let count = syntaxes.syntaxes().len();
+        write_cache(&path, "fp", syntaxes).unwrap();
+        assert_eq!(read_cache(&path, "fp").unwrap().syntaxes().len(), count);
+        assert!(read_cache(&path, "other").is_none());
+
+        // A broken file must not be decoded, which could abort.
+        for garbage in [&b"not a cache"[..], &[0xff; 64], b""] {
+            fs::write(&path, garbage).unwrap();
+            assert!(read_cache(&path, "fp").is_none());
+        }
+    }
+
+    #[test]
+    fn merges_again_when_the_cache_is_broken() {
+        let root = tempdir();
+        let dirs = dirs_in(root.path());
+        write(
+            root.path(),
+            "config/syntaxes/HlTest.sublime-syntax",
+            HLTEST_SYNTAX,
+        );
+        write(root.path(), "cache/syntaxes.bin", "not a cache");
+        assert!(syntaxes(&dirs).find_syntax_by_name("HlTest").is_some());
+    }
+
+    #[test]
+    fn uses_the_cache_built_for_the_files() {
+        let root = tempdir();
+        let dirs = dirs_in(root.path());
+        write(
+            root.path(),
+            "config/syntaxes/HlTest.sublime-syntax",
+            HLTEST_SYNTAX,
+        );
+        let Ok(CacheReport::Cached {
+            added: 1,
+            total: 1,
+            path,
+        }) = build_cache(&dirs)
+        else {
+            panic!("the syntax must be cached");
+        };
+        let files = syntax_files(&dirs);
+        let cached = read_cache(&path, &fingerprint(&files)).unwrap();
+        assert!(cached.find_syntax_by_name("HlTest").is_some());
+
+        clear_cache(&dirs).unwrap();
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn build_cache_needs_a_cache_directory() {
+        let dirs = Dirs {
+            config: None,
+            cache: None,
+        };
+        let err = build_cache(&dirs).err().unwrap();
+        assert_eq!(err.to_string(), "no cache directory (set HOME)");
+        clear_cache(&dirs).unwrap();
+    }
+
+    /// The themes with custom ones named `names` in a temporary directory.
+    fn themes_with(dir: &TempDir, names: &[&str]) -> Themes {
+        for name in names {
+            write(dir.path(), &format!("{name}.tmTheme"), RED_THEME);
+        }
+        Themes::load(Some(dir.path()))
+    }
+
+    /// The path of the custom theme that `name` finds, if it finds one.
+    fn custom_path<'a>(themes: &'a Themes, name: &str) -> Option<&'a Path> {
+        match themes.find(name) {
+            Some(Found::Custom(path)) => Some(path),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn finds_themes_ignoring_case_when_unambiguous() {
+        let dir = tempdir();
+        let themes = themes_with(&dir, &["Red"]);
+        let red = dir.path().join("Red.tmTheme");
+        assert_eq!(custom_path(&themes, "Red"), Some(red.as_path()));
+        assert_eq!(custom_path(&themes, "red"), Some(red.as_path()));
+        assert!(matches!(themes.find("nord"), Some(Found::Bundled(_))));
+        assert!(themes.find("no-such-theme").is_none());
+    }
+
+    #[test]
+    fn ambiguous_case_insensitive_match_is_unknown() {
+        let dir = tempdir();
+        let themes = themes_with(&dir, &["NORD"]);
+        let custom = dir.path().join("NORD.tmTheme");
+        assert_eq!(custom_path(&themes, "NORD"), Some(custom.as_path()));
+        assert!(matches!(themes.find("Nord"), Some(Found::Bundled(_))));
+        assert!(themes.find("nord").is_none());
+        assert!(matches!(themes.get("nord"), Err(ThemeFallback::Unknown)));
+    }
+
+    #[test]
+    fn custom_theme_replaces_the_bundled_one_of_the_same_name() {
+        let dir = tempdir();
+        let themes = themes_with(&dir, &["Nord"]);
+        assert!(custom_path(&themes, "Nord").is_some());
+        assert!(custom_path(&themes, "nord").is_some());
+        assert_eq!(themes.names().iter().filter(|&&n| n == "Nord").count(), 1);
+    }
+
+    #[test]
+    fn broken_custom_theme_is_reported() {
+        let dir = tempdir();
+        write(dir.path(), "Broken.tmTheme", "not a theme\n");
+        let themes = Themes::load(Some(dir.path()));
+        assert!(matches!(
+            themes.get("Broken"),
+            Err(ThemeFallback::Broken { path, .. }) if path == dir.path().join("Broken.tmTheme")
+        ));
+        assert!(!themes.names().contains(&"Broken"));
+    }
+
+    #[test]
+    fn loads_only_bundled_themes_without_a_directory() {
+        let themes = Themes::load(None);
+        assert_eq!(themes.custom.len(), 0);
+        assert!(themes.names().contains(&DEFAULT_THEME));
+    }
 }

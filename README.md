@@ -173,7 +173,7 @@ An invalid value in `HL_MAX_SIZE`, `HL_MAX_LINE_LENGTH` or `HL_COLOR_DEPTH` is a
 
 ### Configuration file
 
-Defaults for some options can be set in `$XDG_CONFIG_HOME/hl/config.toml` (`~/.config/hl/config.toml` when `XDG_CONFIG_HOME` is not set). Set `HL_CONFIG` to use another file. Keys are the long option names:
+Defaults for some options can be set in `$XDG_CONFIG_HOME/hl/config.toml` (`~/.config/hl/config.toml` when `XDG_CONFIG_HOME` is not set or not an absolute path). Set `HL_CONFIG` to use another file. Keys are the long option names:
 
 ```toml
 theme = "Monokai Extended"
@@ -193,7 +193,7 @@ Settings apply in this order, highest first: command-line options, environment v
 
 ### Custom syntaxes and themes
 
-Besides the bundled ones, `hl` uses Sublime Text syntaxes and TextMate themes placed in the config directory (`$XDG_CONFIG_HOME/hl`, or `~/.config/hl` when `XDG_CONFIG_HOME` is not set; `HL_CONFIG` does not move it):
+Besides the bundled ones, `hl` uses Sublime Text syntaxes and TextMate themes placed in the config directory (`$XDG_CONFIG_HOME/hl`, or `~/.config/hl` when `XDG_CONFIG_HOME` is not set or not an absolute path; `HL_CONFIG` does not move it):
 
 ```text
 ~/.config/hl/
@@ -209,11 +209,11 @@ Besides the bundled ones, `hl` uses Sublime Text syntaxes and TextMate themes pl
 Merging custom syntaxes with the bundled ones takes a few hundred milliseconds, so cache the result:
 
 ```sh
-hl --build-cache   # writes $XDG_CACHE_HOME/hl/syntaxes.bin (~/.cache/hl/syntaxes.bin)
+hl --build-cache   # writes $XDG_CACHE_HOME/hl/syntaxes.bin (~/.cache/hl/syntaxes.bin when it is not set or not absolute)
 hl --clear-cache   # removes it
 ```
 
-Run `hl --build-cache` again after adding, changing or removing a syntax, and after upgrading `hl`. Until then, `hl` notices that the cache is out of date, merges the syntaxes on every run, and prints a reminder to stderr. Themes are read only when used and need no cache. Without custom syntaxes, `hl` neither reads nor needs the cache.
+Run `hl --build-cache` again after adding, changing or removing a syntax, and after upgrading `hl`. Until then, `hl` notices that the cache is out of date, merges the syntaxes on every run, and prints a reminder to stderr. A broken cache file is treated the same way. Themes are read only when used and need no cache. Without custom syntaxes, `hl` neither reads nor needs the cache.
 
 ### Behavior details
 
@@ -260,15 +260,15 @@ cargo clippy
 cargo fmt --check   # formatting (rustfmt.toml)
 ```
 
-GitHub Actions runs `cargo fmt --check`, `cargo clippy` (warnings are errors) and `cargo test` on every push and pull request, on Linux and macOS with stable Rust and the minimum supported version (1.88). The tests spell out the output they expect from the `cat` options. One more test compares `hl` with GNU coreutils `cat` 9.0 or later, found as `gcat` or `cat`, and is skipped with a message when there is none; on macOS, `brew install coreutils` provides `gcat`. The tests ignore the `HL_*` variables, `HL_CONFIG` and the XDG directories, so your own settings, config file and custom syntaxes don't affect them. Formatting is checked with nightly rustfmt, because some options in `rustfmt.toml` are nightly-only; run `cargo +nightly fmt` to match it. Clippy runs on a fixed Rust version (the `clippy` jobs in `.github/workflows/ci.yml` and `release.yml`), so that lints added in a new Rust release don't fail CI by themselves; raise it by hand in both files, and fix the new warnings in the same change. The `[lints]` table in `Cargo.toml` turns on the `clippy::pedantic` lints as well; where one of them is wrong for a piece of code, silence it there with `#[expect(clippy::..., reason = "...")]`, saying why.
+GitHub Actions runs `cargo fmt --check`, `cargo clippy` (warnings are errors) and `cargo test` on every push and pull request, on Linux and macOS with stable Rust and the minimum supported version (1.88). The tests spell out the output they expect from the `cat` options. One more test compares `hl` with GNU coreutils `cat` 9.0 or later, found as `gcat` or `cat`, and is skipped with a message when there is none; on macOS, `brew install coreutils` provides `gcat`. The tests ignore the `HL_*` variables, `HL_CONFIG`, the XDG directories and `HOME`, so your own settings, config file and custom syntaxes don't affect them. Formatting is checked with nightly rustfmt, because some options in `rustfmt.toml` are nightly-only; run `cargo +nightly fmt` to match it. Clippy runs on a fixed Rust version (the `clippy` jobs in `.github/workflows/ci.yml` and `release.yml`), so that lints added in a new Rust release don't fail CI by themselves; raise it by hand in both files, and fix the new warnings in the same change. The `[lints]` table in `Cargo.toml` turns on the `clippy::pedantic` lints as well; where one of them is wrong for a piece of code, silence it there with `#[expect(clippy::..., reason = "...")]`, saying why.
 
 | File | Role |
 | --- | --- |
-| `src/main.rs` | Entry point: runs the commands that print no inputs (`--list-themes`, ...), builds the printer and the line state from the arguments and config, picks the pager or stdout, handles errors and the exit code. Decides what the problems found on the way become: an unknown language in `--map-syntax` is an error and one in the config file a warning, an unknown or broken theme falls back to the default with a warning, and a problem with an input from `src/print.rs` gets a warning. The only place that reads the environment (`PAGER`, `LESS`, the color depth) |
-| `src/assets.rs` | The default theme, the bundled syntaxes, custom syntaxes and themes from the config directory, merged with the bundled ones, and the syntax cache (`--build-cache`/`--clear-cache`) |
+| `src/main.rs` | Entry point: runs the commands that print no inputs (`--list-themes`, ...), builds the printer and the line state from the arguments and config, picks the pager or stdout, handles errors and the exit code. Decides what the problems found on the way become: an unknown language in `--map-syntax` is an error and one in the config file a warning, an unknown or broken theme falls back to the default with a warning, and a problem with an input from `src/print.rs` gets a warning. The only place that reads the environment (`PAGER`, `LESS`, the color depth). Resolves the config and cache directories once (`config::Dirs::from_env`) and passes them to the config file and `src/assets.rs` |
+| `src/assets.rs` | The default theme, the bundled syntaxes, custom syntaxes and themes from the config directory, merged with the bundled ones, and the syntax cache (`--build-cache`/`--clear-cache`). Takes the directories as arguments, so it reads no environment variables |
 | `src/cli.rs` | Command-line argument definitions (clap) and the config file applied to them (option defaults, flags, `map-syntax`). The rest of the code reads the arguments through methods that combine related options (`numbering()`, `visibility()`, `limits()`, ...), not through the raw fields |
 | `src/color.rs` | Terminal color depth detection, the 256-color fallback, and the escape sequences for colors, bold and reset |
-| `src/config.rs` | Config file loading and the config/cache directory paths |
+| `src/config.rs` | Config file loading (`HL_CONFIG` or the config directory) and the config/cache directories (`Dirs`, from `XDG_CONFIG_HOME`/`XDG_CACHE_HOME` and `HOME`) |
 | `src/diag.rs` | Warning and error messages on stderr. Everything written to stderr goes through it, so the `hl: ` format is set in one place; an error is shown with its causes (`path: reason`) |
 | `src/encoding.rs` | UTF-8/UTF-16 BOM detection and UTF-16 decoding |
 | `build.rs` | Fixes the JavaScript syntax of two-face and bundles the syntaxes |

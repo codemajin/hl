@@ -681,6 +681,20 @@ mod tests {
     }
 
     #[test]
+    fn build_cache_and_clear_cache_conflict() {
+        for argv in [
+            ["hl", "--build-cache", "--clear-cache"],
+            ["hl", "--clear-cache", "--build-cache"],
+        ] {
+            let err = without_env(Args::command())
+                .try_get_matches_from(argv)
+                .err()
+                .unwrap();
+            assert_eq!(err.kind(), ErrorKind::ArgumentConflict, "{argv:?}");
+        }
+    }
+
+    #[test]
     fn color_follows_the_terminal_by_default() {
         assert!(args(&[]).use_color(true));
         assert!(!args(&[]).use_color(false));

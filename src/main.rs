@@ -22,7 +22,7 @@ use std::{
 use anyhow::{Result, anyhow, bail};
 use assets::{CacheReport, DEFAULT_THEME, ThemeFallback};
 use cli::{Args, PagingWhen};
-use config::Config;
+use config::{Config, Dirs};
 use diag::{describe, describe_error, escape_controls};
 use highlight::{Highlighter, Limits, Origin, Syntax, SyntaxMapping, find_language};
 use lines::{LineHighlight, LineState};
@@ -31,8 +31,9 @@ use print::{Headers, Input, PrintOutcome, Printer, Problem, TrackedWriter, is_st
 use syntect::{highlighting::Theme, parsing::SyntaxSet};
 
 fn main() -> ExitCode {
-    let args = cli::parse_with(Config::load().as_ref());
-    match run(&args, &stdout::check()) {
+    let dirs = Dirs::from_env();
+    let args = cli::parse_with(Config::load(&dirs).as_ref());
+    match run(&args, &dirs, &stdout::check()) {
         Ok(code) => code,
         // A closed pipe (`hl ... | head`) is a normal way to stop reading.
         Err(err) if err.downcast_ref::<io::Error>().is_some_and(is_broken_pipe) => {
@@ -46,10 +47,11 @@ fn main() -> ExitCode {
     }
 }
 
-/// Runs `hl`. `stdout` tells whether stdout is open, and is checked only by
-/// the commands that write to it.
-fn run(args: &Args, stdout: &io::Result<()>) -> Result<ExitCode> {
-    if let Some(code) = run_info_command(args, stdout)? {
+/// Runs `hl`, with custom syntaxes, themes and the cache in `dirs`.
+/// `stdout` tells whether stdout is open, and is checked only by the
+/// commands that write to it.
+fn run(args: &Args, dirs: &Dirs, stdout: &io::Result<()>) -> Result<ExitCode> {
+    if let Some(code) = run_info_command(args, dirs, stdout)? {
         return Ok(code);
     }
 
@@ -59,29 +61,29 @@ fn run(args: &Args, stdout: &io::Result<()>) -> Result<ExitCode> {
     // as the process anyway.
     let syntaxes: Option<&'static SyntaxSet> = args
         .needs_syntaxes(color)
-        .then(|| &*Box::leak(Box::new(assets::syntaxes())));
-    let printer = build_printer(args, color, syntaxes, || load_theme(&args.theme))?;
+        .then(|| &*Box::leak(Box::new(assets::syntaxes(dirs))));
+    let printer = build_printer(args, color, syntaxes, || load_theme(&args.theme, dirs))?;
     let lines = build_line_state(args, printer.highlighter.as_ref());
     print_inputs(args, &printer, lines, color, tty, stdout)
 }
 
 /// Runs the command that prints something other than the inputs
 /// (`--completions`, `--list-themes`, ...), if one is given.
-fn run_info_command(args: &Args, stdout: &io::Result<()>) -> Result<Option<ExitCode>> {
+fn run_info_command(args: &Args, dirs: &Dirs, stdout: &io::Result<()>) -> Result<Option<ExitCode>> {
     let code = if let Some(shell) = args.completions {
         print_and_exit(stdout, |out| cli::print_completions(shell, out))?
     } else if args.man {
         print_and_exit(stdout, |out| cli::print_man(out))?
     } else if args.build_cache {
-        let report = assets::build_cache()?;
+        let report = assets::build_cache(dirs)?;
         print_and_exit(stdout, |out| print_cache_report(&report, out))?
     } else if args.clear_cache {
-        assets::clear_cache()?;
+        assets::clear_cache(dirs)?;
         ExitCode::SUCCESS
     } else if args.list_themes {
-        print_and_exit(stdout, list_themes)?
+        print_and_exit(stdout, |out| list_themes(dirs, out))?
     } else if args.list_languages {
-        print_and_exit(stdout, list_languages)?
+        print_and_exit(stdout, |out| list_languages(dirs, out))?
     } else {
         return Ok(None);
     };
@@ -155,8 +157,8 @@ fn resolve_mappings<'a, 'm>(
 }
 
 /// The theme called `name`, or the default theme with a warning.
-fn load_theme(name: &str) -> Theme {
-    let themes = assets::Themes::load();
+fn load_theme(name: &str, dirs: &Dirs) -> Theme {
+    let themes = load_themes(dirs);
     themes.get(name).unwrap_or_else(|fallback| {
         warn_theme_fallback(name, &fallback);
         themes.default_theme()
@@ -327,16 +329,20 @@ fn print_cache_report(report: &CacheReport, out: &mut dyn Write) -> io::Result<(
     }
 }
 
-fn list_themes(out: &mut dyn Write) -> io::Result<()> {
-    let themes = assets::Themes::load();
+fn load_themes(dirs: &Dirs) -> assets::Themes {
+    assets::Themes::load(assets::theme_dir(dirs).as_deref())
+}
+
+fn list_themes(dirs: &Dirs, out: &mut dyn Write) -> io::Result<()> {
+    let themes = load_themes(dirs);
     for name in themes.names() {
         writeln!(out, "{name}")?;
     }
     Ok(())
 }
 
-fn list_languages(out: &mut dyn Write) -> io::Result<()> {
-    let syntaxes = assets::syntaxes();
+fn list_languages(dirs: &Dirs, out: &mut dyn Write) -> io::Result<()> {
+    let syntaxes = assets::syntaxes(dirs);
     for (name, extensions) in highlight::languages(&syntaxes) {
         writeln!(out, "{name}: {}", extensions.join(", "))?;
     }
