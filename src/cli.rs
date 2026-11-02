@@ -72,7 +72,7 @@ pub struct Args {
 
     /// Number all output lines (continuous across files, like `cat -n`).
     #[arg(short = 'n', long, overrides_with = "no_number")]
-    pub number: bool,
+    number: bool,
 
     /// Cancel -n, e.g. when it is set in the config file.
     #[arg(long, overrides_with = "number", hide_short_help = true)]
@@ -80,7 +80,7 @@ pub struct Args {
 
     /// Number non-empty output lines; overrides -n.
     #[arg(short = 'b', long, overrides_with = "no_number_nonblank")]
-    pub number_nonblank: bool,
+    number_nonblank: bool,
 
     /// Cancel -b, e.g. when it is set in the config file.
     #[arg(long, overrides_with = "number_nonblank", hide_short_help = true)]
@@ -114,27 +114,27 @@ pub struct Args {
 
     /// Equivalent to -vET.
     #[arg(short = 'A', long)]
-    pub show_all: bool,
+    show_all: bool,
 
     /// Equivalent to -vE.
     #[arg(short = 'e')]
-    pub show_nonprinting_ends: bool,
+    show_nonprinting_ends: bool,
 
     /// Display $ at end of each line.
     #[arg(short = 'E', long)]
-    pub show_ends: bool,
+    show_ends: bool,
 
     /// Equivalent to -vT.
     #[arg(short = 't')]
-    pub show_nonprinting_tabs: bool,
+    show_nonprinting_tabs: bool,
 
     /// Display TAB characters as ^I.
     #[arg(short = 'T', long)]
-    pub show_tabs: bool,
+    show_tabs: bool,
 
     /// Use ^ and M- notation, except for LFD and TAB.
     #[arg(short = 'v', long)]
-    pub show_nonprinting: bool,
+    show_nonprinting: bool,
 
     /// Ignored (accepted for cat compatibility).
     #[arg(short = 'u', hide = true)]
@@ -148,7 +148,7 @@ pub struct Args {
     /// pattern containing '/' matches the full path. Can be repeated; the
     /// last matching mapping wins.
     #[arg(long, value_name = "PATTERN:LANG", value_parser = SyntaxMapping::parse)]
-    pub map_syntax: Vec<SyntaxMapping>,
+    map_syntax: Vec<SyntaxMapping>,
 
     /// Mappings from the config file, checked before those of --map-syntax.
     #[arg(skip)]
@@ -160,11 +160,11 @@ pub struct Args {
 
     /// Stop highlighting inputs larger than SIZE (K/M/G suffixes; 0 = no limit).
     #[arg(long, env = "HL_MAX_SIZE", value_name = "SIZE", default_value = "512K", value_parser = parse_size)]
-    pub max_size: u64,
+    max_size: u64,
 
     /// Stop highlighting at the first line longer than LEN bytes (K/M/G suffixes; 0 = no limit).
     #[arg(long, env = "HL_MAX_LINE_LENGTH", value_name = "LEN", default_value = "16K", value_parser = parse_size)]
-    pub max_line_length: u64,
+    max_line_length: u64,
 
     /// When to send output through a pager ($PAGER, or `less`): `auto` pages
     /// only when the output does not fit on one screen. A bare `less` in
@@ -178,18 +178,18 @@ pub struct Args {
 
     /// When to use colors.
     #[arg(long, value_enum, value_name = "WHEN", default_value_t = ColorWhen::Auto)]
-    pub color: ColorWhen,
+    color: ColorWhen,
 
     /// Color depth: `auto` uses truecolor only when the terminal advertises it
     /// (`COLORTERM`, `TERM`, `WT_SESSION`) and 256 colors otherwise.
     #[arg(long, env = "HL_COLOR_DEPTH", value_enum, value_name = "DEPTH", default_value_t = ColorDepth::Auto)]
-    pub color_depth: ColorDepth,
+    color_depth: ColorDepth,
 
     /// When to remove escape sequences (colors, OSC, ...) from the input:
     /// `auto` removes them only when the output is colored, `always` also
     /// when it is not.
     #[arg(long, value_enum, value_name = "WHEN", default_value_t = StripAnsi::Auto)]
-    pub strip_ansi: StripAnsi,
+    strip_ansi: StripAnsi,
 
     /// List available themes and exit.
     #[arg(long)]
@@ -228,21 +228,78 @@ const CONFIG_KEYS: [&str; 7] = [
     "max-line-length",
 ];
 
-/// Flags that the config file can turn on with `true`. They are applied
+/// A flag that the config file can turn on with `true`. Flags are applied
 /// after parsing rather than as clap defaults: clap fills in the default of
 /// a flag removed by `overrides_with` again, so `--no-*` could not turn
 /// them off.
-const CONFIG_FLAGS: [&str; 4] = ["number", "number-nonblank", "squeeze-blank", "header"];
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigFlag {
+    Number,
+    NumberNonblank,
+    SqueezeBlank,
+    Header,
+}
 
-/// The config key listing `--map-syntax` mappings. Unlike the keys above, it
+impl ConfigFlag {
+    /// Every flag. A flag missing here can't be set in the config file.
+    const ALL: [Self; 4] = [
+        Self::Number,
+        Self::NumberNonblank,
+        Self::SqueezeBlank,
+        Self::Header,
+    ];
+
+    /// The config key, which is the long name of the flag.
+    fn key(self) -> &'static str {
+        match self {
+            Self::Number => "number",
+            Self::NumberNonblank => "number-nonblank",
+            Self::SqueezeBlank => "squeeze-blank",
+            Self::Header => "header",
+        }
+    }
+
+    /// The flag whose config key is `key`.
+    fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|flag| flag.key() == key)
+    }
+}
+
+/// The config key listing `--map-syntax` mappings. Unlike the other keys, it
 /// adds to the command-line values instead of supplying a default.
 const MAP_SYNTAX_KEY: &str = "map-syntax";
+
+/// The kinds of config keys, which differ in the values they take and in
+/// how they are applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Key {
+    /// A flag, set to `true` or `false`.
+    Flag(ConfigFlag),
+    /// One of [`CONFIG_KEYS`], whose string or integer value becomes the
+    /// default of the option.
+    Option,
+    /// [`MAP_SYNTAX_KEY`], an array of mappings.
+    MapSyntax,
+}
+
+/// The kind of the config key `key`, or `None` if it is unknown.
+fn classify(key: &str) -> Option<Key> {
+    if let Some(flag) = ConfigFlag::from_key(key) {
+        Some(Key::Flag(flag))
+    } else if CONFIG_KEYS.contains(&key) {
+        Some(Key::Option)
+    } else if key == MAP_SYNTAX_KEY {
+        Some(Key::MapSyntax)
+    } else {
+        None
+    }
+}
 
 /// What the config file adds to the command line besides option defaults.
 #[derive(Default)]
 struct ConfigExtras {
     /// Flags set to `true`.
-    flags: Vec<&'static str>,
+    flags: Vec<ConfigFlag>,
     mappings: Vec<SyntaxMapping>,
 }
 
@@ -352,48 +409,48 @@ fn apply_config(mut cmd: Command, config: &Config) -> (Command, ConfigExtras) {
     let probe = without_env(Args::command());
     let mut extras = ConfigExtras::default();
     for (key, value) in &config.entries {
-        if let Some(&flag) = CONFIG_FLAGS.iter().find(|&&flag| flag == key) {
-            match value {
-                Value::Boolean(true) => extras.flags.push(flag),
-                Value::Boolean(false) => {}
-                _ => config.warn(&format!("'{key}' must be true or false, ignoring it")),
+        match (classify(key), value) {
+            (Some(Key::Flag(flag)), Value::Boolean(true)) => extras.flags.push(flag),
+            (Some(Key::Flag(_)), Value::Boolean(false)) => {}
+            (Some(Key::Flag(_)), _) => {
+                config.warn(&format!("'{key}' must be true or false, ignoring it"));
             }
-            continue;
-        }
-        let is_option = CONFIG_KEYS.contains(&key.as_str());
-        let value = match value {
-            Value::String(s) if is_option => s.clone(),
-            Value::Integer(n) if is_option => n.to_string(),
-            Value::Array(items) if key == MAP_SYNTAX_KEY && items.iter().all(Value::is_str) => {
+            (Some(Key::Option), Value::String(s)) => {
+                cmd = set_default(cmd, &probe, config, key, s);
+            }
+            (Some(Key::Option), Value::Integer(n)) => {
+                cmd = set_default(cmd, &probe, config, key, &n.to_string());
+            }
+            (Some(Key::Option), _) => {
+                config.warn(&format!(
+                    "'{key}' must be a string or an integer, ignoring it"
+                ));
+            }
+            (Some(Key::MapSyntax), Value::Array(items)) if items.iter().all(Value::is_str) => {
                 let items = items.iter().filter_map(Value::as_str);
                 extras
                     .mappings
                     .extend(items.filter_map(|item| parse_mapping(config, item)));
-                continue;
             }
-            _ if key == MAP_SYNTAX_KEY => {
+            (Some(Key::MapSyntax), _) => {
                 config.warn(&format!("'{key}' must be an array of strings, ignoring it"));
-                continue;
             }
-            _ if is_option => {
-                config.warn(&format!(
-                    "'{key}' must be a string or an integer, ignoring it"
-                ));
-                continue;
-            }
-            _ => {
-                config.warn(&format!("unknown key '{key}', ignoring it"));
-                continue;
-            }
-        };
-        let option = format!("--{key}={value}");
-        if probe.clone().try_get_matches_from(["hl", &option]).is_err() {
-            config.warn(&format!("invalid value '{value}' for '{key}', ignoring it"));
-            continue;
+            (None, _) => config.warn(&format!("unknown key '{key}', ignoring it")),
         }
-        cmd = cmd.mut_arg(arg_id(key), |arg| arg.default_value(value));
     }
     (cmd, extras)
+}
+
+/// `cmd` with `value` as the default of the option named by the config key
+/// `key`, or `cmd` as is with a warning if `probe`, the command without the
+/// environment, rejects the value.
+fn set_default(cmd: Command, probe: &Command, config: &Config, key: &str, value: &str) -> Command {
+    let option = format!("--{key}={value}");
+    if probe.clone().try_get_matches_from(["hl", &option]).is_err() {
+        config.warn(&format!("invalid value '{value}' for '{key}', ignoring it"));
+        return cmd;
+    }
+    cmd.mut_arg(arg_id(key), |arg| arg.default_value(value.to_owned()))
 }
 
 /// A `map-syntax` entry of the config file, or `None` with a warning.
@@ -426,15 +483,13 @@ impl Args {
         self.config_mappings = extras.mappings;
     }
 
-    /// Turns on the flag named `key` in [`CONFIG_FLAGS`], unless its `--no-*`
-    /// option was given.
-    fn apply_config_flag(&mut self, key: &str) {
-        let (on, off) = match key {
-            "number" => (&mut self.number, self.no_number),
-            "number-nonblank" => (&mut self.number_nonblank, self.no_number_nonblank),
-            "squeeze-blank" => (&mut self.squeeze_blank, self.no_squeeze_blank),
-            "header" => (&mut self.header, self.no_header),
-            _ => unreachable!("unknown config flag '{key}'"),
+    /// Turns on `flag`, unless its `--no-*` option was given.
+    fn apply_config_flag(&mut self, flag: ConfigFlag) {
+        let (on, off) = match flag {
+            ConfigFlag::Number => (&mut self.number, self.no_number),
+            ConfigFlag::NumberNonblank => (&mut self.number_nonblank, self.no_number_nonblank),
+            ConfigFlag::SqueezeBlank => (&mut self.squeeze_blank, self.no_squeeze_blank),
+            ConfigFlag::Header => (&mut self.header, self.no_header),
         };
         *on |= !off;
     }
@@ -845,13 +900,41 @@ mod tests {
         }
     }
 
-    /// `apply_config_flag` panics on an unknown key, so it must handle every
-    /// config flag.
+    /// Every config flag is recognized by its key and turns on its own
+    /// field, and only that one. A new flag fails to compile in the match
+    /// below until it gets a field, and then fails the length check until
+    /// it is added to `ConfigFlag::ALL`.
     #[test]
-    fn config_flags_are_handled() {
-        for key in CONFIG_FLAGS {
-            let mut parsed = args(&[]);
-            parsed.apply_config_flag(key);
+    fn each_config_flag_turns_its_field_on() {
+        for flag in ConfigFlag::ALL {
+            assert_eq!(ConfigFlag::from_key(flag.key()), Some(flag));
+            let parsed = args_with(&config(&format!("{} = true", flag.key())), &[]);
+            let fields = [
+                parsed.number,
+                parsed.number_nonblank,
+                parsed.squeeze_blank,
+                parsed.header,
+            ];
+            let on = match flag {
+                ConfigFlag::Number => 0,
+                ConfigFlag::NumberNonblank => 1,
+                ConfigFlag::SqueezeBlank => 2,
+                ConfigFlag::Header => 3,
+            };
+            assert_eq!(fields.len(), ConfigFlag::ALL.len());
+            for (i, field) in fields.into_iter().enumerate() {
+                assert_eq!(field, i == on, "{}: field {i}", flag.key());
+            }
         }
+    }
+
+    #[test]
+    fn keys_are_classified() {
+        assert_eq!(classify("header"), Some(Key::Flag(ConfigFlag::Header)));
+        assert_eq!(classify("max-size"), Some(Key::Option));
+        assert_eq!(classify("map-syntax"), Some(Key::MapSyntax));
+        assert_eq!(classify("pager"), None);
+        // Keys are the long names, not the clap ids.
+        assert_eq!(classify("max_size"), None);
     }
 }
