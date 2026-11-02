@@ -264,18 +264,18 @@ GitHub Actions runs `cargo fmt --check`, `cargo clippy` (warnings are errors) an
 
 | File | Role |
 | --- | --- |
-| `src/main.rs` | Entry point: runs the commands that print no inputs (`--list-themes`, ...), builds the printer and the line state from the arguments and config, picks the pager or stdout, handles errors and the exit code. The only place that reads the environment (`PAGER`, `LESS`, the color depth) |
+| `src/main.rs` | Entry point: runs the commands that print no inputs (`--list-themes`, ...), builds the printer and the line state from the arguments and config, picks the pager or stdout, handles errors and the exit code. Decides what the problems found on the way become: an unknown language in `--map-syntax` is an error and one in the config file a warning, an unknown or broken theme falls back to the default with a warning, and a problem with an input from `src/print.rs` gets a warning. The only place that reads the environment (`PAGER`, `LESS`, the color depth) |
 | `src/assets.rs` | The bundled syntaxes, custom syntaxes and themes from the config directory, merged with the bundled ones, and the syntax cache (`--build-cache`/`--clear-cache`) |
 | `src/cli.rs` | Command-line argument definitions (clap) and the config file applied to them (option defaults, flags, `map-syntax`). The rest of the code reads the arguments through methods that combine related options (`numbering()`, `visibility()`, `limits()`, ...), not through the raw fields |
 | `src/color.rs` | Terminal color depth detection and the 256-color fallback |
 | `src/config.rs` | Config file loading and the config/cache directory paths |
-| `src/diag.rs` | Warning and error messages on stderr |
+| `src/diag.rs` | Warning and error messages on stderr. Everything written to stderr goes through it, so the `hl: ` format is set in one place; an error is shown with its causes (`path: reason`) |
 | `src/encoding.rs` | UTF-8/UTF-16 BOM detection and UTF-16 decoding |
 | `build.rs` | Fixes the JavaScript syntax of two-face and bundles the syntaxes |
-| `src/highlight.rs` | Language detection, `--map-syntax` mappings, size limits, and highlighted output (syntect, on a thread of its own with a time limit) |
+| `src/highlight.rs` | Language detection, `--map-syntax` mappings, size limits, and highlighted output (syntect, on a thread of its own with a time limit). Writes no warnings: the reason highlighting was given up goes to the caller |
 | `src/lines.rs` | Line numbering, blank-line squeezing, and `cat -v`/`-E`/`-T` notation |
 | `src/pager.rs` | Building the pager command from `$PAGER`, starting the pager and waiting for it to exit |
-| `src/print.rs` | Printing each input in turn, highlighted or plain, with headers and encoding handling |
+| `src/print.rs` | Printing each input in turn, highlighted or plain, with headers and encoding handling. Writes no warnings: problems with an input (unreadable, highlighting given up) go to a callback, and `print_all` returns a `PrintOutcome` (whether an input failed, the write error that ended the output) |
 | `src/stdout.rs` | Telling whether stdout was closed at startup, before std reopens it on `/dev/null` |
 
 ### Dependencies

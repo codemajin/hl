@@ -20,14 +20,14 @@ use std::{
 };
 
 use anyhow::{Result, anyhow, bail};
-use assets::CacheReport;
+use assets::{CacheReport, ThemeFallback};
 use cli::{Args, PagingWhen};
 use config::Config;
-use diag::{describe, escape_controls};
-use highlight::{Highlighter, Limits, find_language, resolve_mappings};
+use diag::{describe, describe_error, escape_controls};
+use highlight::{DEFAULT_THEME, Highlighter, Limits, Origin, Syntax, SyntaxMapping, find_language};
 use lines::{LineHighlight, LineState};
 use pager::Pager;
-use print::{Headers, Input, Printer, TrackedWriter, is_stdin, print_all};
+use print::{Headers, Input, PrintOutcome, Printer, Problem, TrackedWriter, is_stdin, print_all};
 use syntect::{highlighting::Theme, parsing::SyntaxSet};
 
 fn main() -> ExitCode {
@@ -40,7 +40,7 @@ fn main() -> ExitCode {
         }
         Err(err) => {
             // The message can contain a path or a name from the user.
-            diag::note(escape_controls(&format!("{err}")));
+            diag::note(escape_controls(&describe_error(&err)));
             ExitCode::FAILURE
         }
     }
@@ -60,9 +60,7 @@ fn run(args: &Args, stdout: io::Result<()>) -> Result<ExitCode> {
     let syntaxes: Option<&'static SyntaxSet> = args
         .needs_syntaxes(color)
         .then(|| &*Box::leak(Box::new(assets::syntaxes())));
-    let printer = build_printer(args, color, syntaxes, || {
-        assets::Themes::load().get_or_default(&args.theme)
-    })?;
+    let printer = build_printer(args, color, syntaxes, || load_theme(&args.theme))?;
     let lines = build_line_state(args, printer.highlighter.as_ref());
     print_inputs(args, &printer, lines, color, tty, &stdout)
 }
@@ -109,7 +107,7 @@ fn build_printer(
                         .ok_or_else(|| anyhow!("unknown language '{lang}' (see --list-languages)"))
                 })
                 .transpose()?;
-            let mappings = resolve_mappings(syntaxes, args.mappings()).map_err(|e| anyhow!(e))?;
+            let mappings = resolve_mappings(syntaxes, args.mappings())?;
             (forced, mappings)
         }
         None => (None, Vec::new()),
@@ -129,6 +127,64 @@ fn build_printer(
         limits: args.limits(),
         strip: args.strip_escapes(color),
     })
+}
+
+/// Looks up the language of each syntax mapping. An unknown language is an
+/// error on the command line, but only a warning in the config file, which
+/// never stops `hl` from printing.
+fn resolve_mappings<'a, 'm>(
+    syntaxes: &'a SyntaxSet,
+    mappings: impl IntoIterator<Item = &'m SyntaxMapping>,
+) -> Result<Vec<(SyntaxMapping, &'a Syntax)>> {
+    let mut resolved = Vec::new();
+    for mapping in mappings {
+        let Some(syntax) = find_language(syntaxes, &mapping.language) else {
+            let msg = format!(
+                "unknown language '{}' in map-syntax '{}'",
+                mapping.language, mapping.spec
+            );
+            match mapping.origin() {
+                Origin::ConfigFile(path) => diag::warn(path, &format!("{msg}, ignoring it")),
+                Origin::CommandLine => bail!("{msg} (see --list-languages)"),
+            }
+            continue;
+        };
+        resolved.push((mapping.clone(), syntax));
+    }
+    Ok(resolved)
+}
+
+/// The theme called `name`, or the default theme with a warning.
+fn load_theme(name: &str) -> Theme {
+    let themes = assets::Themes::load();
+    themes.get(name).unwrap_or_else(|fallback| {
+        warn_theme_fallback(name, &fallback);
+        themes.default_theme()
+    })
+}
+
+fn warn_theme_fallback(name: &str, fallback: &ThemeFallback) {
+    match fallback {
+        ThemeFallback::Unknown => diag::note(format_args!(
+            "unknown theme '{}', falling back to {DEFAULT_THEME} (see --list-themes)",
+            escape_controls(name)
+        )),
+        ThemeFallback::Broken { path, error } => {
+            assets::warn_bad_theme(path, error);
+            diag::note(format_args!("falling back to {DEFAULT_THEME}"));
+        }
+    }
+}
+
+/// Shows a problem with an input that `print_all` went on after.
+fn report(path: &Path, problem: Problem) {
+    match problem {
+        Problem::Unreadable(e) => diag::warn(path, &describe(e)),
+        Problem::CannotHighlight(reason) => diag::warn(
+            path,
+            &format!("cannot highlight: {reason}, printing the rest as plain text"),
+        ),
+    }
 }
 
 /// The line numbering, squeezing and range of `args`. `--highlight-line`
@@ -172,7 +228,10 @@ fn print_inputs(
     let headers = args.header.then(|| Headers::new(color));
     let limits = printer.limits;
     let open = |path| open_input(path, limits);
-    let (failed, write_error) = print_all(&inputs, open, printer, &mut out, lines, headers);
+    let PrintOutcome {
+        input_failed,
+        write_error,
+    } = print_all(&inputs, open, printer, &mut out, lines, headers, report);
 
     let flushed = match write_error {
         Some(e) => Err(e),
@@ -183,7 +242,7 @@ fn print_inputs(
     if let Some(p) = pager {
         p.finish()?;
     }
-    Ok(if failed {
+    Ok(if input_failed {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
@@ -332,6 +391,17 @@ mod tests {
             err.to_string(),
             "unknown language 'nope' in map-syntax '*.foo:nope' (see --list-languages)"
         );
+    }
+
+    #[test]
+    fn unknown_language_in_the_config_is_skipped() {
+        let origin = Origin::ConfigFile(PathBuf::from("config.toml"));
+        let unknown = SyntaxMapping::parse("*.x:no-such-language", origin).unwrap();
+        let known = SyntaxMapping::parse("*.y:Rust", Origin::CommandLine).unwrap();
+        let resolved = resolve_mappings(syntaxes(), [&unknown, &known]).unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].0.spec, "*.y:Rust");
+        assert_eq!(resolved[0].1.name, "Rust");
     }
 
     #[test]

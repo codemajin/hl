@@ -1,4 +1,5 @@
-//! Messages on stderr.
+//! Messages on stderr. Everything `hl` writes there goes through `note`,
+//! so its format is decided here.
 
 use std::{
     borrow::Cow,
@@ -43,6 +44,24 @@ pub fn escape_controls(s: &str) -> Cow<'_, str> {
         }
     }
     Cow::Owned(out)
+}
+
+/// `err` with its causes, as `context: cause`, each I/O error without its
+/// OS error code (see `describe`).
+pub fn describe_error(err: &anyhow::Error) -> String {
+    let mut out = String::new();
+    for (i, cause) in err.chain().enumerate() {
+        if i > 0 {
+            out.push_str(": ");
+        }
+        match cause.downcast_ref::<io::Error>() {
+            Some(e) => out.push_str(&describe(e)),
+            None => {
+                let _ = write!(out, "{cause}");
+            }
+        }
+    }
+    out
 }
 
 /// Strips the "(os error N)" suffix to match coreutils-style messages.
@@ -96,6 +115,23 @@ mod tests {
         use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
         let path = Path::new(OsStr::from_bytes(b"\xff\x1b"));
         assert_eq!(display_safe(path), "\u{FFFD}\\x1b");
+    }
+
+    #[test]
+    fn describe_error_joins_the_causes() {
+        let err = anyhow::Error::from(io::Error::from_raw_os_error(2)).context("dir/cache.bin");
+        let msg = describe_error(&err);
+        assert!(msg.starts_with("dir/cache.bin: "), "{msg}");
+        assert_eq!(
+            &msg["dir/cache.bin: ".len()..],
+            describe(&io::Error::from_raw_os_error(2))
+        );
+    }
+
+    #[test]
+    fn describe_error_keeps_a_single_message() {
+        let err = anyhow::anyhow!("write error: broken");
+        assert_eq!(describe_error(&err), "write error: broken");
     }
 
     #[test]

@@ -19,7 +19,7 @@ use crate::{
     color::Depth,
     config::Config,
     diag::escape_controls,
-    highlight::{DEFAULT_THEME, Limits, SyntaxMapping},
+    highlight::{DEFAULT_THEME, Limits, Origin, SyntaxMapping},
     lines::{LineRange, Numbering, Visibility},
 };
 
@@ -147,7 +147,7 @@ pub struct Args {
     /// Use LANG for files matching the glob PATTERN (e.g. '*.conf:INI'). A
     /// pattern containing '/' matches the full path. Can be repeated; the
     /// last matching mapping wins.
-    #[arg(long, value_name = "PATTERN:LANG", value_parser = SyntaxMapping::parse)]
+    #[arg(long, value_name = "PATTERN:LANG", value_parser = parse_cli_mapping)]
     map_syntax: Vec<SyntaxMapping>,
 
     /// Mappings from the config file, checked before those of --map-syntax.
@@ -453,13 +453,15 @@ fn set_default(cmd: Command, probe: &Command, config: &Config, key: &str, value:
     cmd.mut_arg(arg_id(key), |arg| arg.default_value(value.to_owned()))
 }
 
+/// A `--map-syntax` value.
+fn parse_cli_mapping(s: &str) -> Result<SyntaxMapping, String> {
+    SyntaxMapping::parse(s, Origin::CommandLine)
+}
+
 /// A `map-syntax` entry of the config file, or `None` with a warning.
 fn parse_mapping(config: &Config, item: &str) -> Option<SyntaxMapping> {
-    match SyntaxMapping::parse(item) {
-        Ok(mut mapping) => {
-            mapping.origin = Some(config.path.clone());
-            Some(mapping)
-        }
+    match SyntaxMapping::parse(item, Origin::ConfigFile(config.path.clone())) {
+        Ok(mapping) => Some(mapping),
         Err(e) => {
             config.warn(&format!(
                 "invalid {MAP_SYNTAX_KEY} entry '{item}': {e}, ignoring it"
@@ -645,8 +647,6 @@ fn parse_range(s: &str) -> Result<LineRange, String> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
 
     /// Parses `argv`. Like `args_with`, it ignores the `HL_*` variables, so
@@ -870,13 +870,13 @@ mod tests {
         let args = args_with(&config, &["--map-syntax", "*.conf:TOML"]);
         let mappings: Vec<_> = args
             .mappings()
-            .map(|m| (m.spec.as_str(), m.origin.as_deref()))
+            .map(|m| (m.spec.as_str(), m.origin().clone()))
             .collect();
         assert_eq!(
             mappings,
             [
-                ("*.conf:INI", Some(Path::new("config.toml"))),
-                ("*.conf:TOML", None),
+                ("*.conf:INI", Origin::ConfigFile("config.toml".into())),
+                ("*.conf:TOML", Origin::CommandLine),
             ]
         );
     }

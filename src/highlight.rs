@@ -21,7 +21,6 @@ use syntect::{
 
 use crate::{
     color::{Depth, as_256_terminal_escaped, background_sgr, blend},
-    diag,
     encoding::UTF8_BOM,
     lines::{LineState, RESET, Visibility, write_plain},
 };
@@ -70,6 +69,16 @@ impl Limits {
     }
 }
 
+/// Where a syntax mapping comes from, which decides whether an unknown
+/// language in it is an error or a warning.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Origin {
+    /// `--map-syntax`.
+    CommandLine,
+    /// The `map-syntax` key of the config file at this path.
+    ConfigFile(PathBuf),
+}
+
 /// A `PATTERN:LANG` pair from `--map-syntax` or the config file.
 #[derive(Debug, Clone)]
 pub struct SyntaxMapping {
@@ -80,14 +89,13 @@ pub struct SyntaxMapping {
     /// The mapping as written, for messages.
     pub spec: String,
     pub language: String,
-    /// The config file the mapping comes from, or `None` for the command line.
-    pub origin: Option<PathBuf>,
+    origin: Origin,
 }
 
 impl SyntaxMapping {
     /// Parses `PATTERN:LANG`, splitting at the last colon. The language is
     /// only checked once the syntaxes are loaded.
-    pub fn parse(s: &str) -> Result<Self, String> {
+    pub fn parse(s: &str, origin: Origin) -> Result<Self, String> {
         let (pattern, language) = s
             .rsplit_once(':')
             .filter(|(p, l)| !p.is_empty() && !l.is_empty())
@@ -102,8 +110,12 @@ impl SyntaxMapping {
             by_path: pattern.contains('/'),
             spec: s.to_string(),
             language: language.to_string(),
-            origin: None,
+            origin,
         })
+    }
+
+    pub fn origin(&self) -> &Origin {
+        &self.origin
     }
 
     fn matches(&self, path: &Path) -> bool {
@@ -186,17 +198,17 @@ impl Highlighter {
     /// over between lines, so highlighting cannot resume after a skipped line.
     /// A line that is not valid UTF-8 switches to plain output the same way,
     /// and so does an error in the syntax or a line that takes longer than
-    /// `STALL_TIMEOUT` to highlight, after a warning about `name`.
+    /// `STALL_TIMEOUT` to highlight, after passing the reason to `on_give_up`.
     pub fn write(
         &self,
         reader: &mut impl BufRead,
-        name: &Path,
+        on_give_up: &mut dyn FnMut(&str),
         out: &mut impl Write,
         syntax: &'static Syntax,
         lines: &mut LineState,
         limits: Limits,
     ) -> io::Result<()> {
-        let mut pipeline = Pipeline::new(self.spawn_worker(syntax)?, name);
+        let mut pipeline = Pipeline::new(self.spawn_worker(syntax)?, on_give_up);
         let max_line = limits.max_line.unwrap_or(u64::MAX);
         let mut total: u64 = 0;
         loop {
@@ -404,20 +416,21 @@ enum Flow {
 
 /// Lines on their way through the worker, in input order: those in the
 /// batch being filled, then those of the batches handed over.
-struct Pipeline<'n> {
+struct Pipeline<'r> {
     worker: Worker,
-    name: &'n Path,
+    /// Told why highlighting was given up.
+    on_give_up: &'r mut dyn FnMut(&str),
     batch: Vec<String>,
     batch_bytes: usize,
     in_flight: usize,
     pending: VecDeque<PendingLine>,
 }
 
-impl<'n> Pipeline<'n> {
-    fn new(worker: Worker, name: &'n Path) -> Self {
+impl<'r> Pipeline<'r> {
+    fn new(worker: Worker, on_give_up: &'r mut dyn FnMut(&str)) -> Self {
         Self {
             worker,
-            name,
+            on_give_up,
             batch: Vec::new(),
             batch_bytes: 0,
             in_flight: 0,
@@ -509,17 +522,14 @@ impl<'n> Pipeline<'n> {
         }
     }
 
-    /// Warns that highlighting failed and prints the pending lines plain.
+    /// Reports why highlighting failed and prints the pending lines plain.
     fn give_up(
         &mut self,
         reason: &str,
         out: &mut impl Write,
         lines: &mut LineState,
     ) -> io::Result<Flow> {
-        diag::warn(
-            self.name,
-            &format!("cannot highlight: {reason}, printing the rest as plain text"),
-        );
+        (self.on_give_up)(reason);
         while let Some(line) = self.pending.pop_front() {
             if lines.is_done() {
                 return Ok(Flow::Done);
@@ -537,31 +547,6 @@ pub fn find_language<'a>(syntaxes: &'a SyntaxSet, lang: &str) -> Option<&'a Synt
     syntaxes
         .find_syntax_by_token(lang)
         .or_else(|| syntaxes.find_syntax_by_extension(lang))
-}
-
-/// Looks up the language of each syntax mapping. An unknown language is an
-/// error on the command line, but only a warning in the config file, which
-/// never stops `hl` from printing.
-pub fn resolve_mappings<'a, 'm>(
-    syntaxes: &'a SyntaxSet,
-    mappings: impl IntoIterator<Item = &'m SyntaxMapping>,
-) -> Result<Vec<(SyntaxMapping, &'a Syntax)>, String> {
-    let mut resolved = Vec::new();
-    for mapping in mappings {
-        let Some(syntax) = find_language(syntaxes, &mapping.language) else {
-            let msg = format!(
-                "unknown language '{}' in map-syntax '{}'",
-                mapping.language, mapping.spec
-            );
-            match &mapping.origin {
-                Some(path) => diag::warn(path, &format!("{msg}, ignoring it")),
-                None => return Err(format!("{msg} (see --list-languages)")),
-            }
-            continue;
-        };
-        resolved.push((mapping.clone(), syntax));
-    }
-    Ok(resolved)
 }
 
 /// The names and file extensions of the languages listed by
@@ -591,11 +576,14 @@ mod tests {
     }
 
     fn highlighter(syntaxes: &'static SyntaxSet, mappings: &[&str]) -> Highlighter {
-        let mappings: Vec<_> = mappings
+        let mappings = mappings
             .iter()
-            .map(|m| SyntaxMapping::parse(m).unwrap())
+            .map(|m| {
+                let mapping = SyntaxMapping::parse(m, Origin::CommandLine).unwrap();
+                let syntax = find_language(syntaxes, &mapping.language).unwrap();
+                (mapping, syntax)
+            })
             .collect();
-        let mappings = resolve_mappings(syntaxes, &mappings).unwrap();
         Highlighter::new(syntaxes, Theme::default(), Depth::TrueColor, mappings)
     }
 
@@ -708,39 +696,23 @@ mod tests {
 
     #[test]
     fn parses_a_mapping_at_the_last_colon() {
-        let mapping = SyntaxMapping::parse("*.conf:INI").unwrap();
+        let mapping = SyntaxMapping::parse("*.conf:INI", Origin::CommandLine).unwrap();
         assert_eq!(mapping.spec, "*.conf:INI");
         assert_eq!(mapping.language, "INI");
-        assert!(mapping.origin.is_none());
-        assert_eq!(SyntaxMapping::parse("a:b:INI").unwrap().language, "INI");
+        assert_eq!(mapping.origin(), &Origin::CommandLine);
+        let origin = Origin::ConfigFile(PathBuf::from("config.toml"));
+        let mapping = SyntaxMapping::parse("a:b:INI", origin.clone()).unwrap();
+        assert_eq!(mapping.language, "INI");
+        assert_eq!(mapping.origin(), &origin);
     }
 
     #[test]
     fn rejects_malformed_mappings() {
         for spec in ["*.conf", ":INI", "*.conf:"] {
-            let err = SyntaxMapping::parse(spec).unwrap_err();
+            let err = SyntaxMapping::parse(spec, Origin::CommandLine).unwrap_err();
             assert!(err.contains("is not PATTERN:LANG"), "{spec}: {err}");
         }
-        assert!(SyntaxMapping::parse("[:INI").is_err());
-    }
-
-    #[test]
-    fn unknown_language_is_an_error_on_the_command_line() {
-        let syntaxes = syntaxes();
-        let mapping = SyntaxMapping::parse("*.x:no-such-language").unwrap();
-        let err = resolve_mappings(syntaxes, [&mapping]).unwrap_err();
-        assert!(err.contains("see --list-languages"), "{err}");
-    }
-
-    #[test]
-    fn unknown_language_in_the_config_is_skipped() {
-        let syntaxes = syntaxes();
-        let mut unknown = SyntaxMapping::parse("*.x:no-such-language").unwrap();
-        unknown.origin = Some(PathBuf::from("config.toml"));
-        let known = SyntaxMapping::parse("*.y:Rust").unwrap();
-        let resolved = resolve_mappings(syntaxes, [&unknown, &known]).unwrap();
-        assert_eq!(resolved.len(), 1);
-        assert_eq!(resolved[0].0.spec, "*.y:Rust");
+        assert!(SyntaxMapping::parse("[:INI", Origin::CommandLine).is_err());
     }
 
     #[test]
@@ -768,7 +740,7 @@ mod tests {
         let syntax = syntaxes.find_syntax_plain_text();
         hl.write(
             &mut Cursor::new(input),
-            Path::new("-"),
+            &mut |reason| panic!("gave up: {reason}"),
             &mut out,
             syntax,
             lines,
@@ -902,7 +874,7 @@ mod tests {
         let syntax = syntaxes.find_syntax_plain_text();
         hl.write(
             &mut Cursor::new(input),
-            Path::new("-"),
+            &mut |reason| panic!("gave up: {reason}"),
             &mut out,
             syntax,
             &mut lines,
@@ -1056,15 +1028,17 @@ contexts:
         hl.stall_timeout = Duration::from_millis(200);
         let mut lines = LineState::new(Numbering::All, false, None);
         let mut out = Vec::new();
+        let mut reasons = Vec::new();
         hl.write(
             &mut Cursor::new("a\nb\nx\nc\n"),
-            Path::new("-"),
+            &mut |reason| reasons.push(reason.to_string()),
             &mut out,
             syntax,
             &mut lines,
             NO_LIMITS,
         )
         .unwrap();
+        assert_eq!(reasons, ["a line took longer than 200ms"]);
         let (highlighted, plain) = out.split_at(out.len() - "     3\tx\n     4\tc\n".len());
         assert_eq!(plain, b"     3\tx\n     4\tc\n", "{out:?}");
         assert!(has_escape(highlighted), "{out:?}");

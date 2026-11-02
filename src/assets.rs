@@ -11,7 +11,7 @@ use std::{
     time::UNIX_EPOCH,
 };
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use syntect::{
     dumps,
     highlighting::{Theme, ThemeSet},
@@ -21,7 +21,7 @@ use two_face::theme::LazyThemeSet;
 
 use crate::{
     config,
-    diag::{describe, escape_controls, note, warn},
+    diag::{describe, note, warn},
     highlight::DEFAULT_THEME,
 };
 
@@ -78,7 +78,7 @@ pub fn build_cache() -> Result<CacheReport> {
     }
     let fingerprint = fingerprint(&files);
     let (syntaxes, added) = merge(&files);
-    write_cache(&path, &fingerprint, syntaxes).map_err(|e| anyhow!("{}: {e}", path.display()))?;
+    write_cache(&path, &fingerprint, syntaxes).with_context(|| path.display().to_string())?;
     Ok(CacheReport::Cached {
         added,
         total: files.len(),
@@ -186,14 +186,14 @@ fn read_cache(path: &Path, fingerprint: &str) -> Option<SyntaxSet> {
 
 /// Writes through a temporary file, so that a concurrent `hl` never reads
 /// half a cache.
-fn write_cache(path: &Path, fingerprint: &str, syntaxes: SyntaxSet) -> Result<(), String> {
+fn write_cache(path: &Path, fingerprint: &str, syntaxes: SyntaxSet) -> Result<()> {
     if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).map_err(|e| describe(&e))?;
+        fs::create_dir_all(dir)?;
     }
     let tmp = path.with_extension(format!("tmp.{}", process::id()));
     let result = dumps::dump_to_uncompressed_file(&(fingerprint, syntaxes), &tmp)
-        .map_err(|e| e.to_string())
-        .and_then(|()| fs::rename(&tmp, path).map_err(|e| describe(&e)));
+        .map_err(anyhow::Error::from)
+        .and_then(|()| Ok(fs::rename(&tmp, path)?));
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
     }
@@ -204,7 +204,7 @@ fn remove_cache(path: &Path) -> Result<()> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(anyhow!("{}: {}", path.display(), describe(&e))),
+        Err(e) => Err(e).with_context(|| path.display().to_string()),
     }
 }
 
@@ -214,6 +214,15 @@ pub struct Themes {
     bundled: LazyThemeSet,
     /// `(name, path)` pairs, sorted by name.
     custom: Vec<(String, PathBuf)>,
+}
+
+/// Why `Themes::get` found no theme to use.
+#[derive(Debug)]
+pub enum ThemeFallback {
+    /// No theme has the name.
+    Unknown,
+    /// The custom theme at `path` cannot be loaded.
+    Broken { path: PathBuf, error: String },
 }
 
 enum Found<'a> {
@@ -253,24 +262,22 @@ impl Themes {
         names
     }
 
-    /// The theme called `name`, or the default theme with a warning. An
-    /// unknown theme is not fatal, so a typo in `HL_THEME` or the config
-    /// file never hides the file contents.
-    pub fn get_or_default(&self, name: &str) -> Theme {
+    /// The theme called `name`, or why there is none to use. The caller
+    /// falls back to `default_theme`: an unknown theme is not fatal, so a
+    /// typo in `HL_THEME` or the config file never hides the file contents.
+    pub fn get(&self, name: &str) -> Result<Theme, ThemeFallback> {
         match self.find(name) {
-            Some(Found::Bundled(theme)) => return theme.clone(),
-            Some(Found::Custom(path)) => {
-                match load_theme(path) {
-                    Ok(theme) => return theme,
-                    Err(e) => warn_bad_theme(path, &e),
-                }
-                note(format_args!("falling back to {DEFAULT_THEME}"));
-            }
-            None => note(format_args!(
-                "unknown theme '{}', falling back to {DEFAULT_THEME} (see --list-themes)",
-                escape_controls(name)
-            )),
+            Some(Found::Bundled(theme)) => Ok(theme.clone()),
+            Some(Found::Custom(path)) => load_theme(path).map_err(|error| ThemeFallback::Broken {
+                path: path.to_path_buf(),
+                error,
+            }),
+            None => Err(ThemeFallback::Unknown),
         }
+    }
+
+    /// The theme used when the one asked for cannot be.
+    pub fn default_theme(&self) -> Theme {
         self.bundled
             .get(DEFAULT_THEME)
             .expect("default theme is bundled")
@@ -316,6 +323,7 @@ fn load_theme(path: &Path) -> Result<Theme, String> {
     })
 }
 
-fn warn_bad_theme(path: &Path, err: &str) {
+/// Warns that the custom theme at `path` is skipped because of `err`.
+pub fn warn_bad_theme(path: &Path, err: &str) {
     warn(path, &format!("cannot load theme, skipping it: {err}"));
 }

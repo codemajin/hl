@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::{
-    diag::{describe, display_safe, warn},
+    diag::display_safe,
     encoding::{UTF8_BOM, Utf16Decoder, is_utf8_prefix, utf16_bom},
     escape::StripEscapes,
     highlight::{Highlighter, Limits, Syntax},
@@ -17,9 +17,29 @@ use crate::{
 /// How many leading bytes are inspected for binary detection.
 const PEEK_LEN: usize = 8 * 1024;
 
+/// A problem with one input that does not stop `print_all`, passed to the
+/// caller to show.
+#[derive(Debug)]
+pub enum Problem<'a> {
+    /// The input could not be opened or read, and was skipped.
+    Unreadable(&'a io::Error),
+    /// Highlighting failed for this reason, and the rest of the input was
+    /// printed plain.
+    CannotHighlight(&'a str),
+}
+
+/// What happened in `print_all`.
+#[derive(Debug)]
+pub struct PrintOutcome {
+    /// Whether an input could not be read.
+    pub input_failed: bool,
+    /// The write error that ended the output early, if any.
+    pub write_error: Option<io::Error>,
+}
+
 /// Prints the inputs in turn, opening each with `open`. An input that cannot
-/// be read is reported and skipped. Returns whether there was one, and the
-/// write error that ended the output early, if any.
+/// be read is skipped. Problems that do not stop the output are passed to
+/// `report` with the path of their input.
 pub fn print_all<'p, W: Write>(
     inputs: &'p [PathBuf],
     mut open: impl FnMut(&'p Path) -> io::Result<Input<'p>>,
@@ -27,8 +47,9 @@ pub fn print_all<'p, W: Write>(
     out: &mut TrackedWriter<W>,
     mut lines: LineState,
     mut headers: Option<Headers>,
-) -> (bool, Option<io::Error>) {
-    let mut failed = false;
+    mut report: impl FnMut(&Path, Problem),
+) -> PrintOutcome {
+    let mut input_failed = false;
     for input in inputs {
         // A file that cannot be opened gets no header, like with `head`.
         let result = open(input).and_then(|source| {
@@ -36,19 +57,27 @@ pub fn print_all<'p, W: Write>(
                 headers.write(input, out, &mut lines)?;
             }
             lines.start_input(out)?;
-            printer.print(source, out, &mut lines)
+            printer.print(source, out, &mut lines, &mut report)
         });
         match result {
             Ok(()) => {}
             // The output is gone, so there is no point in reading more input.
-            Err(e) if out.failed() => return (failed, Some(e)),
+            Err(e) if out.failed() => {
+                return PrintOutcome {
+                    input_failed,
+                    write_error: Some(e),
+                };
+            }
             Err(e) => {
-                warn(input, &describe(&e));
-                failed = true;
+                report(input, Problem::Unreadable(&e));
+                input_failed = true;
             }
         }
     }
-    (failed, None)
+    PrintOutcome {
+        input_failed,
+        write_error: None,
+    }
 }
 
 /// Remembers whether writing failed, so that an error coming out of
@@ -156,7 +185,13 @@ pub struct Printer {
 }
 
 impl Printer {
-    fn print(&self, input: Input, out: &mut impl Write, lines: &mut LineState) -> io::Result<()> {
+    fn print(
+        &self,
+        input: Input,
+        out: &mut impl Write,
+        lines: &mut LineState,
+        report: &mut dyn FnMut(&Path, Problem),
+    ) -> io::Result<()> {
         let Input {
             source,
             path,
@@ -176,14 +211,16 @@ impl Printer {
             reader.consume(2);
             let decoded = BufReader::new(Utf16Decoder::new(&mut reader, endian));
             return match hl {
-                Some(hl) => self.filtered(decoded, |r| self.highlight(hl, r, path, out, lines)),
+                Some(hl) => {
+                    self.filtered(decoded, |r| self.highlight(hl, r, path, out, lines, report))
+                }
                 None => self.filtered(decoded, |mut r| write_plain(&mut r, out, lines, self.vis)),
             };
         }
         let peek = &head[..head.len().min(PEEK_LEN)];
         let binary = peek.contains(&0) || !is_utf8_prefix(peek);
         match hl.filter(|_| !binary) {
-            Some(hl) => self.filtered(reader, |r| self.highlight(hl, r, path, out, lines)),
+            Some(hl) => self.filtered(reader, |r| self.highlight(hl, r, path, out, lines, report)),
             None => self.filtered(reader, |mut r| write_plain(&mut r, out, lines, self.vis)),
         }
     }
@@ -209,10 +246,19 @@ impl Printer {
         path: Option<&Path>,
         out: &mut impl Write,
         lines: &mut LineState,
+        report: &mut dyn FnMut(&Path, Problem),
     ) -> io::Result<()> {
         let syntax = self.choose_syntax(hl, &mut reader, path)?;
         let name = path.unwrap_or(Path::new("-"));
-        hl.write(&mut reader, name, out, syntax, lines, self.limits)
+        let mut on_give_up = |reason: &str| report(name, Problem::CannotHighlight(reason));
+        hl.write(
+            &mut reader,
+            &mut on_give_up,
+            out,
+            syntax,
+            lines,
+            self.limits,
+        )
     }
 
     /// Uses the forced syntax, or detects one from the path and the first line.
@@ -260,6 +306,14 @@ mod tests {
         }
     }
 
+    /// What `run` saw: the output, whether an input failed, and the paths
+    /// of the inputs reported as unreadable.
+    struct Run {
+        out: String,
+        input_failed: bool,
+        unreadable: Vec<PathBuf>,
+    }
+
     /// Runs `print_all` with `inputs` opened from `files`, a missing name
     /// failing to open.
     fn run(
@@ -267,7 +321,7 @@ mod tests {
         files: &[(&str, &'static str)],
         lines: LineState,
         headers: Option<Headers>,
-    ) -> (String, bool) {
+    ) -> Run {
         let mut out = TrackedWriter::new(Vec::new());
         let open = |path: &Path| {
             files
@@ -276,9 +330,21 @@ mod tests {
                 .map(|&(_, text)| input(text))
                 .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
         };
-        let (failed, write_error) = print_all(inputs, open, &plain(), &mut out, lines, headers);
-        assert!(write_error.is_none());
-        (String::from_utf8(out.inner).unwrap(), failed)
+        let mut unreadable = Vec::new();
+        let report = |path: &Path, problem: Problem| match problem {
+            Problem::Unreadable(e) => {
+                assert_eq!(e.kind(), io::ErrorKind::NotFound);
+                unreadable.push(path.to_path_buf());
+            }
+            Problem::CannotHighlight(reason) => panic!("cannot highlight: {reason}"),
+        };
+        let outcome = print_all(inputs, open, &plain(), &mut out, lines, headers, report);
+        assert!(outcome.write_error.is_none());
+        Run {
+            out: String::from_utf8(out.inner).unwrap(),
+            input_failed: outcome.input_failed,
+            unreadable,
+        }
     }
 
     fn paths(names: &[&str]) -> Vec<PathBuf> {
@@ -288,39 +354,42 @@ mod tests {
     #[test]
     fn unreadable_input_is_skipped() {
         let lines = LineState::new(Numbering::All, false, None);
-        let (out, failed) = run(
+        let run = run(
             &paths(&["a", "missing", "b"]),
             &[("a", "one\n"), ("b", "two\n")],
             lines,
             None,
         );
-        assert!(failed);
-        assert_eq!(out, "     1\tone\n     2\ttwo\n");
+        assert!(run.input_failed);
+        assert_eq!(run.unreadable, paths(&["missing"]));
+        assert_eq!(run.out, "     1\tone\n     2\ttwo\n");
     }
 
     #[test]
     fn headers_name_each_input() {
         let lines = LineState::new(Numbering::None, false, None);
-        let (out, failed) = run(
+        let run = run(
             &paths(&["a", "-"]),
             &[("a", "one\n"), ("-", "two\n")],
             lines,
             Some(Headers::new(false)),
         );
-        assert!(!failed);
-        assert_eq!(out, "==> a <==\none\n\n==> standard input <==\ntwo\n");
+        assert!(!run.input_failed);
+        assert!(run.unreadable.is_empty());
+        assert_eq!(run.out, "==> a <==\none\n\n==> standard input <==\ntwo\n");
     }
 
     #[test]
     fn unopened_input_gets_no_header() {
         let lines = LineState::new(Numbering::None, false, None);
-        let (out, _) = run(
+        let run = run(
             &paths(&["missing", "a"]),
             &[("a", "one\n")],
             lines,
             Some(Headers::new(true)),
         );
-        assert_eq!(out, "\x1b[1m==> a <==\x1b[0m\none\n");
+        assert_eq!(run.unreadable, paths(&["missing"]));
+        assert_eq!(run.out, "\x1b[1m==> a <==\x1b[0m\none\n");
     }
 
     struct Broken;
@@ -345,8 +414,10 @@ mod tests {
         };
         let mut out = TrackedWriter::new(Broken);
         let lines = LineState::new(Numbering::None, false, None);
-        let (failed, write_error) = print_all(&inputs, open, &plain(), &mut out, lines, None);
-        assert!(!failed);
+        let report = |path: &Path, problem: Problem| panic!("{}: {problem:?}", path.display());
+        let outcome = print_all(&inputs, open, &plain(), &mut out, lines, None, report);
+        assert!(!outcome.input_failed);
+        let write_error = outcome.write_error;
         assert!(write_error.is_some_and(|e| e.kind() == io::ErrorKind::BrokenPipe));
         assert!(out.failed());
         assert_eq!(opened, 1);
