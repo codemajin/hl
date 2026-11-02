@@ -14,18 +14,15 @@ use std::{
 use globset::{GlobBuilder, GlobMatcher};
 use syntect::{
     easy::HighlightLines,
-    highlighting::{Color, Style, Theme},
+    highlighting::{Color, Theme},
     parsing::{SyntaxReference, SyntaxSet},
-    util::as_24_bit_terminal_escaped,
 };
 
 use crate::{
-    color::{Depth, as_256_terminal_escaped, background_sgr, blend},
+    color::{Depth, RESET, background_sgr, blend, foreground_escaped},
     encoding::UTF8_BOM,
-    lines::{LineState, RESET, Visibility, write_plain},
+    lines::{LineState, Visibility, write_plain},
 };
-
-pub const DEFAULT_THEME: &str = "base16-ocean.dark";
 
 /// A language that inputs can be highlighted as.
 pub type Syntax = SyntaxReference;
@@ -280,7 +277,7 @@ impl Highlighter {
                     for line in &batch {
                         let result = hl
                             .highlight_line(line, syntaxes)
-                            .map(|ranges| escape(&ranges, depth))
+                            .map(|ranges| foreground_escaped(&ranges, depth))
                             .map_err(|e| e.to_string());
                         failed = result.is_err();
                         lock(&results).push(result);
@@ -305,19 +302,6 @@ impl Highlighter {
             stall_timeout: self.stall_timeout,
         })
     }
-}
-
-/// `ranges` as escape sequences for `depth`, without the newline, which is
-/// printed after the reset sequence.
-fn escape(ranges: &[(Style, &str)], depth: Depth) -> String {
-    let mut escaped = match depth {
-        Depth::TrueColor => as_24_bit_terminal_escaped(ranges, false),
-        Depth::Ansi256 => as_256_terminal_escaped(ranges),
-    };
-    if escaped.ends_with('\n') {
-        escaped.pop();
-    }
-    escaped
 }
 
 /// The escape sequences of a highlighted line, or why it could not be
@@ -564,7 +548,7 @@ pub fn languages(syntaxes: &SyntaxSet) -> Vec<(&str, &[String])> {
 
 #[cfg(test)]
 mod tests {
-    use std::{io::Cursor, sync::LazyLock};
+    use std::{fmt::Write as _, io::Cursor, sync::LazyLock};
 
     use super::*;
     use crate::lines::{LineHighlight, LineRange, Numbering};
@@ -1002,7 +986,7 @@ mod tests {
 
     /// A syntax whose two contexts hand `x` back and forth without
     /// consuming it, which makes syntect loop forever.
-    const LOOPING_SYNTAX: &str = r#"%YAML 1.2
+    const LOOPING_SYNTAX: &str = r"%YAML 1.2
 ---
 name: Loop
 scope: source.loop
@@ -1013,7 +997,7 @@ contexts:
   other:
     - match: (?=x)
       set: main
-"#;
+";
 
     #[test]
     fn prints_the_rest_plain_when_a_line_takes_too_long() {
@@ -1060,9 +1044,10 @@ contexts:
         let line = format!("{}\n", "a".repeat(BATCH_BYTES / 2));
         let input = line.repeat(MAX_IN_FLIGHT * 3);
         let out = write_simple(input.as_bytes(), Numbering::All, NO_LIMITS);
-        let expected: String = (1..=MAX_IN_FLIGHT * 3)
-            .map(|n| format!("{n:>6}\t{line}"))
-            .collect();
+        let expected = (1..=MAX_IN_FLIGHT * 3).fold(String::new(), |mut s, n| {
+            write!(s, "{n:>6}\t{line}").unwrap();
+            s
+        });
         assert_eq!(strip_ansi(&out), expected.as_bytes());
     }
 
@@ -1073,7 +1058,10 @@ contexts:
             end: Some(72),
         };
         let mut lines = LineState::new(Numbering::All, false, Some(range));
-        let input: String = (1..=200).map(|n| format!("{n}\n")).collect();
+        let input = (1..=200).fold(String::new(), |mut s, n| {
+            writeln!(s, "{n}").unwrap();
+            s
+        });
         let out = write(input.as_bytes(), &mut lines, NO_LIMITS, Depth::TrueColor);
         assert_eq!(strip_ansi(&out), b"    70\t70\n    71\t71\n    72\t72\n");
     }

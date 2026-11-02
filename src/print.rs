@@ -7,6 +7,7 @@ use std::{
 };
 
 use crate::{
+    color::{BOLD, RESET},
     diag::display_safe,
     encoding::{UTF8_BOM, Utf16Decoder, is_utf8_prefix, utf16_bom},
     escape::StripEscapes,
@@ -19,7 +20,7 @@ const PEEK_LEN: usize = 8 * 1024;
 
 /// A problem with one input that does not stop `print_all`, passed to the
 /// caller to show.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum Problem<'a> {
     /// The input could not be opened or read, and was skipped.
     Unreadable(&'a io::Error),
@@ -152,7 +153,7 @@ impl Headers {
             display_safe(path)
         };
         if self.bold {
-            writeln!(out, "\x1b[1m==> {name} <==\x1b[0m")
+            writeln!(out, "{BOLD}==> {name} <=={RESET}")
         } else {
             writeln!(out, "==> {name} <==")
         }
@@ -375,7 +376,7 @@ mod tests {
             Some(Headers::new(false)),
         );
         assert!(!run.input_failed);
-        assert!(run.unreadable.is_empty());
+        assert_eq!(run.unreadable, Vec::<PathBuf>::new());
         assert_eq!(run.out, "==> a <==\none\n\n==> standard input <==\ntwo\n");
     }
 

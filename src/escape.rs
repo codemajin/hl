@@ -66,6 +66,10 @@ fn feed(state: State, b: u8, out: &mut Vec<u8>) -> State {
     match (state, b) {
         (State::Ground | State::EscIntermediate | State::Csi, ESC) => State::Esc,
         (State::Ground, C1_LEAD) => State::C1,
+        #[expect(
+            clippy::match_same_arms,
+            reason = "the ground state keeps every byte; a string keeps only the newline that ends it"
+        )]
         (State::Ground, _) => {
             out.push(b);
             State::Ground

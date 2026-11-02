@@ -20,11 +20,11 @@ use std::{
 };
 
 use anyhow::{Result, anyhow, bail};
-use assets::{CacheReport, ThemeFallback};
+use assets::{CacheReport, DEFAULT_THEME, ThemeFallback};
 use cli::{Args, PagingWhen};
 use config::Config;
 use diag::{describe, describe_error, escape_controls};
-use highlight::{DEFAULT_THEME, Highlighter, Limits, Origin, Syntax, SyntaxMapping, find_language};
+use highlight::{Highlighter, Limits, Origin, Syntax, SyntaxMapping, find_language};
 use lines::{LineHighlight, LineState};
 use pager::Pager;
 use print::{Headers, Input, PrintOutcome, Printer, Problem, TrackedWriter, is_stdin, print_all};
@@ -32,7 +32,7 @@ use syntect::{highlighting::Theme, parsing::SyntaxSet};
 
 fn main() -> ExitCode {
     let args = cli::parse_with(Config::load().as_ref());
-    match run(&args, stdout::check()) {
+    match run(&args, &stdout::check()) {
         Ok(code) => code,
         // A closed pipe (`hl ... | head`) is a normal way to stop reading.
         Err(err) if err.downcast_ref::<io::Error>().is_some_and(is_broken_pipe) => {
@@ -48,8 +48,8 @@ fn main() -> ExitCode {
 
 /// Runs `hl`. `stdout` tells whether stdout is open, and is checked only by
 /// the commands that write to it.
-fn run(args: &Args, stdout: io::Result<()>) -> Result<ExitCode> {
-    if let Some(code) = run_info_command(args, &stdout)? {
+fn run(args: &Args, stdout: &io::Result<()>) -> Result<ExitCode> {
+    if let Some(code) = run_info_command(args, stdout)? {
         return Ok(code);
     }
 
@@ -62,7 +62,7 @@ fn run(args: &Args, stdout: io::Result<()>) -> Result<ExitCode> {
         .then(|| &*Box::leak(Box::new(assets::syntaxes())));
     let printer = build_printer(args, color, syntaxes, || load_theme(&args.theme))?;
     let lines = build_line_state(args, printer.highlighter.as_ref());
-    print_inputs(args, &printer, lines, color, tty, &stdout)
+    print_inputs(args, &printer, lines, color, tty, stdout)
 }
 
 /// Runs the command that prints something other than the inputs
@@ -364,9 +364,9 @@ mod tests {
     }
 
     fn printer(argv: &[&str], color: bool) -> Result<Printer> {
-        let args = args(argv);
-        let syntaxes = args.needs_syntaxes(color).then(syntaxes);
-        build_printer(&args, color, syntaxes, Theme::default)
+        let parsed = args(argv);
+        let syntaxes = parsed.needs_syntaxes(color).then(syntaxes);
+        build_printer(&parsed, color, syntaxes, Theme::default)
     }
 
     fn highlighter() -> Highlighter {

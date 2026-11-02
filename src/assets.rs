@@ -22,8 +22,10 @@ use two_face::theme::LazyThemeSet;
 use crate::{
     config,
     diag::{describe, note, warn},
-    highlight::DEFAULT_THEME,
 };
+
+/// The theme used when none is chosen, or when the one chosen cannot be used.
+pub const DEFAULT_THEME: &str = "base16-ocean.dark";
 
 const SYNTAX_EXTENSION: &str = "sublime-syntax";
 const THEME_EXTENSION: &str = "tmTheme";

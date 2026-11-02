@@ -1,7 +1,6 @@
 use std::io::{self, BufRead, Write};
 
-/// Resets all colors.
-pub const RESET: &str = "\x1b[0m";
+use crate::color::RESET;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Numbering {
@@ -76,8 +75,7 @@ pub struct LineState {
     range: Option<LineRange>,
     highlight: Option<LineHighlight>,
     line_no: u64,
-    /// Lines started in the current input, counted only with a range or
-    /// highlighted lines.
+    /// Lines started in the current input.
     input_line: u64,
     prev_blank: bool,
     /// Whether the current line was started with the highlight background.
@@ -128,14 +126,15 @@ impl LineState {
     /// Called before each input. With a line range, ends a line left
     /// unfinished by the previous input and restarts the counting, so that
     /// the range and the line numbers apply to each input on its own.
-    /// Highlighted lines only restart the counting of the input lines; a
-    /// line left unfinished continues as line 1 of the new input.
+    /// Otherwise only the counting of the input lines restarts, which
+    /// highlighted lines use; a line left unfinished continues as line 1 of
+    /// the new input.
     pub fn start_input(&mut self, out: &mut impl Write) -> io::Result<()> {
         if self.range.is_some() {
             self.separate(out)?;
             self.line_no = 0;
             self.input_line = 0;
-        } else if self.highlight.is_some() {
+        } else {
             self.input_line = u64::from(self.cursor != Cursor::LineStart);
         }
         Ok(())
@@ -167,9 +166,7 @@ impl LineState {
             Numbering::NonBlank => !blank,
         };
         self.highlighted = false;
-        if self.range.is_some() || self.highlight.is_some() {
-            self.input_line += 1;
-        }
+        self.input_line += 1;
         if let Some(range) = self.range {
             // Skipped and squeezed lines are counted too, to keep the
             // numbers of the input.

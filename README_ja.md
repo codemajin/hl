@@ -260,14 +260,14 @@ cargo clippy
 cargo fmt --check   # フォーマットの確認（rustfmt.toml）
 ```
 
-push と pull request のたびに、GitHub Actions が `cargo fmt --check`、`cargo clippy`（警告はエラー扱い）、`cargo test` を実行します。Linux と macOS の両方で、stable と最小対応バージョン（1.88）の Rust を使います。`cat` 互換のオプションについては、期待する出力をテストに直接書いています。それとは別に、GNU coreutils 9.0 以降の `cat`（`gcat` または `cat`）が見つかれば `hl` の出力と比べるテストも動きます。見つからないときは、メッセージを出してスキップします。macOS では `brew install coreutils` で `gcat` が入ります。テストは `HL_*` 環境変数、`HL_CONFIG`、XDG ディレクトリを読まないので、手元の設定や設定ファイル、カスタムシンタックスの影響を受けません。`rustfmt.toml` には nightly でしか効かないオプションがあるため、フォーマットの確認には nightly の rustfmt を使います。手元で揃えるときは `cargo +nightly fmt` を実行してください。clippy は固定した Rust のバージョンで実行します（`.github/workflows/ci.yml` と `release.yml` の `clippy` ジョブ）。新しい Rust のリリースで lint が増えても、それだけで CI が失敗しないようにするためです。バージョンは両方のファイルで手動で上げ、新しく出た警告も同じ変更で直してください。
+push と pull request のたびに、GitHub Actions が `cargo fmt --check`、`cargo clippy`（警告はエラー扱い）、`cargo test` を実行します。Linux と macOS の両方で、stable と最小対応バージョン（1.88）の Rust を使います。`cat` 互換のオプションについては、期待する出力をテストに直接書いています。それとは別に、GNU coreutils 9.0 以降の `cat`（`gcat` または `cat`）が見つかれば `hl` の出力と比べるテストも動きます。見つからないときは、メッセージを出してスキップします。macOS では `brew install coreutils` で `gcat` が入ります。テストは `HL_*` 環境変数、`HL_CONFIG`、XDG ディレクトリを読まないので、手元の設定や設定ファイル、カスタムシンタックスの影響を受けません。`rustfmt.toml` には nightly でしか効かないオプションがあるため、フォーマットの確認には nightly の rustfmt を使います。手元で揃えるときは `cargo +nightly fmt` を実行してください。clippy は固定した Rust のバージョンで実行します（`.github/workflows/ci.yml` と `release.yml` の `clippy` ジョブ）。新しい Rust のリリースで lint が増えても、それだけで CI が失敗しないようにするためです。バージョンは両方のファイルで手動で上げ、新しく出た警告も同じ変更で直してください。`Cargo.toml` の `[lints]` で `clippy::pedantic` の lint も有効にしています。その箇所には合わない lint は、そこで `#[expect(clippy::..., reason = "...")]` を付けて止め、理由を書いてください。
 
 | ファイル | 役割 |
 | --- | --- |
 | `src/main.rs` | エントリポイント。入力を表示しないコマンド（`--list-themes` など）の実行、引数と設定からの Printer と行の状態の組み立て、ページャか標準出力かの選択、エラー処理と終了コード。途中で見つかった問題の扱いもここで決める（`--map-syntax` の未知の言語はエラー、設定ファイルの未知の言語は警告、未知のテーマや壊れたテーマは警告してデフォルトに戻す、`src/print.rs` から届いた入力の問題は警告）。環境変数（`PAGER`、`LESS`、色深度）を読むのはここだけ |
-| `src/assets.rs` | 同梱の構文、設定ディレクトリのカスタム構文・テーマの読み込みと同梱分とのマージ、構文キャッシュ（`--build-cache`/`--clear-cache`） |
+| `src/assets.rs` | デフォルトのテーマ、同梱の構文、設定ディレクトリのカスタム構文・テーマの読み込みと同梱分とのマージ、構文キャッシュ（`--build-cache`/`--clear-cache`） |
 | `src/cli.rs` | コマンドライン引数の定義（clap）と、設定ファイルの適用（オプションのデフォルト値、フラグ、`map-syntax`）。ほかのモジュールは生のフィールドではなく、関連するオプションをまとめるメソッド（`numbering()`、`visibility()`、`limits()` など）で引数を読む |
-| `src/color.rs` | 端末の色深度の判定と 256 色へのフォールバック |
+| `src/color.rs` | 端末の色深度の判定、256 色へのフォールバック、色・太字・リセットのエスケープシーケンス |
 | `src/config.rs` | 設定ファイルの読み込みと、設定・キャッシュディレクトリのパス |
 | `src/diag.rs` | 標準エラー出力への警告・エラーメッセージ。標準エラー出力にはすべてここを通して書くので、`hl: ` の書式は 1 か所で決まる。エラーは原因まで含めて表示する（`パス: 理由`） |
 | `src/encoding.rs` | UTF-8/UTF-16 の BOM 判定と UTF-16 のデコード |

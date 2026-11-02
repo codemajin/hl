@@ -16,10 +16,11 @@ use clap_complete::Shell;
 use toml::Value;
 
 use crate::{
+    assets::DEFAULT_THEME,
     color::Depth,
     config::Config,
     diag::escape_controls,
-    highlight::{DEFAULT_THEME, Limits, Origin, SyntaxMapping},
+    highlight::{Limits, Origin, SyntaxMapping},
     lines::{LineRange, Numbering, Visibility},
 };
 
@@ -802,11 +803,11 @@ mod tests {
     #[test]
     fn config_turns_flags_on() {
         let on = config(
-            r#"
+            r"
             number = true
             squeeze-blank = true
             header = true
-            "#,
+            ",
         );
         let args = args_with(&on, &[]);
         assert_eq!(args.numbering(), Numbering::All);
@@ -822,11 +823,11 @@ mod tests {
     #[test]
     fn no_flags_cancel_the_config() {
         let config = config(
-            r#"
+            r"
             number = true
             squeeze-blank = true
             header = true
-            "#,
+            ",
         );
         let cancelled = args_with(
             &config,

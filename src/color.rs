@@ -1,6 +1,15 @@
 use std::fmt::Write;
 
-use syntect::highlighting::{Color, Style};
+use syntect::{
+    highlighting::{Color, Style},
+    util::as_24_bit_terminal_escaped,
+};
+
+/// Resets all colors and attributes.
+pub const RESET: &str = "\x1b[0m";
+
+/// Turns on bold text.
+pub const BOLD: &str = "\x1b[1m";
 
 /// The color escape sequences the terminal understands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,9 +44,22 @@ pub fn detect(colorterm: Option<&str>, term: Option<&str>, wt_session: bool) -> 
     }
 }
 
+/// `ranges` as foreground escape sequences for `depth`, without the newline,
+/// which is printed after the reset sequence.
+pub fn foreground_escaped(ranges: &[(Style, &str)], depth: Depth) -> String {
+    let mut escaped = match depth {
+        Depth::TrueColor => as_24_bit_terminal_escaped(ranges, false),
+        Depth::Ansi256 => as_256_terminal_escaped(ranges),
+    };
+    if escaped.ends_with('\n') {
+        escaped.pop();
+    }
+    escaped
+}
+
 /// The 256 color counterpart of `syntect::util::as_24_bit_terminal_escaped`
 /// (foreground only).
-pub fn as_256_terminal_escaped(ranges: &[(Style, &str)]) -> String {
+fn as_256_terminal_escaped(ranges: &[(Style, &str)]) -> String {
     let mut s = String::new();
     for (style, text) in ranges {
         let fg = blend(style.foreground, style.background);
@@ -199,5 +221,38 @@ mod tests {
             ..Style::default()
         };
         assert_eq!(as_256_terminal_escaped(&[(style, "x")]), "\x1b[38;5;16mx");
+    }
+
+    fn red() -> Style {
+        Style {
+            foreground: Color {
+                r: 255,
+                g: 0,
+                b: 0,
+                a: 255,
+            },
+            ..Style::default()
+        }
+    }
+
+    #[test]
+    fn foreground_follows_the_depth() {
+        let ranges = [(red(), "x")];
+        assert_eq!(
+            foreground_escaped(&ranges, Depth::TrueColor),
+            "\x1b[38;2;255;0;0mx"
+        );
+        assert_eq!(
+            foreground_escaped(&ranges, Depth::Ansi256),
+            "\x1b[38;5;196mx"
+        );
+    }
+
+    #[test]
+    fn foreground_leaves_out_the_newline() {
+        for depth in [Depth::TrueColor, Depth::Ansi256] {
+            let escaped = foreground_escaped(&[(red(), "x\n")], depth);
+            assert!(escaped.ends_with('x'), "{escaped:?}");
+        }
     }
 }

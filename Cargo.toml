@@ -29,6 +29,9 @@ assert_cmd = "2.2.2"
 predicates = "3.1.4"
 tempfile = "3.27.0"
 
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+
 [profile.release]
 lto = true
 strip = true
