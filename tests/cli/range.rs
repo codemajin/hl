@@ -25,21 +25,17 @@ fn prints_a_line_range() {
     }
 }
 
+/// The ranges themselves are covered by the unit tests of `parse_range` in
+/// `src/cli.rs`; this checks how clap reports a rejected one.
 #[test]
-fn rejects_invalid_line_ranges() {
-    for (range, message) in [
-        ("0", "line numbers start at 1"),
-        ("2:0", "line numbers start at 1"),
-        ("5:3", "'5:3' ends before it starts"),
-        ("a:b", "'a:b' is not a line range"),
-        (":", "':' is not a line range"),
-        ("1-3", "'1-3' is not a line range"),
-    ] {
-        hl().args(["--line-range", range, "Cargo.toml"])
-            .assert()
-            .failure()
-            .stderr(predicate::str::contains(message));
-    }
+fn rejects_an_invalid_line_range_with_status_2() {
+    hl().args(["--line-range", "5:3", "Cargo.toml"])
+        .assert()
+        .code(2)
+        .stdout("")
+        .stderr(predicate::str::contains(
+            "invalid value '5:3' for '--line-range <N:M>': '5:3' ends before it starts",
+        ));
 }
 
 #[test]

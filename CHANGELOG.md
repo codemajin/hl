@@ -31,6 +31,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - With `--header`, a file that does not end with a newline is now followed by the blank line before the next header in every mode. Before, the blank line was missing without options and with `--strip-ansi=always`.
 - An invalid size for `--max-size` or `--max-line-length`, such as `-1`, `1.5K` or `1KB`, is reported as `not a size: use a whole number with an optional K, M or G suffix (e.g. 512K)` instead of a misleading `invalid unit '.5K'`, and a number too large for 64 bits as `too large`.
 - A closed stdout (`hl file >&-`) is reported as `hl: write error: Bad file descriptor` with exit status 1, like `cat`, instead of throwing the output away and exiting with 0.
+- With color, `-r` stops reading an input after the last line of the range, as it already did without color. Before, the lines after it were still read (and highlighted) up to the end of the input when the range ended within the first few hundred lines.
+- A file starting with the UTF-32LE BOM (`FF FE 00 00`) is no longer decoded as UTF-16, which printed NUL characters. Like other UTF-32, it is printed as-is as binary.
+- `-r` and `-H` reject an empty value instead of taking it for the whole input, and a line number with a sign or spaces, such as `+3` or `+2:+3`, which was taken as `3` and `2:3`.
 - A broken syntax cache (`syntaxes.bin`) no longer crashes `hl` (exit status 134 after a huge memory allocation, or 101). It is ignored like an out-of-date cache: the custom syntaxes are merged on the spot, with the reminder to run `hl --build-cache`.
 
 ### Security

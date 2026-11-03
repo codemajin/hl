@@ -86,16 +86,18 @@ pub fn colored(cmd: &mut Command) -> Vec<u8> {
     stdout(cmd.args(["--color", "always"]))
 }
 
-/// Removes SGR escape sequences (`ESC [ ... m`).
+/// Removes SGR escape sequences (`ESC [ ... m`). Panics on one without
+/// its `m`, which `hl` never writes, rather than dropping the rest.
 pub fn strip_ansi(bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i..].starts_with(b"\x1b[") {
-            match bytes[i..].iter().position(|&b| b == b'm') {
-                Some(end) => i += end + 1,
-                None => break,
-            }
+            let end = bytes[i..]
+                .iter()
+                .position(|&b| b == b'm')
+                .unwrap_or_else(|| panic!("unterminated CSI at byte {i}"));
+            i += end + 1;
         } else {
             out.push(bytes[i]);
             i += 1;

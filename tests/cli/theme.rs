@@ -4,14 +4,19 @@ use std::fs;
 
 use predicates::prelude::*;
 
-use crate::common::{colored, hl};
+use crate::common::{colored, hl, strip_ansi};
 
 #[test]
-fn theme_has_no_short_option() {
-    hl().args(["--color", "always", "--theme", "Nord", "Cargo.toml"])
-        .assert()
-        .success();
-    // `-t` is cat's -vT now, so "Nord" is read as a file name.
+fn theme_long_option_selects_the_theme() {
+    let default = colored(hl().arg("Cargo.toml"));
+    let nord = colored(hl().args(["--theme", "Nord", "Cargo.toml"]));
+    assert_ne!(nord, default, "--theme Nord should change the colors");
+    assert_eq!(strip_ansi(&nord), fs::read("Cargo.toml").unwrap());
+}
+
+#[test]
+fn short_t_is_show_tabs_not_theme() {
+    // `-t` is cat's -vT, so "Nord" is read as a file name.
     hl().args(["-t", "Nord"])
         .assert()
         .failure()

@@ -185,7 +185,8 @@ impl Highlighter {
 
     /// Writes `reader` highlighted with `syntax`, one line at a time. Lines
     /// that are not printed (outside the line range, squeezed) are still
-    /// highlighted, so that the printed ones get the right colors.
+    /// highlighted, so that the printed ones get the right colors. Nothing
+    /// is read past the end of the line range.
     ///
     /// The lines are read and printed here, and highlighted on another
     /// thread a few batches ahead (see `Pipeline`).
@@ -207,17 +208,26 @@ impl Highlighter {
     ) -> io::Result<()> {
         let mut pipeline = Pipeline::new(self.spawn_worker(syntax)?, on_give_up);
         let max_line = limits.max_line.unwrap_or(u64::MAX);
+        let range_end = lines.range_end();
         let mut total: u64 = 0;
+        // Whole lines read from this input. The lines wait in the pipeline
+        // before they are printed, so `lines.is_done()` comes too late to
+        // keep the lines past the range from being read.
+        let mut read_lines: u64 = 0;
         loop {
             if lines.is_done() {
                 return Ok(());
             }
             let mut buf = Vec::new();
-            // Reading at most one byte past the limit keeps a huge line out of memory.
-            let n = reader
-                .by_ref()
-                .take(max_line.saturating_add(1))
-                .read_until(b'\n', &mut buf)?;
+            let n = if range_end.is_some_and(|end| read_lines >= end) {
+                0
+            } else {
+                // Reading at most one byte past the limit keeps a huge line out of memory.
+                reader
+                    .by_ref()
+                    .take(max_line.saturating_add(1))
+                    .read_until(b'\n', &mut buf)?
+            };
             if n == 0 {
                 return match pipeline.finish(out, lines)? {
                     Flow::Continue | Flow::Done => Ok(()),
@@ -226,6 +236,7 @@ impl Highlighter {
             }
             let n = u64::try_from(n).expect("a line read into memory fits in u64");
             total += n;
+            read_lines += u64::from(buf.ends_with(b"\n"));
             let too_long = !buf.ends_with(b"\n") && n > max_line;
             // Input that is not UTF-8 (Shift_JIS, ...) is copied unchanged
             // rather than replacing its bytes with U+FFFD.
@@ -793,6 +804,30 @@ mod tests {
         let mut lines = LineState::new(Numbering::All, false, Some(range));
         let out = write(b"a\nb\nc\n", &mut lines, NO_LIMITS, Depth::TrueColor);
         assert_eq!(strip_ansi(&out), b"     2\tb\n");
+    }
+
+    #[test]
+    fn stops_reading_after_the_line_range() {
+        let range = LineRange {
+            start: 1,
+            end: Some(2),
+        };
+        let mut lines = LineState::new(Numbering::None, false, Some(range));
+        let syntaxes = syntaxes();
+        let hl = highlighter(syntaxes, &[]);
+        let mut reader = Cursor::new(&b"a\nb\nc\nd\n"[..]);
+        let mut out = Vec::new();
+        hl.write(
+            &mut reader,
+            &mut |reason| panic!("gave up: {reason}"),
+            &mut out,
+            syntaxes.find_syntax_plain_text(),
+            &mut lines,
+            NO_LIMITS,
+        )
+        .unwrap();
+        assert_eq!(strip_ansi(&out), b"a\nb\n");
+        assert_eq!(reader.position(), 4, "read past the range");
     }
 
     fn max_line(max: u64) -> Limits {

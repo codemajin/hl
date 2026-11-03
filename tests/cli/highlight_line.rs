@@ -123,16 +123,15 @@ fn highlights_lines_printed_without_syntax_highlighting() {
     assert_eq!(lines[2..].concat(), b"3\n4\n5\n");
 }
 
+/// `-H` takes the same values as `-r`, which the unit tests of `parse_range`
+/// in `src/cli.rs` cover; this checks that `-H` uses it too.
 #[test]
-fn rejects_invalid_highlighted_lines() {
-    for (range, message) in [
-        ("0", "line numbers start at 1"),
-        ("3:1", "'3:1' ends before it starts"),
-        ("x", "'x' is not a line range"),
-    ] {
-        hl().args(["--highlight-line", range, "Cargo.toml"])
-            .assert()
-            .failure()
-            .stderr(predicate::str::contains(message));
-    }
+fn rejects_an_invalid_highlighted_line_with_status_2() {
+    hl().args(["--highlight-line", "+2", "Cargo.toml"])
+        .assert()
+        .code(2)
+        .stdout("")
+        .stderr(predicate::str::contains(
+            "invalid value '+2' for '--highlight-line <N:M>': '+2' is not a line range",
+        ));
 }

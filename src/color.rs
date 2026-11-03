@@ -129,7 +129,7 @@ mod tests {
 
     #[test]
     fn detects_truecolor_from_colorterm() {
-        for value in ["truecolor", "24bit", "TrueColor"] {
+        for value in ["truecolor", "24bit", "TrueColor", "24BIT"] {
             assert_eq!(
                 detect(Some(value), Some("xterm-256color"), false),
                 Depth::TrueColor
@@ -139,13 +139,41 @@ mod tests {
 
     #[test]
     fn other_colorterm_values_are_not_truecolor() {
-        assert_eq!(detect(Some("yes"), None, false), Depth::Ansi256);
-        assert_eq!(detect(Some(""), None, false), Depth::Ansi256);
+        // The value must match exactly, apart from case: spaces are not trimmed.
+        for value in [
+            "yes",
+            "",
+            "truecolor ",
+            " 24bit",
+            "true color",
+            "truecolors",
+        ] {
+            assert_eq!(
+                detect(Some(value), None, false),
+                Depth::Ansi256,
+                "{value:?}"
+            );
+        }
     }
 
     #[test]
     fn detects_truecolor_from_direct_term() {
-        assert_eq!(detect(None, Some("xterm-direct"), false), Depth::TrueColor);
+        for term in ["xterm-direct", "kitty-direct", "-direct"] {
+            assert_eq!(detect(None, Some(term), false), Depth::TrueColor, "{term}");
+        }
+    }
+
+    #[test]
+    fn direct_term_is_case_sensitive() {
+        // terminfo names are case-sensitive, so this is not a `-direct` entry.
+        for term in [
+            "xterm-DIRECT",
+            "xterm-Direct",
+            "xterm-direct ",
+            "xterm-directx",
+        ] {
+            assert_eq!(detect(None, Some(term), false), Depth::Ansi256, "{term:?}");
+        }
     }
 
     #[test]

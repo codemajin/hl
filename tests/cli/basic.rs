@@ -52,11 +52,19 @@ fn reads_stdin() {
 
 #[test]
 fn highlights_stdin_with_explicit_language() {
-    let plain = colored(hl().write_stdin("fn main() {}\n"));
-    let rust = colored(hl().args(["-l", "rust"]).write_stdin("fn main() {}\n"));
+    let source = "fn main() {}\n";
+    let dir = tempdir();
+    let file = files(dir.path(), &[("main.rs", source)]);
+    let expected = colored(hl().args(&file));
+    let rust = colored(hl().args(["-l", "rust"]).write_stdin(source));
+    assert_eq!(
+        rust, expected,
+        "-l rust should highlight stdin like a .rs file"
+    );
+    let plain = colored(hl().write_stdin(source));
     assert_ne!(
-        plain, rust,
-        "rust highlighting should differ from plain text"
+        plain, expected,
+        "stdin should not be detected as Rust without -l"
     );
 }
 

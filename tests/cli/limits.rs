@@ -148,33 +148,17 @@ fn keeps_numbering_and_squeezing_across_the_switch() {
     }
 }
 
+/// The sizes themselves are covered by the unit tests of `parse_size` in
+/// `src/cli.rs`; this checks how clap reports a rejected one.
 #[test]
-fn parses_size_units() {
-    for size in ["1024", "1K", "2m", "1G"] {
-        hl().args(["--max-size", size, "Cargo.toml"])
-            .assert()
-            .success();
-    }
-    let not_a_size = "not a size: use a whole number with an optional K, M or G suffix";
-    for (size, message) in [
-        ("abc", not_a_size),
-        ("1T", not_a_size),
-        ("-1", not_a_size),
-        ("1.5K", not_a_size),
-        ("K", not_a_size),
-        ("1KB", not_a_size),
-        ("", not_a_size),
-        ("99999999999G", "too large"),
-        ("99999999999999999999", "too large"),
-    ] {
-        hl().arg(format!("--max-size={size}"))
-            .arg("Cargo.toml")
-            .assert()
-            .code(2)
-            .stderr(predicate::str::contains(format!(
-                "invalid value '{size}' for '--max-size <SIZE>': {message}"
-            )));
-    }
+fn rejects_an_invalid_size_with_status_2() {
+    hl().args(["--max-size=1.5K", "Cargo.toml"])
+        .assert()
+        .code(2)
+        .stdout("")
+        .stderr(predicate::str::contains(
+            "invalid value '1.5K' for '--max-size <SIZE>': not a size: use a whole number with an optional K, M or G suffix",
+        ));
 }
 
 #[test]

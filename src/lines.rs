@@ -117,10 +117,12 @@ impl LineState {
     /// it does not need to be read.
     pub fn is_done(&self) -> bool {
         self.cursor == Cursor::LineStart
-            && self
-                .range
-                .and_then(|r| r.end)
-                .is_some_and(|end| self.input_line >= end)
+            && self.range_end().is_some_and(|end| self.input_line >= end)
+    }
+
+    /// The last line of each input to print, if the line range has an end.
+    pub fn range_end(&self) -> Option<u64> {
+        self.range.and_then(|r| r.end)
     }
 
     /// Called before each input. With a line range, ends a line left

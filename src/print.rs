@@ -281,10 +281,12 @@ impl Printer {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::{io::Cursor, sync::LazyLock};
+
+    use syntect::{highlighting::Theme, parsing::SyntaxSet};
 
     use super::*;
-    use crate::lines::Numbering;
+    use crate::{color::Depth, encoding::Endian, lines::Numbering};
 
     fn plain() -> Printer {
         Printer {
@@ -422,5 +424,212 @@ mod tests {
         assert!(write_error.is_some_and(|e| e.kind() == io::ErrorKind::BrokenPipe));
         assert!(out.failed());
         assert_eq!(opened, 1);
+    }
+
+    /// The bundled syntaxes only, so the user's custom ones stay out.
+    fn syntaxes() -> &'static SyntaxSet {
+        static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(crate::assets::bundled_syntaxes);
+        &SYNTAXES
+    }
+
+    /// A printer that colors the output.
+    fn colored() -> Printer {
+        Printer {
+            highlighter: Some(Highlighter::new(
+                syntaxes(),
+                Theme::default(),
+                Depth::TrueColor,
+                Vec::new(),
+            )),
+            ..plain()
+        }
+    }
+
+    fn stripping(printer: Printer) -> Printer {
+        Printer {
+            strip: true,
+            ..printer
+        }
+    }
+
+    /// The output of `printer` for `bytes` read from `path`, which must
+    /// cause no problem.
+    fn print(printer: &Printer, bytes: &[u8], path: &str, too_large: bool) -> Vec<u8> {
+        let path = Path::new(path);
+        let input = Input {
+            source: Box::new(Cursor::new(bytes.to_vec())),
+            path: Some(path),
+            too_large,
+        };
+        let mut out = Vec::new();
+        let mut lines = LineState::new(Numbering::None, false, None);
+        let mut report = |path: &Path, problem: Problem| panic!("{}: {problem:?}", path.display());
+        printer
+            .print(input, &mut out, &mut lines, &mut report)
+            .unwrap();
+        out
+    }
+
+    /// Removes SGR escape sequences, which must be terminated.
+    fn strip_ansi(bytes: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut rest = bytes;
+        while let Some((&b, tail)) = rest.split_first() {
+            if let Some(csi) = rest.strip_prefix(b"\x1b[") {
+                let end = csi
+                    .iter()
+                    .position(|&c| c == b'm')
+                    .unwrap_or_else(|| panic!("unterminated CSI in {bytes:?}"));
+                rest = &csi[end + 1..];
+            } else {
+                out.push(b);
+                rest = tail;
+            }
+        }
+        out
+    }
+
+    fn has_escape(bytes: &[u8]) -> bool {
+        bytes.contains(&0x1b)
+    }
+
+    fn utf16(text: &str, endian: Endian) -> Vec<u8> {
+        std::iter::once(0xFEFF)
+            .chain(text.encode_utf16())
+            .flat_map(|u| match endian {
+                Endian::Little => u.to_le_bytes(),
+                Endian::Big => u.to_be_bytes(),
+            })
+            .collect()
+    }
+
+    /// Text of `len` bytes, in lines of `x`, followed by `tail`.
+    fn padded(len: usize, tail: &[u8]) -> Vec<u8> {
+        let mut bytes: Vec<u8> = (0..len)
+            .map(|i| if i % 64 == 63 { b'\n' } else { b'x' })
+            .collect();
+        bytes.extend_from_slice(tail);
+        bytes.extend_from_slice(b"\nfn main() {}\n");
+        bytes
+    }
+
+    const RUST: &[u8] = b"fn main() {}\n";
+
+    #[test]
+    fn copies_the_input_without_color_or_stripping() {
+        let bytes = b"a\x1b[31mb\n\x00\xff";
+        assert_eq!(print(&plain(), bytes, "a.rs", false), bytes);
+    }
+
+    #[test]
+    fn highlights_utf8() {
+        let out = print(&colored(), RUST, "a.rs", false);
+        assert!(has_escape(&out), "{out:?}");
+        assert_eq!(strip_ansi(&out), RUST);
+    }
+
+    #[test]
+    fn copies_input_with_a_nul_in_the_first_8_kb() {
+        for at in [0, PEEK_LEN - 1] {
+            let bytes = padded(at, b"\0");
+            assert_eq!(
+                print(&colored(), &bytes, "a.rs", false),
+                bytes,
+                "NUL at {at}"
+            );
+        }
+    }
+
+    #[test]
+    fn highlights_input_with_a_nul_past_the_first_8_kb() {
+        let bytes = padded(PEEK_LEN, b"\0");
+        let out = print(&colored(), &bytes, "a.rs", false);
+        assert!(has_escape(&out));
+        assert_eq!(strip_ansi(&out), bytes);
+    }
+
+    #[test]
+    fn copies_input_that_is_not_utf8_in_the_first_8_kb() {
+        for at in [0, PEEK_LEN - 1] {
+            let bytes = padded(at, b"\xff");
+            assert_eq!(
+                print(&colored(), &bytes, "a.rs", false),
+                bytes,
+                "\\xff at {at}"
+            );
+        }
+    }
+
+    #[test]
+    fn highlights_input_with_a_character_cut_off_by_the_first_8_kb() {
+        // "日" takes 3 bytes, so the first 8 KB end after 2 of them.
+        let bytes = padded(PEEK_LEN - 2, "日".as_bytes());
+        let out = print(&colored(), &bytes, "a.rs", false);
+        assert!(has_escape(&out));
+        assert_eq!(strip_ansi(&out), bytes);
+    }
+
+    #[test]
+    fn copies_input_that_is_too_large() {
+        assert_eq!(print(&colored(), RUST, "a.rs", true), RUST);
+    }
+
+    #[test]
+    fn highlights_utf16_as_utf8() {
+        let expected = print(&colored(), RUST, "a.rs", false);
+        for endian in [Endian::Little, Endian::Big] {
+            let text = std::str::from_utf8(RUST).unwrap();
+            let out = print(&colored(), &utf16(text, endian), "a.rs", false);
+            assert_eq!(out, expected, "{endian:?}");
+        }
+    }
+
+    #[test]
+    fn converts_utf16_to_strip_it_without_color() {
+        let bytes = utf16("a\x1b[31mb\n", Endian::Little);
+        assert_eq!(print(&stripping(plain()), &bytes, "a.txt", false), b"ab\n");
+    }
+
+    #[test]
+    fn copies_utf16_without_color_or_stripping() {
+        let bytes = utf16("a\n", Endian::Big);
+        assert_eq!(print(&plain(), &bytes, "a.txt", false), bytes);
+    }
+
+    #[test]
+    fn prints_nothing_for_a_utf16_bom_alone() {
+        for printer in [colored(), stripping(plain())] {
+            assert_eq!(print(&printer, b"\xFF\xFE", "a.txt", false), b"");
+        }
+    }
+
+    #[test]
+    fn copies_utf32_as_binary() {
+        let bytes = b"\xFF\xFE\x00\x00a\x00\x00\x00\n\x00\x00\x00";
+        assert_eq!(print(&colored(), bytes, "a.txt", false), bytes);
+    }
+
+    #[test]
+    fn strips_escapes_from_plain_and_highlighted_output() {
+        let text = b"fn \x1b]0;title\x07main() {}\x1b[31m\n";
+        let binary = b"\x00\x1b[31mx\n";
+        assert_eq!(print(&stripping(plain()), text, "a.rs", false), RUST);
+        assert_eq!(
+            print(&stripping(colored()), binary, "a.bin", false),
+            b"\x00x\n"
+        );
+        let out = print(&stripping(colored()), text, "a.rs", false);
+        assert_eq!(out, print(&colored(), RUST, "a.rs", false));
+    }
+
+    #[test]
+    fn forced_syntax_beats_the_path() {
+        let rust = print(&colored(), RUST, "a.rs", false);
+        assert_ne!(print(&colored(), RUST, "a.txt", false), rust);
+        let forced = Printer {
+            forced: syntaxes().find_syntax_by_extension("rs"),
+            ..colored()
+        };
+        assert_eq!(print(&forced, RUST, "a.txt", false), rust);
     }
 }

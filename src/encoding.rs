@@ -2,6 +2,9 @@ use std::io::{self, Read};
 
 pub const UTF8_BOM: &[u8] = b"\xEF\xBB\xBF";
 
+/// Starts with the UTF-16LE BOM, so it must be checked first.
+const UTF32LE_BOM: &[u8] = b"\xFF\xFE\x00\x00";
+
 /// How many bytes `Utf16Decoder` reads from the inner reader at a time.
 const CHUNK: usize = 64 * 1024;
 
@@ -13,8 +16,14 @@ pub enum Endian {
 }
 
 /// The byte order given by a UTF-16 BOM at the start of `head`.
+///
+/// `FF FE 00 00` is the UTF-32LE BOM, which is not supported: it is not
+/// taken for UTF-16, so the input, which contains NULs, is printed as binary.
+/// A UTF-16LE input starting with U+0000 is treated the same way.
 pub fn utf16_bom(head: &[u8]) -> Option<Endian> {
-    if head.starts_with(b"\xFF\xFE") {
+    if head.starts_with(UTF32LE_BOM) {
+        None
+    } else if head.starts_with(b"\xFF\xFE") {
         Some(Endian::Little)
     } else if head.starts_with(b"\xFE\xFF") {
         Some(Endian::Big)
@@ -178,5 +187,51 @@ mod tests {
         let mut bytes = 0xDE00u16.to_le_bytes().to_vec();
         bytes.extend(utf16("a", Endian::Little));
         assert_eq!(decode(&bytes[..], Endian::Little), "\u{FFFD}a");
+    }
+
+    #[test]
+    fn accepts_utf8_cut_off_at_the_end() {
+        for (bytes, expected) in [
+            (&b""[..], true),
+            (b"abc", true),
+            ("日".as_bytes(), true),
+            (&"日".as_bytes()[..1], true),
+            (&"日".as_bytes()[..2], true),
+            (&"a😀".as_bytes()[..4], true),
+            (b"\xff", false),
+            // Cut off, but not at the end.
+            (&[&"日".as_bytes()[..2], b"a"].concat(), false),
+            // A lead byte that no character starts with is invalid, not cut off.
+            (b"a\xf8", false),
+        ] {
+            assert_eq!(is_utf8_prefix(bytes), expected, "{bytes:?}");
+        }
+    }
+
+    #[test]
+    fn reads_the_utf16_bom() {
+        for (head, expected) in [
+            (&b"\xFF\xFE"[..], Some(Endian::Little)),
+            (b"\xFF\xFEa\x00", Some(Endian::Little)),
+            (b"\xFE\xFF", Some(Endian::Big)),
+            (b"\xFE\xFF\x00a", Some(Endian::Big)),
+            // Too short to tell yet, so taken for UTF-16LE.
+            (b"\xFF\xFE\x00", Some(Endian::Little)),
+            (b"\xFF\xFE\x00\x00", None),
+            (b"\xFF\xFE\x00\x00a\x00\x00\x00", None),
+            (b"\x00\x00\xFE\xFF", None),
+            (b"\xFF", None),
+            (b"\xFE", None),
+            (b"", None),
+            (UTF8_BOM, None),
+            (b"\xFE\xFE", None),
+        ] {
+            assert_eq!(utf16_bom(head), expected, "{head:?}");
+        }
+    }
+
+    #[test]
+    fn decodes_nothing_from_empty_input() {
+        assert_eq!(decode(&b""[..], Endian::Little), "");
     }
 }

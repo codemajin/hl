@@ -621,10 +621,14 @@ fn parse_size(s: &str) -> Result<u64, String> {
         .ok_or_else(|| format!("too large (at most {}G)", u64::MAX >> 30))
 }
 
-/// Parses a line range such as `120:160`, `120:`, `:160` or `120`.
+/// Parses a line range such as `120:160`, `120:`, `:160` or `120`. The line
+/// numbers are written in ASCII digits only, so signs such as `+3` and
+/// spaces are rejected.
 fn parse_range(s: &str) -> Result<LineRange, String> {
     let invalid = || format!("'{s}' is not a line range (e.g. 120:160)");
     let line = |n: &str| match n.parse() {
+        // `u64::from_str` takes a leading `+`, which is not a line number.
+        _ if !n.bytes().all(|b| b.is_ascii_digit()) => Err(invalid()),
         Ok(0) => Err("line numbers start at 1".to_string()),
         Ok(n) => Ok(n),
         Err(_) => Err(invalid()),
@@ -632,6 +636,7 @@ fn parse_range(s: &str) -> Result<LineRange, String> {
     let (start, end) = match s.split_once(':') {
         Some(("", "")) => return Err(invalid()),
         Some(bounds) => bounds,
+        None if s.is_empty() => return Err(invalid()),
         None => (s, s),
     };
     let start = if start.is_empty() { 1 } else { line(start)? };
@@ -951,5 +956,101 @@ mod tests {
         assert_eq!(classify("pager"), None);
         // Keys are the long names, not the clap ids.
         assert_eq!(classify("max_size"), None);
+    }
+
+    /// The expected result of a parser: the value, or a part of the message.
+    #[derive(Debug)]
+    enum Expect<T> {
+        Value(T),
+        Error(&'static str),
+    }
+
+    fn check<T: PartialEq + std::fmt::Debug>(
+        parse: fn(&str) -> Result<T, String>,
+        cases: &[(&str, Expect<T>)],
+    ) {
+        for (input, expected) in cases {
+            match (parse(input), expected) {
+                (Ok(value), Expect::Value(want)) => assert_eq!(&value, want, "{input:?}"),
+                (Err(message), Expect::Error(want)) => {
+                    assert!(message.contains(want), "{input:?}: {message:?}");
+                }
+                (result, _) => panic!("{input:?}: expected {expected:?}, got {result:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn parses_sizes() {
+        use Expect::{Error, Value};
+        const NOT_A_SIZE: &str =
+            "not a size: use a whole number with an optional K, M or G suffix (e.g. 512K)";
+        let max_g = u64::MAX >> 30;
+        check(
+            parse_size,
+            &[
+                ("0", Value(0)),
+                ("1024", Value(1024)),
+                ("1k", Value(1024)),
+                ("1K", Value(1024)),
+                ("2m", Value(2 << 20)),
+                ("1G", Value(1 << 30)),
+                ("0K", Value(0)),
+                ("18446744073709551615", Value(u64::MAX)),
+                ("17179869183G", Value(max_g << 30)),
+                ("17179869184G", Error("too large (at most 17179869183G)")),
+                (
+                    "18446744073709551616",
+                    Error("too large (at most 17179869183G)"),
+                ),
+                ("", Error(NOT_A_SIZE)),
+                ("K", Error(NOT_A_SIZE)),
+                ("1KB", Error(NOT_A_SIZE)),
+                ("1T", Error(NOT_A_SIZE)),
+                ("1.5K", Error(NOT_A_SIZE)),
+                ("-1", Error(NOT_A_SIZE)),
+                ("+1", Error(NOT_A_SIZE)),
+                (" 1K", Error(NOT_A_SIZE)),
+                ("1K ", Error(NOT_A_SIZE)),
+                ("1 K", Error(NOT_A_SIZE)),
+            ],
+        );
+    }
+
+    #[test]
+    fn parses_line_ranges() {
+        use Expect::{Error, Value};
+        const START_AT_1: &str = "line numbers start at 1";
+        let range = |start, end| Value(LineRange { start, end });
+        check(
+            parse_range,
+            &[
+                ("3", range(3, Some(3))),
+                ("2:5", range(2, Some(5))),
+                ("2:2", range(2, Some(2))),
+                ("2:", range(2, None)),
+                (":5", range(1, Some(5))),
+                ("18446744073709551615", range(u64::MAX, Some(u64::MAX))),
+                ("0", Error(START_AT_1)),
+                (":0", Error(START_AT_1)),
+                ("2:0", Error(START_AT_1)),
+                ("0:", Error(START_AT_1)),
+                ("5:3", Error("'5:3' ends before it starts")),
+                ("", Error("'' is not a line range (e.g. 120:160)")),
+                (":", Error("':' is not a line range")),
+                ("a:b", Error("'a:b' is not a line range")),
+                ("1-3", Error("'1-3' is not a line range")),
+                ("1:2:3", Error("'1:2:3' is not a line range")),
+                ("+3", Error("'+3' is not a line range")),
+                ("+2:+3", Error("'+2:+3' is not a line range")),
+                ("-1", Error("'-1' is not a line range")),
+                (" 3", Error("' 3' is not a line range")),
+                ("3 ", Error("'3 ' is not a line range")),
+                (
+                    "18446744073709551616",
+                    Error("'18446744073709551616' is not a line range"),
+                ),
+            ],
+        );
     }
 }
