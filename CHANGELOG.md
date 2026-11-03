@@ -17,7 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 
 - When output is colored, escape sequences in the input (colors, OSC, ...) are removed by default, so that they no longer break the highlighting or control the terminal. Uncolored output is unchanged.
-- The removal also covers the C1 control characters encoded in UTF-8 (U+0080–U+009F, such as the 8-bit CSI and OSC), and UTF-16 input, which is converted to UTF-8 for it even when it is not highlighted (over `--max-size`, or with `--strip-ansi=always` and no color).
+- The removal also covers the C1 control characters encoded in UTF-8 (U+0080–U+009F, such as the 8-bit CSI and OSC), including one formed when removing a sequence leaves a stray `0xC2` byte next to the byte after it, and UTF-16 input, which is converted to UTF-8 for it even when it is not highlighted (over `--max-size`, or with `--strip-ansi=always` and no color).
 - An invalid value in `HL_MAX_SIZE`, `HL_MAX_LINE_LENGTH` or `HL_COLOR_DEPTH` is reported by the name of the variable, such as `error: invalid value 'abc' for HL_MAX_SIZE: ...`, instead of the option the user did not write. It is still an error with exit status 2. The README now describes this and what exit statuses 0, 1 and 2 mean.
 
 ### Fixed

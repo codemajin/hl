@@ -654,6 +654,8 @@ fn parse_range(s: &str) -> Result<LineRange, String> {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     /// Parses `argv`. Like `args_with`, it ignores the `HL_*` variables, so
@@ -1053,5 +1055,43 @@ mod tests {
                 ),
             ],
         );
+    }
+
+    proptest! {
+        #[test]
+        fn parse_size_and_parse_range_do_not_panic(s in any::<String>()) {
+            let _ = parse_size(&s);
+            let _ = parse_range(&s);
+        }
+
+        #[test]
+        fn parse_size_takes_the_values_that_fit_in_64_bits(
+            digits in "[0-9]{1,24}",
+            unit in "[kKmMgG]?",
+        ) {
+            let shift = match unit.to_ascii_lowercase().as_str() {
+                "" => 0,
+                "k" => 10,
+                "m" => 20,
+                _ => 30,
+            };
+            let value = digits
+                .parse::<u128>()
+                .unwrap()
+                .checked_mul(1 << shift)
+                .and_then(|n| u64::try_from(n).ok());
+            prop_assert_eq!(parse_size(&format!("{digits}{unit}")).ok(), value);
+        }
+
+        #[test]
+        fn parse_range_returns_a_range_in_order(
+            s in "[0-9+: -]{0,12}|[0-9]{0,21}:[0-9]{0,21}",
+        ) {
+            if let Ok(range) = parse_range(&s) {
+                let LineRange { start, end } = range;
+                prop_assert!(start >= 1, "{:?} -> {:?}", s, range);
+                prop_assert!(end.is_none_or(|end| end >= start), "{:?} -> {:?}", s, range);
+            }
+        }
     }
 }

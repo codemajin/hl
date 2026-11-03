@@ -41,12 +41,38 @@ enum State {
 /// of the input is dropped. Only ASCII bytes and whole C1 characters are
 /// removed, apart from the whole content of a string, so valid UTF-8 stays
 /// valid.
+///
+/// A lone `0xC2`, which is not valid UTF-8, is kept. When a sequence removed
+/// after it would leave it next to a byte in `0x80..=0x9F`, the two would make
+/// a C1 control, so that byte is taken as one: it is removed, or starts a
+/// sequence.
 pub struct StripEscapes<R> {
     inner: R,
     state: State,
     /// Filtered bytes not returned yet, from `pos` on.
-    buf: Vec<u8>,
+    out: Output,
     pos: usize,
+}
+
+/// The filtered bytes, and whether the last byte kept is a lone `0xC2`.
+#[derive(Default)]
+struct Output {
+    bytes: Vec<u8>,
+    /// The last byte kept, which may already have been returned, is a
+    /// `0xC2` that did not start a C1 control.
+    lone_lead: bool,
+}
+
+impl Output {
+    fn push(&mut self, b: u8) {
+        self.bytes.push(b);
+        self.lone_lead = false;
+    }
+
+    fn push_lone_lead(&mut self) {
+        self.bytes.push(C1_LEAD);
+        self.lone_lead = true;
+    }
 }
 
 impl<R: BufRead> StripEscapes<R> {
@@ -54,7 +80,7 @@ impl<R: BufRead> StripEscapes<R> {
         Self {
             inner,
             state: State::Ground,
-            buf: Vec::new(),
+            out: Output::default(),
             pos: 0,
         }
     }
@@ -62,10 +88,12 @@ impl<R: BufRead> StripEscapes<R> {
 
 /// Feeds `b` to the state machine in `state`, keeping it in `out` if it is
 /// not part of a sequence, and returns the next state.
-fn feed(state: State, b: u8, out: &mut Vec<u8>) -> State {
+fn feed(state: State, b: u8, out: &mut Output) -> State {
     match (state, b) {
         (State::Ground | State::EscIntermediate | State::Csi, ESC) => State::Esc,
         (State::Ground, C1_LEAD) => State::C1,
+        // With the lone 0xC2 kept before it, this byte makes a C1 control.
+        (State::Ground, 0x80..=0x9f) if out.lone_lead => after_c1_lead(b, out),
         #[expect(
             clippy::match_same_arms,
             reason = "the ground state keeps every byte; a string keeps only the newline that ends it"
@@ -94,7 +122,7 @@ fn feed(state: State, b: u8, out: &mut Vec<u8>) -> State {
 
 /// The state after `0xC2 b` outside a string. A C1 control is dropped, and
 /// any other character is kept.
-fn after_c1_lead(b: u8, out: &mut Vec<u8>) -> State {
+fn after_c1_lead(b: u8, out: &mut Output) -> State {
     match b {
         // CSI
         0x9b => State::Csi,
@@ -102,7 +130,7 @@ fn after_c1_lead(b: u8, out: &mut Vec<u8>) -> State {
         0x90 | 0x98 | 0x9d | 0x9e | 0x9f => State::Str,
         0x80..=0x9f => State::Ground,
         _ => {
-            out.push(C1_LEAD);
+            out.push_lone_lead();
             feed(State::Ground, b, out)
         }
     }
@@ -110,7 +138,7 @@ fn after_c1_lead(b: u8, out: &mut Vec<u8>) -> State {
 
 /// The state after `ESC b`. Inside a string, anything but `\` ends the
 /// string and starts a new sequence, as with xterm.
-fn after_esc(state: State, b: u8, out: &mut Vec<u8>) -> State {
+fn after_esc(state: State, b: u8, out: &mut Output) -> State {
     match b {
         b'\\' if state == State::StrEsc => State::Ground,
         b'[' => State::Csi,
@@ -137,30 +165,30 @@ impl<R: BufRead> BufRead for StripEscapes<R> {
     fn fill_buf(&mut self) -> io::Result<&[u8]> {
         // A chunk can be all escape sequences, so read until something is
         // left or the input ends.
-        while self.pos == self.buf.len() {
-            self.buf.clear();
+        while self.pos == self.out.bytes.len() {
+            self.out.bytes.clear();
             self.pos = 0;
             let chunk = self.inner.fill_buf()?;
             if chunk.is_empty() {
                 // A lone 0xC2 is not a sequence, so it is kept like the
                 // other bytes that are not valid UTF-8.
                 if self.state == State::C1 {
-                    self.buf.push(C1_LEAD);
+                    self.out.push_lone_lead();
                     self.state = State::Ground;
                 }
                 break;
             }
             for &b in chunk {
-                self.state = feed(self.state, b, &mut self.buf);
+                self.state = feed(self.state, b, &mut self.out);
             }
             let n = chunk.len();
             self.inner.consume(n);
         }
-        Ok(&self.buf[self.pos..])
+        Ok(&self.out.bytes[self.pos..])
     }
 
     fn consume(&mut self, amt: usize) {
-        self.pos = (self.pos + amt).min(self.buf.len());
+        self.pos = (self.pos + amt).min(self.out.bytes.len());
     }
 }
 
@@ -168,19 +196,10 @@ impl<R: BufRead> BufRead for StripEscapes<R> {
 mod tests {
     use std::io::BufReader;
 
+    use proptest::{collection::vec, prelude::*};
+
     use super::*;
-
-    /// Returns one byte per `read`, so every sequence is split across reads.
-    struct OneByte<'a>(&'a [u8]);
-
-    impl Read for OneByte<'_> {
-        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-            let n = self.0.len().min(1).min(buf.len());
-            buf[..n].copy_from_slice(&self.0[..n]);
-            self.0 = &self.0[n..];
-            Ok(n)
-        }
-    }
+    use crate::test_support::{Chunked, chunk_sizes};
 
     fn strip(input: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
@@ -192,7 +211,7 @@ mod tests {
     fn assert_strips(input: &[u8], expected: &[u8]) {
         assert_eq!(strip(input), expected, "{input:?}");
         let mut out = Vec::new();
-        StripEscapes::new(BufReader::new(OneByte(input)))
+        StripEscapes::new(BufReader::new(Chunked::one_byte(input)))
             .read_to_end(&mut out)
             .unwrap();
         assert_eq!(out, expected, "{input:?} one byte at a time");
@@ -292,6 +311,18 @@ mod tests {
     }
 
     #[test]
+    fn removes_c1_controls_joined_by_a_removed_sequence() {
+        assert_strips(b"\xc2\x1b[m\x9b31mX", b"\xc2X");
+        assert_strips(b"\xc2\x1b\x85X", b"\xc2X");
+        assert_strips(b"\xc2\x1b]t\x07\x9d0;title\x07X", b"\xc2X");
+        assert_strips(b"\xc2\x1b(B\x85\x85X", b"\xc2X");
+        assert_strips(b"\xc2\xc2\x85\x1b[m\x85X", b"\xc2X");
+        // Not a C1 control, so it is kept.
+        assert_strips(b"\xc2\x1b[m\xa0X", b"\xc2\xa0X");
+        assert_strips(b"\xc2\x1b[mY\x85", b"\xc2Y\x85");
+    }
+
+    #[test]
     fn keeps_other_characters_starting_with_0xc2() {
         assert_strips("\u{a0}é©\n".as_bytes(), "\u{a0}é©\n".as_bytes());
         assert_strips("\x1b[3\u{a0}".as_bytes(), "\u{a0}".as_bytes());
@@ -302,12 +333,77 @@ mod tests {
 
     #[test]
     fn reads_across_chunks_with_bufread() {
-        let mut reader = StripEscapes::new(BufReader::new(OneByte(b"\x1b[1mab\n\x1b[0mc\n")));
+        let mut reader =
+            StripEscapes::new(BufReader::new(Chunked::one_byte(b"\x1b[1mab\n\x1b[0mc\n")));
         let mut line = Vec::new();
         reader.read_until(b'\n', &mut line).unwrap();
         assert_eq!(line, b"ab\n");
         line.clear();
         reader.read_until(b'\n', &mut line).unwrap();
         assert_eq!(line, b"c\n");
+    }
+
+    /// Reads `input` through `StripEscapes`, split into reads of `sizes`.
+    fn strip_chunked(input: &[u8], sizes: Vec<usize>) -> Vec<u8> {
+        let mut out = Vec::new();
+        StripEscapes::new(BufReader::new(Chunked::new(input, sizes)))
+            .read_to_end(&mut out)
+            .unwrap();
+        out
+    }
+
+    /// Bytes weighted toward those that start, continue or end a sequence.
+    fn interesting_byte() -> impl Strategy<Value = u8> {
+        prop_oneof![
+            3 => Just(ESC),
+            2 => Just(C1_LEAD),
+            2 => 0x80..=0x9fu8,
+            1 => Just(BEL),
+            1 => Just(b'\n'),
+            2 => prop::sample::select(&b"[]\\PX^_(#;0m"[..]),
+            2 => 0x20..=0x7eu8,
+            2 => any::<u8>(),
+        ]
+    }
+
+    /// Text weighted toward the characters that start, continue or end a
+    /// sequence, including the C1 controls.
+    fn interesting_text() -> impl Strategy<Value = String> {
+        const CHARS: &[char] = &[
+            '\x1b', '\u{9b}', '\u{9c}', '\u{9d}', '\u{85}', '\x07', '\n', '[', ']', '\\', 'P', ';',
+            'm', 'a', '\u{a0}', 'é', '日', '😀',
+        ];
+        let c = prop_oneof![4 => prop::sample::select(CHARS), 1 => any::<char>()];
+        vec(c, 0..256).prop_map(String::from_iter)
+    }
+
+    /// Whether `bytes` holds a C1 control in UTF-8.
+    fn has_c1(bytes: &[u8]) -> bool {
+        bytes
+            .windows(2)
+            .any(|w| w[0] == C1_LEAD && (0x80..=0x9f).contains(&w[1]))
+    }
+
+    proptest! {
+        #[test]
+        fn chunk_boundaries_do_not_change_the_output(
+            input in vec(interesting_byte(), 0..256),
+            sizes in chunk_sizes(),
+        ) {
+            prop_assert_eq!(strip_chunked(&input, sizes), strip(&input));
+        }
+
+        #[test]
+        fn leaves_no_esc_or_c1_control(input in vec(interesting_byte(), 0..256)) {
+            let out = strip(&input);
+            prop_assert!(!out.contains(&ESC), "{:?} -> {:?}", input, out);
+            prop_assert!(!has_c1(&out), "{:?} -> {:?}", input, out);
+        }
+
+        #[test]
+        fn valid_utf8_stays_valid(text in interesting_text(), sizes in chunk_sizes()) {
+            let out = strip_chunked(text.as_bytes(), sizes);
+            prop_assert!(std::str::from_utf8(&out).is_ok(), "{:?} -> {:?}", text, out);
+        }
     }
 }

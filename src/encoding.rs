@@ -120,22 +120,18 @@ impl<R: Read> Read for Utf16Decoder<R> {
 
 #[cfg(test)]
 mod tests {
+    use proptest::{collection::vec, prelude::*};
+
     use super::*;
-
-    /// Returns one byte per `read`, so every unit is split across reads.
-    struct OneByte<'a>(&'a [u8]);
-
-    impl Read for OneByte<'_> {
-        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-            let n = self.0.len().min(1).min(buf.len());
-            buf[..n].copy_from_slice(&self.0[..n]);
-            self.0 = &self.0[n..];
-            Ok(n)
-        }
-    }
+    use crate::test_support::{Chunked, chunk_sizes};
 
     fn utf16(text: &str, endian: Endian) -> Vec<u8> {
-        text.encode_utf16()
+        units(text.encode_utf16(), endian)
+    }
+
+    fn units(units: impl IntoIterator<Item = u16>, endian: Endian) -> Vec<u8> {
+        units
+            .into_iter()
             .flat_map(|u| match endian {
                 Endian::Little => u.to_le_bytes(),
                 Endian::Big => u.to_be_bytes(),
@@ -164,7 +160,7 @@ mod tests {
     fn decodes_units_and_surrogate_pairs_split_across_reads() {
         for endian in [Endian::Little, Endian::Big] {
             let bytes = utf16(TEXT, endian);
-            assert_eq!(decode(OneByte(&bytes), endian), TEXT);
+            assert_eq!(decode(Chunked::one_byte(&bytes), endian), TEXT);
         }
     }
 
@@ -172,14 +168,20 @@ mod tests {
     fn replaces_a_trailing_high_surrogate() {
         let mut bytes = utf16("a", Endian::Little);
         bytes.extend_from_slice(&0xD83Du16.to_le_bytes());
-        assert_eq!(decode(OneByte(&bytes), Endian::Little), "a\u{FFFD}");
+        assert_eq!(
+            decode(Chunked::one_byte(&bytes), Endian::Little),
+            "a\u{FFFD}"
+        );
     }
 
     #[test]
     fn replaces_a_trailing_odd_byte() {
         let mut bytes = utf16("a", Endian::Little);
         bytes.push(b'b');
-        assert_eq!(decode(OneByte(&bytes), Endian::Little), "a\u{FFFD}");
+        assert_eq!(
+            decode(Chunked::one_byte(&bytes), Endian::Little),
+            "a\u{FFFD}"
+        );
     }
 
     #[test]
@@ -233,5 +235,35 @@ mod tests {
     #[test]
     fn decodes_nothing_from_empty_input() {
         assert_eq!(decode(&b""[..], Endian::Little), "");
+    }
+
+    /// UTF-16 code units weighted toward the surrogates, so that pairs,
+    /// unpaired ones and pairs in the wrong order all come up.
+    fn code_unit() -> impl Strategy<Value = u16> {
+        prop_oneof![
+            2 => 0xD800..=0xDBFFu16,
+            2 => 0xDC00..=0xDFFFu16,
+            1 => 0x0000..=0x007Fu16,
+            1 => any::<u16>(),
+        ]
+    }
+
+    proptest! {
+        #[test]
+        fn decodes_like_from_utf16_lossy_whatever_the_chunks(
+            input in vec(code_unit(), 0..64),
+            big in any::<bool>(),
+            odd_byte in proptest::option::of(any::<u8>()),
+            sizes in chunk_sizes(),
+        ) {
+            let endian = if big { Endian::Big } else { Endian::Little };
+            let mut bytes = units(input.iter().copied(), endian);
+            let mut expected = String::from_utf16_lossy(&input);
+            if let Some(b) = odd_byte {
+                bytes.push(b);
+                expected.push(char::REPLACEMENT_CHARACTER);
+            }
+            prop_assert_eq!(decode(Chunked::new(&bytes, sizes), endian), expected);
+        }
     }
 }

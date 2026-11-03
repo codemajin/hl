@@ -10,6 +10,8 @@ mod lines;
 mod pager;
 mod print;
 mod stdout;
+#[cfg(test)]
+mod test_support;
 
 use std::{
     env,
