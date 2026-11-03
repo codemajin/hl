@@ -26,8 +26,28 @@ fn prints_completions() {
 fn rejects_unknown_shell() {
     hl().args(["--completions", "nosuchshell"])
         .assert()
-        .failure()
+        .code(2)
         .stdout("");
+}
+
+/// Completions do not depend on the config file, like the man page.
+#[test]
+fn prints_completions_without_config() {
+    let dir = tempdir();
+    let config = files(dir.path(), &[("config.toml", "theme = \"Nord\"\n")]);
+    let expected = hl()
+        .args(["--completions", "bash"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    hl_with_config(&config[0])
+        .args(["--completions", "bash"])
+        .assert()
+        .success()
+        .stderr("")
+        .stdout(expected);
 }
 
 /// The man page shows the built-in defaults, not those of the config file.
@@ -42,6 +62,18 @@ fn prints_man_page_without_config() {
         .stdout(predicate::str::contains(".TH hl 1"))
         .stdout(predicate::str::contains(r"\-\-line\-range"))
         .stdout(predicate::str::contains(r"[default: base16\-ocean.dark]"));
+}
+
+/// Unlike the man page, the help shows the defaults of the config file.
+#[test]
+fn prints_help_with_config_defaults() {
+    let dir = tempdir();
+    let config = files(dir.path(), &[("config.toml", "theme = \"Nord\"\n")]);
+    hl_with_config(&config[0])
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[default: Nord]"));
 }
 
 /// The `--no-*` options are left out of `-h` to keep it short.

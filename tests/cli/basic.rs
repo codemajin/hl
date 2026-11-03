@@ -35,9 +35,23 @@ fn reports_missing_file_and_continues() {
     hl().arg(dir.path().join("missing.txt"))
         .args(&ok)
         .assert()
-        .failure()
+        .code(1)
         .stdout("hello\n")
         .stderr(predicate::str::contains("No such file or directory"));
+}
+
+#[test]
+fn reports_a_directory_and_continues() {
+    let dir = tempdir();
+    let ok = files(dir.path(), &[("ok.txt", "hello\n")]);
+    let sub = dir.path().join("sub");
+    std::fs::create_dir(&sub).unwrap();
+    hl().arg(&sub)
+        .args(&ok)
+        .assert()
+        .code(1)
+        .stdout("hello\n")
+        .stderr(format!("hl: {}: Is a directory\n", sub.display()));
 }
 
 #[test]
@@ -73,7 +87,7 @@ fn rejects_unknown_language() {
     hl().args(["--color", "always", "-l", "no-such-lang"])
         .write_stdin("x\n")
         .assert()
-        .failure()
+        .code(1)
         .stderr(predicate::str::contains("unknown language"));
 }
 

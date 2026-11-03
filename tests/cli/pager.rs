@@ -44,6 +44,6 @@ fn accepts_p_together_with_paging() {
 fn rejects_unknown_paging_mode() {
     hl().args(["--paging=sometimes", "Cargo.toml"])
         .assert()
-        .failure()
+        .code(2)
         .stderr(predicate::str::contains("invalid value 'sometimes'"));
 }

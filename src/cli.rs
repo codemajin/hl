@@ -498,7 +498,8 @@ impl Args {
     }
 
     /// Whether to color the output, given whether it goes to a terminal.
-    /// `cat -v` style output is never highlighted, so it matches cat exactly.
+    /// `cat -v` style output is never highlighted, so it matches cat, unless
+    /// `--strip-ansi=always` removes the escape sequences first.
     pub fn use_color(&self, tty: bool) -> bool {
         !self.visibility().any()
             && match self.color {

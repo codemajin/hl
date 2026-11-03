@@ -127,9 +127,25 @@ fn prints_no_header_for_a_missing_file() {
         .arg(dir.path().join("missing.txt"))
         .args(&files)
         .assert()
-        .failure()
+        .code(1)
         .stdout(format!("==> {} <==\nhello\n", files[0].display()))
         .stderr(predicate::str::contains("No such file or directory"));
+}
+
+/// A directory opens but cannot be read, so it gets no header either.
+#[test]
+fn prints_no_header_for_a_directory() {
+    let dir = tempdir();
+    let files = files(dir.path(), &[("ok.txt", "hello\n")]);
+    let sub = dir.path().join("sub");
+    fs::create_dir(&sub).unwrap();
+    hl().arg("--header")
+        .arg(&sub)
+        .args(&files)
+        .assert()
+        .code(1)
+        .stdout(format!("==> {} <==\nhello\n", files[0].display()))
+        .stderr(format!("hl: {}: Is a directory\n", sub.display()));
 }
 
 #[test]

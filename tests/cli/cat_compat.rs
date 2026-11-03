@@ -363,3 +363,31 @@ fn numbering_continues_a_line_across_files() {
         .success()
         .stdout("     1\ta\n     2\t\n     3\tb\n");
 }
+
+/// `--strip-ansi=always` removes the escape sequences before `-A` shows the
+/// rest, so the output differs from cat's, which shows them as `^[`.
+#[test]
+fn strip_ansi_always_removes_escapes_before_show_all() {
+    let input = "a\x1b[31m\tb\n";
+    hl().args(["--strip-ansi=always", "-A"])
+        .write_stdin(input)
+        .assert()
+        .success()
+        .stdout("a^Ib$\n");
+    hl().arg("-A")
+        .write_stdin(input)
+        .assert()
+        .success()
+        .stdout("a^[[31m^Ib$\n");
+}
+
+/// A line left empty by removing its escape sequences is blank for `-s` and
+/// `-b`.
+#[test]
+fn line_of_escapes_alone_is_blank_once_stripped() {
+    hl().args(["--strip-ansi=always", "-s", "-b"])
+        .write_stdin("a\n\x1b[0m\n\n\nb\n")
+        .assert()
+        .success()
+        .stdout("     1\ta\n\n     2\tb\n");
+}

@@ -70,7 +70,7 @@ fn rejects_a_malformed_mapping() {
     for spec in ["nocolon", ":INI", "*.conf:", "[:INI"] {
         hl().args(["--map-syntax", spec, "Cargo.toml"])
             .assert()
-            .failure()
+            .code(2)
             .stderr(predicate::str::contains("invalid value"))
             .stdout("");
     }
@@ -82,7 +82,7 @@ fn rejects_an_unknown_language_in_a_mapping() {
         hl().args(["--color", color, "--map-syntax", "*.conf:no-such-lang"])
             .write_stdin("x\n")
             .assert()
-            .failure()
+            .code(1)
             .stderr(predicate::str::contains(
                 "unknown language 'no-such-lang' in map-syntax '*.conf:no-such-lang'",
             ))

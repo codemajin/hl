@@ -22,6 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- With `--header`, an input that opens but can't be read, such as a directory, no longer gets a header after its error, like a file that can't be opened.
 - `PAGER=less` (without arguments, and with `LESS` unset) now shows the colors instead of raw escape sequences, and `--paging=auto` no longer pages output that fits on one screen: `less` gets the same `-RX` / `-RFX` as when `PAGER` is unset. `less` with arguments of its own, or with `LESS` set, is run as given.
 - `$PAGER` is split into words like the shell does, so quotes work (`PAGER="sh -c 'less -R'"`). An unclosed quote is reported as `hl: invalid PAGER: missing closing quote`.
 - A pager that fails to start is reported by name and without the OS error code, such as `hl: failed to start pager 'less': No such file or directory`.

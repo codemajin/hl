@@ -139,6 +139,21 @@ fn reads_the_theme_from_the_config() {
 }
 
 #[test]
+fn env_theme_beats_the_config_theme() {
+    let dir = tempdir();
+    let config = files(dir.path(), &[("config.toml", "theme = \"Nord\"\n")]);
+    let expected = colored(hl().args(["--theme", "Monokai Extended", "Cargo.toml"]));
+    let nord = colored(hl().args(["--theme", "Nord", "Cargo.toml"]));
+    assert_ne!(expected, nord);
+    let out = colored(
+        hl_with_config(&config[0])
+            .env("HL_THEME", "Monokai Extended")
+            .arg("Cargo.toml"),
+    );
+    assert_eq!(out, expected);
+}
+
+#[test]
 fn reads_sizes_from_the_config_as_integers_or_strings() {
     let dir = tempdir();
     let content = "fn main() {}\n".repeat(100);

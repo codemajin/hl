@@ -329,7 +329,6 @@ fn build_cache_needs_a_cache_directory() {
         .env_remove("HOME")
         .arg("--build-cache")
         .assert()
-        .failure()
         .code(1)
         .stderr("hl: no cache directory (set HOME)\n");
 }

@@ -55,7 +55,7 @@ fn color_depth_can_be_set_from_env() {
 fn rejects_unknown_color_depth() {
     hl().args(["--color-depth", "16", "Cargo.toml"])
         .assert()
-        .failure()
+        .code(2)
         .stderr(predicate::str::contains("invalid value"));
 }
 

@@ -151,7 +151,7 @@ fn shows_control_characters_of_file_names_in_headers() {
 fn shows_control_characters_of_file_names_in_errors() {
     let dir = tempdir();
     let missing = dir.path().join(ESCAPED_NAME);
-    let out = hl().arg(&missing).assert().failure();
+    let out = hl().arg(&missing).assert().code(1);
     let stderr = String::from_utf8_lossy(&out.get_output().stderr).into_owned();
     assert!(!stderr.contains(['\x1b', '\x07']), "{stderr:?}");
     assert!(stderr.contains(&format!("{VISIBLE_NAME}: ")), "{stderr:?}");
@@ -172,7 +172,7 @@ fn shows_control_characters_of_fatal_errors() {
     hl().args(["-l", "no\x1b]0;PWN\x07such"])
         .write_stdin("a\n")
         .assert()
-        .failure()
+        .code(1)
         .stderr("hl: unknown language 'no\\x1b]0;PWN\\x07such' (see --list-languages)\n");
 }
 

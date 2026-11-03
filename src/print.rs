@@ -18,6 +18,9 @@ use crate::{
 /// How many leading bytes are inspected for binary detection.
 const PEEK_LEN: usize = 8 * 1024;
 
+/// The size of the buffer each input is read through.
+const BUF_LEN: usize = 64 * 1024;
+
 /// A problem with one input that does not stop `print_all`, passed to the
 /// caller to show.
 #[derive(Debug, Clone, Copy)]
@@ -52,13 +55,23 @@ pub fn print_all<'p, W: Write>(
 ) -> PrintOutcome {
     let mut input_failed = false;
     for input in inputs {
-        // A file that cannot be opened gets no header, like with `head`.
         let result = open(input).and_then(|source| {
+            let mut reader = BufReader::with_capacity(BUF_LEN, source.source);
+            // A file that cannot be opened gets no header, like with `head`,
+            // nor does one that opens but cannot be read, like a directory.
+            reader.fill_buf()?;
             if let Some(headers) = headers.as_mut() {
                 headers.write(input, out, &mut lines)?;
             }
             lines.start_input(out)?;
-            printer.print(source, out, &mut lines, &mut report)
+            printer.print(
+                &mut reader,
+                source.path,
+                source.too_large,
+                out,
+                &mut lines,
+                &mut report,
+            )
         });
         match result {
             Ok(()) => {}
@@ -186,23 +199,20 @@ pub struct Printer {
 }
 
 impl Printer {
+    /// Prints the input read from `reader`, whose path is `path` (`None`
+    /// for stdin).
     fn print(
         &self,
-        input: Input,
+        reader: &mut impl BufRead,
+        path: Option<&Path>,
+        too_large: bool,
         out: &mut impl Write,
         lines: &mut LineState,
         report: &mut dyn FnMut(&Path, Problem),
     ) -> io::Result<()> {
-        let Input {
-            source,
-            path,
-            too_large,
-        } = input;
-        let mut reader = BufReader::with_capacity(64 * 1024, source);
-
         let hl = self.highlighter.as_ref().filter(|_| !too_large);
         if hl.is_none() && !self.strip {
-            return write_plain(&mut reader, out, lines, self.vis);
+            return write_plain(reader, out, lines, self.vis);
         }
         let head = reader.fill_buf()?;
         if let Some(endian) = utf16_bom(head) {
@@ -210,7 +220,7 @@ impl Printer {
             // It is also converted to remove its escape sequences, because
             // dropping single bytes of UTF-16 would break it.
             reader.consume(2);
-            let decoded = BufReader::new(Utf16Decoder::new(&mut reader, endian));
+            let decoded = BufReader::new(Utf16Decoder::new(&mut *reader, endian));
             return match hl {
                 Some(hl) => {
                     self.filtered(decoded, |r| self.highlight(hl, r, path, out, lines, report))
@@ -317,8 +327,20 @@ mod tests {
         unreadable: Vec<PathBuf>,
     }
 
+    /// An input that opens but cannot be read, like a directory.
+    struct Unreadable;
+
+    impl Read for Unreadable {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::IsADirectory.into())
+        }
+    }
+
+    /// The name of an input that opens as `Unreadable`.
+    const DIRECTORY: &str = "dir";
+
     /// Runs `print_all` with `inputs` opened from `files`, a missing name
-    /// failing to open.
+    /// failing to open and `DIRECTORY` failing to be read.
     fn run(
         inputs: &[PathBuf],
         files: &[(&str, &'static str)],
@@ -327,6 +349,13 @@ mod tests {
     ) -> Run {
         let mut out = TrackedWriter::new(Vec::new());
         let open = |path: &Path| {
+            if path == Path::new(DIRECTORY) {
+                return Ok(Input {
+                    source: Box::new(Unreadable),
+                    path: Some(Path::new(DIRECTORY)),
+                    too_large: false,
+                });
+            }
             files
                 .iter()
                 .find(|(name, _)| path == Path::new(name))
@@ -336,7 +365,12 @@ mod tests {
         let mut unreadable = Vec::new();
         let report = |path: &Path, problem: Problem| match problem {
             Problem::Unreadable(e) => {
-                assert_eq!(e.kind(), io::ErrorKind::NotFound);
+                let expected = if path == Path::new(DIRECTORY) {
+                    io::ErrorKind::IsADirectory
+                } else {
+                    io::ErrorKind::NotFound
+                };
+                assert_eq!(e.kind(), expected);
                 unreadable.push(path.to_path_buf());
             }
             Problem::CannotHighlight(reason) => panic!("cannot highlight: {reason}"),
@@ -393,6 +427,20 @@ mod tests {
         );
         assert_eq!(run.unreadable, paths(&["missing"]));
         assert_eq!(run.out, "\x1b[1m==> a <==\x1b[0m\none\n");
+    }
+
+    #[test]
+    fn unreadable_input_gets_no_header() {
+        let lines = LineState::new(Numbering::All, false, None);
+        let run = run(
+            &paths(&[DIRECTORY, "a"]),
+            &[("a", "one\n")],
+            lines,
+            Some(Headers::new(false)),
+        );
+        assert!(run.input_failed);
+        assert_eq!(run.unreadable, paths(&[DIRECTORY]));
+        assert_eq!(run.out, "==> a <==\n     1\tone\n");
     }
 
     struct Broken;
@@ -456,16 +504,18 @@ mod tests {
     /// cause no problem.
     fn print(printer: &Printer, bytes: &[u8], path: &str, too_large: bool) -> Vec<u8> {
         let path = Path::new(path);
-        let input = Input {
-            source: Box::new(Cursor::new(bytes.to_vec())),
-            path: Some(path),
-            too_large,
-        };
         let mut out = Vec::new();
         let mut lines = LineState::new(Numbering::None, false, None);
         let mut report = |path: &Path, problem: Problem| panic!("{}: {problem:?}", path.display());
         printer
-            .print(input, &mut out, &mut lines, &mut report)
+            .print(
+                &mut Cursor::new(bytes),
+                Some(path),
+                too_large,
+                &mut out,
+                &mut lines,
+                &mut report,
+            )
             .unwrap();
         out
     }

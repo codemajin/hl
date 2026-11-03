@@ -19,7 +19,7 @@ fn short_t_is_show_tabs_not_theme() {
     // `-t` is cat's -vT, so "Nord" is read as a file name.
     hl().args(["-t", "Nord"])
         .assert()
-        .failure()
+        .code(1)
         .stderr(predicate::str::contains(
             "hl: Nord: No such file or directory",
         ));
