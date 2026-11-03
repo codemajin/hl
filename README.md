@@ -32,7 +32,7 @@ Each [release](https://github.com/codemajin/hl/releases) has binaries for these 
 The Linux binaries are statically linked, so they run on any distribution. To download, verify and install one to `~/.local/bin`:
 
 ```sh
-VERSION=v0.1.0                      # the release to install
+VERSION=v0.2.0                      # the release to install
 TARGET=x86_64-unknown-linux-musl    # your platform, from the table above
 NAME=hl-$VERSION-$TARGET
 curl -fLO "https://github.com/codemajin/hl/releases/download/$VERSION/$NAME.tar.gz"

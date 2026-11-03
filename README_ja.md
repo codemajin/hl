@@ -32,7 +32,7 @@
 Linux 版は静的リンクなので、ディストリビューションを問わず動きます。ダウンロードして検証し、`~/.local/bin` にインストールする例です。
 
 ```sh
-VERSION=v0.1.0                      # インストールするリリース
+VERSION=v0.2.0                      # インストールするリリース
 TARGET=x86_64-unknown-linux-musl    # 上の表から自分のプラットフォームを選ぶ
 NAME=hl-$VERSION-$TARGET
 curl -fLO "https://github.com/codemajin/hl/releases/download/$VERSION/$NAME.tar.gz"
