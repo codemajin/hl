@@ -31,11 +31,11 @@ const SYNTAX_EXTENSION: &str = "sublime-syntax";
 const THEME_EXTENSION: &str = "tmTheme";
 const CACHE_FILE: &str = "syntaxes.bin";
 
-/// The syntaxes of two-face with the fix from `build.rs`.
+/// The syntaxes of two-face with the fixes from `build.rs`.
 const BUNDLED_SYNTAXES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/syntaxes.bin"));
 
-/// The bundled syntaxes: two-face's, with JavaScript fixed so that it no
-/// longer hangs on `x /*` (see `build.rs`).
+/// The bundled syntaxes: two-face's, with JavaScript and Scala fixed so that
+/// they no longer hang on `x /*` and `:a@<` (see `build.rs`).
 pub fn bundled_syntaxes() -> SyntaxSet {
     dumps::from_uncompressed_data(BUNDLED_SYNTAXES).expect("the bundled syntaxes are valid")
 }

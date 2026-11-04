@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Scala no longer hangs on an operator right after `@` in a type, such as `type L = A @> B` or `x: A @< B`, which printed the rest of the input without highlighting after 3 seconds and kept a CPU core busy. The bundled Scala syntax carries a fix for it until it is fixed upstream.
 - On Windows, `PAGER` is split by Windows rules: backslashes are kept, and double quotes group words (`PAGER='"C:\Program Files\Git\usr\bin\less.exe" -R'`). A bare `less.exe` gets `-RX` / `-RFX` like `less`.
 - On Windows, a `--map-syntax` pattern with `\` (such as `**\conf\*.cfg:INI`) matches the path, like one with `/`.
 - On Windows, a directory given as an input is reported as `Is a directory`, as on Unix, instead of `Access is denied.`.

@@ -1032,6 +1032,41 @@ mod tests {
         assert!(scopes("a\n// c\n").contains("comment.line"));
     }
 
+    #[test]
+    fn scala_does_not_hang_on_an_operator_after_at_in_a_type() {
+        let cases = [
+            ":a@<",
+            ":a@+",
+            "x:\na@<",
+            ":\na @<",
+            "type L = A @> B\n",
+            "x match { case y: A @> B => 1 }\n",
+            "class A @> \n",
+        ];
+        for text in cases {
+            assert!(parses_in_time("Scala", text), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn scala_still_reads_annotations_in_a_type() {
+        let syntaxes = syntaxes();
+        let scala = syntaxes.find_syntax_by_name("Scala").unwrap();
+        let scopes = |text: &str| {
+            let mut state = syntect::parsing::ParseState::new(scala);
+            let mut stack = syntect::parsing::ScopeStack::new();
+            let mut all = Vec::new();
+            for (_, op) in state.parse_line(text, syntaxes).unwrap() {
+                stack.apply(&op).unwrap();
+                all.push(format!("{stack:?}"));
+            }
+            all.join("\n")
+        };
+        assert!(scopes("def f(x: Int @unchecked) = x\n").contains("variable.annotation"));
+        assert!(scopes("type L = A @uncheckedVariance\n").contains("variable.annotation"));
+        assert!(scopes("class A @Inject() (a: Int)\n").contains("variable.annotation"));
+    }
+
     /// A syntax whose two contexts hand `x` back and forth without
     /// consuming it, which makes syntect loop forever.
     const LOOPING_SYNTAX: &str = r"%YAML 1.2
