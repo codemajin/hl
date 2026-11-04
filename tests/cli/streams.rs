@@ -1,9 +1,12 @@
 //! Errors writing to stdout and stderr: full disks, closed pipes and a
 //! closed stdout.
 
+#[cfg(unix)]
 use std::fs;
 
-use crate::common::{files, raw_hl, strip_ansi, tempdir};
+use crate::common::raw_hl;
+#[cfg(unix)]
+use crate::common::{files, strip_ansi, tempdir};
 
 #[cfg(target_os = "linux")]
 #[test]

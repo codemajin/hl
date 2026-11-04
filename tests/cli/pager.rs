@@ -14,7 +14,9 @@ fn never_starts_a_pager_without_a_terminal() {
     let content = fs::read(&input).unwrap();
     for opts in [&["-p"][..], &["--paging=always"], &["--paging=auto"]] {
         // The marker is relative to the working directory, so that PAGER
-        // holds no path that could contain spaces.
+        // holds no path that could contain spaces. There is no `touch` on
+        // Windows, but the test holds there too: a pager that hl tried to
+        // start would fail, and so would `hl`.
         hl().args(opts)
             .arg(&input)
             .current_dir(dir.path())

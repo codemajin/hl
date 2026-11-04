@@ -80,8 +80,8 @@ pub enum Origin {
 #[derive(Debug, Clone)]
 pub struct SyntaxMapping {
     glob: GlobMatcher,
-    /// Whether the pattern contains `/` and so applies to the whole path
-    /// rather than the file name.
+    /// Whether the pattern contains a path separator (`/`, or also `\` on
+    /// Windows) and so applies to the whole path rather than the file name.
     by_path: bool,
     /// The mapping as written, for messages.
     pub spec: String,
@@ -104,7 +104,7 @@ impl SyntaxMapping {
             .compile_matcher();
         Ok(Self {
             glob,
-            by_path: pattern.contains('/'),
+            by_path: pattern.contains(path::is_separator),
             spec: s.to_string(),
             language: language.to_string(),
             origin,
@@ -676,6 +676,19 @@ mod tests {
         let path = Some("conf/app.cfg");
         assert_eq!(detect(&["**/conf/*.cfg:Ruby"], path, ""), "Ruby");
         assert_ne!(detect(&["conf/*.cfg:Ruby"], path, ""), "Ruby");
+    }
+
+    /// On Windows a backslash is a separator in the pattern as in the path,
+    /// and the drive colon stays in the pattern.
+    #[cfg(windows)]
+    #[test]
+    fn windows_patterns_match_the_absolute_path() {
+        let path = Some(r"conf\app.cfg");
+        assert_eq!(detect(&[r"**\conf\*.cfg:Ruby"], path, ""), "Ruby");
+        assert_eq!(detect(&["**/conf/*.cfg:Ruby"], path, ""), "Ruby");
+        let absolute = std::path::absolute("conf/app.cfg").unwrap();
+        let mapping = format!("{}:Ruby", absolute.display());
+        assert_eq!(detect(&[mapping.as_str()], path, ""), "Ruby");
     }
 
     #[test]

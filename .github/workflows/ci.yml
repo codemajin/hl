@@ -59,8 +59,9 @@ jobs:
         # One test compares `hl` with GNU coreutils `cat` and is skipped
         # without it. ubuntu-24.04 still ships it as `cat` (later releases use
         # uutils), and on macOS it is installed from Homebrew as `gcat`, so
-        # that the comparison runs on both.
-        os: [ubuntu-24.04, macos-latest]
+        # that the comparison runs on both. Windows has none, so it is
+        # skipped there.
+        os: [ubuntu-24.04, macos-latest, windows-latest]
         # "1.88" is the MSRV; keep it in sync with `rust-version` in Cargo.toml.
         rust: [stable, "1.88"]
     steps:

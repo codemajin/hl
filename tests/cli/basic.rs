@@ -4,7 +4,7 @@ use std::fs;
 
 use predicates::prelude::*;
 
-use crate::common::{ESC, colored, files, hl, tempdir};
+use crate::common::{ESC, NOT_FOUND, colored, files, hl, tempdir};
 
 #[test]
 fn passes_bytes_through_when_not_a_tty() {
@@ -37,7 +37,7 @@ fn reports_missing_file_and_continues() {
         .assert()
         .code(1)
         .stdout("hello\n")
-        .stderr(predicate::str::contains("No such file or directory"));
+        .stderr(predicate::str::contains(NOT_FOUND));
 }
 
 #[test]

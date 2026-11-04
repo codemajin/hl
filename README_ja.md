@@ -13,8 +13,8 @@
 ## 必要なもの
 
 - ソースからビルドする場合は Rust ツールチェーン（edition 2024 に対応した Rust 1.88 以降）
-- ページャ機能（`--paging`、`-p`）を使う場合は `less`。環境変数 `$PAGER` を設定していればそちらを使います。
-- 24bit カラー（Windows Terminal、iTerm2、GNOME Terminal、WezTerm など）か 256 色に対応した端末
+- ページャ機能（`--paging`、`-p`）を使う場合は `less`。環境変数 `$PAGER` を設定していればそちらを使います。どちらもなければ、警告を出してページャなしで表示します。Windows では普通 `less` に PATH が通っていません。Git for Windows には `C:\Program Files\Git\usr\bin\less.exe` があるので、`PAGER` でこれを指定できます（`--paging` を参照）。
+- 24bit カラー（Windows Terminal、iTerm2、GNOME Terminal、WezTerm など）か 256 色に対応した端末。Windows では、Windows 10 以降のコンソール（cmd.exe、PowerShell）でも表示できます。
 
 ## インストール
 
@@ -28,6 +28,7 @@
 | Linux aarch64 | `aarch64-unknown-linux-musl` |
 | macOS Intel | `x86_64-apple-darwin` |
 | macOS Apple シリコン | `aarch64-apple-darwin` |
+| Windows x86_64 | `x86_64-pc-windows-msvc` |
 
 Linux 版は静的リンクなので、ディストリビューションを問わず動きます。ダウンロードして検証し、`~/.local/bin` にインストールする例です。
 
@@ -52,6 +53,33 @@ macOS では、Web ブラウザでダウンロードしたファイルに隔離�
 ```sh
 rm ~/.local/bin/hl
 ```
+
+Windows 版は tar.gz ではなく zip（`hl.exe` 入り）で、v0.2.0 の次のリリースから用意しています。PowerShell でダウンロードして検証し、`%LOCALAPPDATA%\Programs\hl` にインストールする例です。
+
+```powershell
+$Version = "vX.Y.Z"                 # インストールするリリース
+$Name = "hl-$Version-x86_64-pc-windows-msvc"
+$Base = "https://github.com/codemajin/hl/releases/download/$Version"
+Invoke-WebRequest "$Base/$Name.zip" -OutFile "$Name.zip"
+Invoke-WebRequest "$Base/$Name.zip.sha256" -OutFile "$Name.zip.sha256"
+$Expected = (Get-Content "$Name.zip.sha256").Split(" ")[0]
+if ((Get-FileHash "$Name.zip" -Algorithm SHA256).Hash -ne $Expected) { throw "checksum mismatch" }
+Expand-Archive "$Name.zip" -DestinationPath .
+$Dir = "$env:LOCALAPPDATA\Programs\hl"
+New-Item -ItemType Directory -Force $Dir | Out-Null
+Copy-Item "$Name\hl.exe" $Dir
+```
+
+続けて、このディレクトリを一度だけ `PATH` に追加し、新しい端末を開きます。
+
+```powershell
+$Path = [Environment]::GetEnvironmentVariable("Path", "User")
+if (($Path -split ";") -notcontains $Dir) {
+    [Environment]::SetEnvironmentVariable("Path", "$Path;$Dir", "User")
+}
+```
+
+更新するときは、新しいバージョンで最初のブロックを実行します。アンインストールするときは、`Remove-Item -Recurse "$env:LOCALAPPDATA\Programs\hl"` でディレクトリを削除し、ユーザー環境変数の `Path` からも外してください。
 
 ### ソースから
 
@@ -79,7 +107,7 @@ cargo uninstall hl                  # --root を指定した場合は同じ --ro
 
 ### シェル補完と man ページ
 
-リリースのアーカイブには、bash、zsh、fish の補完スクリプトが `completions/` に、man ページが `man/hl.1` に入っています。`hl --completions <SHELL>` と `hl --man` で `hl` 自身に出力させることもできるので、ソースからインストールした場合はこちらを使います。自分のユーザーにインストールする例です。
+リリースのアーカイブには、bash、zsh、fish、PowerShell の補完スクリプトが `completions/` に、man ページが `man/hl.1` に入っています。`hl --completions <SHELL>` と `hl --man` で `hl` 自身に出力させることもできるので、ソースからインストールした場合はこちらを使います。自分のユーザーにインストールする例です。
 
 ```sh
 # bash（bash-completion パッケージが必要）
@@ -99,7 +127,16 @@ mkdir -p ~/.local/share/man/man1
 hl --man > ~/.local/share/man/man1/hl.1
 ```
 
-リリースのアーカイブを使う場合は、代わりに `$NAME/completions/hl.bash`、`$NAME/completions/_hl`、`$NAME/completions/hl.fish`、`$NAME/man/hl.1` を同じ場所にコピーしてもかまいません。補完は新しく起動したシェルから有効になります。`man hl` でページが見つからないときは、`MANPATH` に `~/.local/share/man` を追加してください。`hl` を更新したら、新しいオプションも補完されるようにファイルを作り直してください。アンインストールするときはこれらのファイルも削除します。
+PowerShell では、スクリプトをプロファイルと同じディレクトリに保存し、プロファイルから読み込みます。
+
+```powershell
+$Completion = Join-Path (Split-Path $PROFILE) "hl.ps1"
+New-Item -ItemType Directory -Force (Split-Path $PROFILE) | Out-Null
+hl --completions powershell > $Completion
+Add-Content $PROFILE ". `"$Completion`""
+```
+
+リリースのアーカイブを使う場合は、代わりに `$NAME/completions/hl.bash`、`$NAME/completions/_hl`、`$NAME/completions/hl.fish`、`$NAME/completions/_hl.ps1`、`$NAME/man/hl.1` を同じ場所にコピーしてもかまいません。補完は新しく起動したシェルから有効になります。`man hl` でページが見つからないときは、`MANPATH` に `~/.local/share/man` を追加してください。`hl` を更新したら、新しいオプションも補完されるようにファイルを作り直してください。アンインストールするときはこれらのファイルも削除します。
 
 ## 使い方
 
@@ -139,11 +176,11 @@ hl --build-cache                 # ユーザー定義の構文をキャッシュ
 | `-t` | `-vT` と同じです |
 | `-u` | `cat` との互換のために受け付けますが、何もしません |
 | `-l`, `--language <LANG>` | 自動判定を使わずに言語を指定します。言語名か拡張子で指定できます（例: `rust`、`py`） |
-| `--map-syntax <PATTERN:LANG>` | グロブパターン PATTERN に合うファイルを言語 LANG で表示します（例: `'*.conf:INI'`）。LANG は `-l` と同じく言語名か拡張子で指定します。`/` を含まないパターンはファイル名と、`/` を含むパターンは絶対パスと照合します（`*` は 1 つのディレクトリの中だけ、`**` は任意の深さのディレクトリに合います）。何度でも指定でき、複数の対応付けが合うときは最後に指定したものを使います。標準入力には適用しません |
+| `--map-syntax <PATTERN:LANG>` | グロブパターン PATTERN に合うファイルを言語 LANG で表示します（例: `'*.conf:INI'`）。LANG は `-l` と同じく言語名か拡張子で指定します。`/` を含まないパターンはファイル名と、`/` を含むパターンは絶対パスと照合します（`*` は 1 つのディレクトリの中だけ、`**` は任意の深さのディレクトリに合います）。Windows では、パターンでもパスでも `\` も区切りとして扱うので、`**\conf\*.cfg:INI`、`**/conf/*.cfg:INI`、`C:/proj/*.cfg:INI` のどれも使えます。何度でも指定でき、複数の対応付けが合うときは最後に指定したものを使います。標準入力には適用しません |
 | `--theme <THEME>` | テーマを指定します（大文字・小文字は区別しません）。組み込みのテーマとユーザー定義のテーマが使えます。既定は `base16-ocean.dark` です。見つからないテーマ名を指定した場合は警告を出し、既定のテーマで表示します |
 | `--max-size <SIZE>` | これより大きい入力はハイライトせずに出力します。既定は `512K` です。0 以上の整数のバイト数で、後ろに `K`、`M`、`G`（1024 倍。大文字でも小文字でも可）の単位を付けられます（`1048576`、`1M` など）。負の数や `1.5K` のような小数は使えません。`0` で上限をなくします |
 | `--max-line-length <LEN>` | これより長い行（改行を除いたバイト数）が出てきたら、その行から先をハイライトせずに出力します。既定は `16K` です。書き方は `--max-size` と同じです。`0` で上限をなくします |
-| `--paging <WHEN>` | ページャを使うかどうか。`auto`、`always`、`never`（既定）から選びます。`auto` では、出力が 1 画面に収まらないときだけページャで表示します。ページャは `$PAGER`、未設定なら `less -RFX`（`auto`）か `less -RX`（`always`）です。`$PAGER` はシェルと同じ規則で単語に分けるので、クォートが使えます（`PAGER="less -R -S"`、`PAGER="'/opt/my pager/pg'"`）。`$PAGER` が引数のない `less` なら、`LESS` が未設定のときに限り同じ `-RFX` か `-RX` を補います。それ以外は `$PAGER` と `LESS` のオプションをそのまま使うので、色を表示するには `-R` を含めてください。標準出力が端末でなければページャは起動しません |
+| `--paging <WHEN>` | ページャを使うかどうか。`auto`、`always`、`never`（既定）から選びます。`auto` では、出力が 1 画面に収まらないときだけページャで表示します。ページャは `$PAGER`、未設定なら `less -RFX`（`auto`）か `less -RX`（`always`）です。`$PAGER` はシェルと同じ規則で単語に分けるので、クォートが使えます（`PAGER="less -R -S"`、`PAGER="'/opt/my pager/pg'"`）。`$PAGER` が引数のない `less` なら、`LESS` が未設定のときに限り同じ `-RFX` か `-RX` を補います。それ以外は `$PAGER` と `LESS` のオプションをそのまま使うので、色を表示するには `-R` を含めてください。Windows では、`$PAGER` を空白で区切り、ダブルクォートで囲んだ部分はまとめ、バックスラッシュはそのまま残します（`PAGER='"C:\Program Files\Git\usr\bin\less.exe" -R'`）。引数のない `less.exe` にも `less` と同じフラグを補います。`$PAGER` が未設定か空白だけで `less` が見つからないときは、警告（`hl: less not found, printing without a pager (set PAGER to choose one)`）を出して標準出力に表示します。`$PAGER` に指定したページャが起動できないときはエラーです。標準出力が端末でなければページャは起動しません |
 | `-p` | `--paging=always` と同じ |
 | `--color <WHEN>` | 色を付ける条件を `auto`、`always`、`never` から選びます。既定の `auto` では、出力先が端末のときだけ色を付けます |
 | `--color-depth <DEPTH>` | 色深度を `auto`、`truecolor`（別名 `24bit`）、`256` から選びます。既定の `auto` では、`COLORTERM` が `truecolor` か `24bit` のとき、`TERM` が `-direct` で終わるとき、`WT_SESSION` が設定されているとき（Windows Terminal）に 24bit カラーを使い、それ以外では 256 色に近い色に置き換えて表示します。`COLORTERM` は大文字小文字を区別せずに比べますが、空白は取り除きません（`truecolor ` は該当しません）。`-direct` は terminfo の名前と同じく大文字小文字を区別します（`xterm-DIRECT` は該当しません） |
@@ -167,13 +204,14 @@ hl --build-cache                 # ユーザー定義の構文をキャッシュ
 | `HL_COLOR_DEPTH` | `--color-depth` の既定値 |
 | `HL_CONFIG` | 設定ファイルの場所 |
 | `PAGER` | `--paging` と `-p` で使うページャ |
+| `APPDATA`、`LOCALAPPDATA` | Windows だけ。`XDG_CONFIG_HOME` / `XDG_CACHE_HOME` が未設定のとき、設定ディレクトリを `%APPDATA%\hl`、キャッシュディレクトリを `%LOCALAPPDATA%\hl` にします（[設定ファイル](#設定ファイル)を参照） |
 | `LESS` | `less` のオプション。設定されていれば、`$PAGER` が引数のない `less` でもオプションを補いません |
 
 `HL_MAX_SIZE`、`HL_MAX_LINE_LENGTH`、`HL_COLOR_DEPTH` の値が不正なときは、コマンドラインと同じくエラーになります。`error: invalid value 'abc' for HL_MAX_SIZE: ...` のように変数名を含むメッセージを表示し、何も出力せずに終了コード 2 で終了します。不正な値を警告して読み飛ばす設定ファイルとは扱いが違います。コマンドラインでオプションを指定すれば環境変数の値は使わないので、その値は検査しません。`HL_THEME` のテーマが見つからないときは、`--theme` と同じく警告を出して既定のテーマを使います。
 
 ### 設定ファイル
 
-一部のオプションの既定値は `$XDG_CONFIG_HOME/hl/config.toml`（`XDG_CONFIG_HOME` が未設定か絶対パスでなければ `~/.config/hl/config.toml`）で設定できます。別のファイルを使うときは `HL_CONFIG` で場所を指定します。キーにはオプションの長い名前を使います。
+一部のオプションの既定値は `$XDG_CONFIG_HOME/hl/config.toml`（`XDG_CONFIG_HOME` が未設定か絶対パスでなければ `~/.config/hl/config.toml`）で設定できます。Windows では、この 2 つの間に `%APPDATA%\hl\config.toml`（`C:\Users\<ユーザー名>\AppData\Roaming\hl\config.toml` など）が入ります。`XDG_CONFIG_HOME` が未設定ならこれを使い、`APPDATA` も未設定のときだけ `~/.config` を使います。別のファイルを使うときは `HL_CONFIG` で場所を指定します。キーにはオプションの長い名前を使います。
 
 ```toml
 theme = "Monokai Extended"
@@ -193,7 +231,7 @@ map-syntax = ["*.conf:INI", "Jenkinsfile:Groovy"]
 
 ### ユーザー定義の構文とテーマ
 
-組み込みのものに加えて、設定ディレクトリ（`$XDG_CONFIG_HOME/hl`、`XDG_CONFIG_HOME` が未設定か絶対パスでなければ `~/.config/hl`。`HL_CONFIG` の影響は受けません）に置いた Sublime Text の構文と TextMate のテーマも使えます。
+組み込みのものに加えて、設定ディレクトリ（`$XDG_CONFIG_HOME/hl`、`XDG_CONFIG_HOME` が未設定か絶対パスでなければ `~/.config/hl`。Windows では設定ファイルと同じく間に `%APPDATA%\hl` が入ります。`HL_CONFIG` の影響は受けません）に置いた Sublime Text の構文と TextMate のテーマも使えます。
 
 ```text
 ~/.config/hl/
@@ -210,6 +248,7 @@ map-syntax = ["*.conf:INI", "Jenkinsfile:Groovy"]
 
 ```sh
 hl --build-cache   # $XDG_CACHE_HOME/hl/syntaxes.bin（未設定か絶対パスでなければ ~/.cache/hl/syntaxes.bin）を作る
+                   # Windows では ~/.cache より先に %LOCALAPPDATA%\hl\syntaxes.bin を使う
 hl --clear-cache   # キャッシュを消す
 ```
 
@@ -230,11 +269,11 @@ hl --clear-cache   # キャッシュを消す
 - `-n`、`-b`、`-s` は、エスケープシーケンスを取り除いた後の行を見ます。そのため、`\x1b[0m` のようにエスケープシーケンスしかない行は、`-b` と `-s` では空行として扱います。
 - `--header` を指定すると、ファイルが 1 つだけのときも含めて、各入力の先頭に `==> FILE <==` の行を出力します（標準入力は `==> standard input <==`）。ファイルとファイルの間には空行を 1 行入れます。色を付けるときはヘッダを太字にします。ヘッダの行には `-n` や `-b` の行番号を振らず、行番号はこれまでどおりファイルをまたいで通しで数えます。開けなかったファイルや、ディレクトリのように読めなかったファイルにはヘッダを出しません。`--header` を指定しなければ、`cat` と同じ出力になります。
 - `-r` を指定しても、範囲より前の行は読み込んでハイライトの解析だけ行います。そのため、ファイル全体を表示したときと同じ色で表示されます。範囲の終わりまで来たら、それより先は読みません。範囲は入力ごとに適用します。`-n` や `-b` はその入力での行番号を表示し、範囲外の行（と `-s` でまとめた空行）も数えます。範囲内で改行なしに終わったファイルの後には、次の入力の前に改行を補います。`-r` を指定しなければ、行番号は `cat` と同じくファイルをまたいで通しで数えます。
-- 開けないファイルや読めないファイルがあると `hl: <path>: <理由>`（`hl: src: Is a directory` など）を標準エラー出力に表示し、残りのファイルを処理したあと終了コード 1 で終了します。
+- 開けないファイルや読めないファイルがあると `hl: <path>: <理由>`（`hl: src: Is a directory` など。Windows でも同じ）を標準エラー出力に表示し、残りのファイルを処理したあと終了コード 1 で終了します。
 - `hl file | head` のように出力先が途中で閉じられても、エラーにはせず正常終了します。
-- 標準出力が閉じられている（`hl file >&-`）、ディスクがいっぱいなどで出力を書き込めないときは、`hl: write error: <理由>` を標準エラー出力に表示し、`cat` と同じく終了コード 1 で終了します。`--list-themes` や `--man` など、何かを表示して終わるコマンドでも同じです。
+- 標準出力が閉じられている（`hl file >&-`。Windows では標準出力のハンドルなしで起動されたとき）、ディスクがいっぱいなどで出力を書き込めないときは、`hl: write error: <理由>` を標準エラー出力に表示し、`cat` と同じく終了コード 1 で終了します。`--list-themes` や `--man` など、何かを表示して終わるコマンドでも同じです。
 - 読み手が閉じたパイプなどで標準エラー出力に書き込めないときは、メッセージを捨てます。出力と終了コードは変わりません。
-- 終了コードは次のとおりです。0 は成功で、警告を出して代わりの方法で続けたとき（見つからないテーマ、設定ファイルの不正な項目、ハイライトに時間がかかりすぎた行）も含みます。1 は実行中の失敗です（開けないファイルや読めないファイル、`-l` や `--map-syntax` に指定した未知の言語、書き込みエラー、ページャの起動失敗）。2 は、実行を始める前にコマンドラインや、オプションの代わりになる環境変数を受け付けなかったときです（未知のオプション、`--max-size=1.5K` や `--color=sometimes` のような不正な値）。
+- 終了コードは次のとおりです。0 は成功で、警告を出して代わりの方法で続けたとき（見つからないテーマ、設定ファイルの不正な項目、ハイライトに時間がかかりすぎた行）も含みます。1 は実行中の失敗です（開けないファイルや読めないファイル、`-l` や `--map-syntax` に指定した未知の言語、書き込みエラー、`$PAGER` に指定したページャの起動失敗）。2 は、実行を始める前にコマンドラインや、オプションの代わりになる環境変数を受け付けなかったときです（未知のオプション、`--max-size=1.5K` や `--color=sometimes` のような不正な値）。
 
 ## `cat` の代わりに使う
 
@@ -261,7 +300,7 @@ cargo clippy
 cargo fmt --check   # フォーマットの確認（rustfmt.toml）
 ```
 
-push と pull request のたびに、GitHub Actions が `cargo fmt --check`、`cargo clippy`（警告はエラー扱い）、`cargo test` を実行します。Linux と macOS の両方で、stable と最小対応バージョン（1.88）の Rust を使います。`cat` 互換のオプションについては、期待する出力をテストに直接書いています。それとは別に、GNU coreutils 9.0 以降の `cat`（`gcat` または `cat`）が見つかれば `hl` の出力と比べるテストも動きます。見つからないときは、メッセージを出してスキップします。macOS では `brew install coreutils` で `gcat` が入ります。テストは `HL_*` 環境変数、`HL_CONFIG`、XDG ディレクトリ、`HOME` を読まないので、手元の設定や設定ファイル、カスタムシンタックスの影響を受けません。エスケープシーケンスの除去、UTF-16 のデコード、`--max-size` と `--line-range` の値の解析には、プロパティテスト（[proptest](https://github.com/proptest-rs/proptest)）もあります。ランダムな入力を、読み込みの区切りもランダムにして、テストごとに 256 件試します。手元でもっと多く試すときは、`PROPTEST_CASES=20000 cargo test` のように `PROPTEST_CASES` を指定してください。失敗したケースは `proptest-regressions/` に保存されます。コミットしておくと、以降は最初にそのケースを試します。`rustfmt.toml` には nightly でしか効かないオプションがあるため、フォーマットの確認には nightly の rustfmt を使います。手元で揃えるときは `cargo +nightly fmt` を実行してください。clippy は固定した Rust のバージョンで実行します（`.github/workflows/ci.yml` と `release.yml` の `clippy` ジョブ）。新しい Rust のリリースで lint が増えても、それだけで CI が失敗しないようにするためです。バージョンは両方のファイルで手動で上げ、新しく出た警告も同じ変更で直してください。`Cargo.toml` の `[lints]` で `clippy::pedantic` の lint も有効にしています。その箇所には合わない lint は、そこで `#[expect(clippy::..., reason = "...")]` を付けて止め、理由を書いてください。
+push と pull request のたびに、GitHub Actions が `cargo fmt --check`、`cargo clippy`（警告はエラー扱い）、`cargo test` を実行します。Linux、macOS、Windows のそれぞれで、stable と最小対応バージョン（1.88）の Rust を使います。`cat` 互換のオプションについては、期待する出力をテストに直接書いています。それとは別に、GNU coreutils 9.0 以降の `cat`（`gcat` または `cat`）が見つかれば `hl` の出力と比べるテストも動きます。見つからないとき（Windows など）は、メッセージを出してスキップします。macOS では `brew install coreutils` で `gcat` が入ります。テストは `HL_*` 環境変数、`HL_CONFIG`、XDG ディレクトリ、`APPDATA`、`LOCALAPPDATA`、`HOME` を読まないので、手元の設定や設定ファイル、カスタムシンタックスの影響を受けません。エスケープシーケンスの除去、UTF-16 のデコード、`--max-size` と `--line-range` の値の解析には、プロパティテスト（[proptest](https://github.com/proptest-rs/proptest)）もあります。ランダムな入力を、読み込みの区切りもランダムにして、テストごとに 256 件試します。手元でもっと多く試すときは、`PROPTEST_CASES=20000 cargo test` のように `PROPTEST_CASES` を指定してください。失敗したケースは `proptest-regressions/` に保存されます。コミットしておくと、以降は最初にそのケースを試します。`rustfmt.toml` には nightly でしか効かないオプションがあるため、フォーマットの確認には nightly の rustfmt を使います。手元で揃えるときは `cargo +nightly fmt` を実行してください。`.gitattributes` で、Windows で `core.autocrlf` を使っていても改行を LF のままチェックアウトするので、テストはどの OS でも同じファイルを見ます。Linux や macOS から Windows 向けのコードを型検査するときは、一度 `rustup target add x86_64-pc-windows-msvc` を実行してから `cargo clippy --all-targets --target x86_64-pc-windows-msvc` を実行します。リンクはしないので Windows のツールチェーンは要りませんが、テストを実行できるのは Windows だけです。clippy は固定した Rust のバージョンで実行します（`.github/workflows/ci.yml` と `release.yml` の `clippy` ジョブ）。新しい Rust のリリースで lint が増えても、それだけで CI が失敗しないようにするためです。バージョンは両方のファイルで手動で上げ、新しく出た警告も同じ変更で直してください。`Cargo.toml` の `[lints]` で `clippy::pedantic` の lint も有効にしています。その箇所には合わない lint は、そこで `#[expect(clippy::..., reason = "...")]` を付けて止め、理由を書いてください。
 
 | ファイル | 役割 |
 | --- | --- |
@@ -269,15 +308,16 @@ push と pull request のたびに、GitHub Actions が `cargo fmt --check`、`c
 | `src/assets.rs` | デフォルトのテーマ、同梱の構文、設定ディレクトリのカスタム構文・テーマの読み込みと同梱分とのマージ、構文キャッシュ（`--build-cache`/`--clear-cache`）。ディレクトリは引数で受け取り、環境変数は読まない |
 | `src/cli.rs` | コマンドライン引数の定義（clap）と、設定ファイルの適用（オプションのデフォルト値、フラグ、`map-syntax`）。ほかのモジュールは生のフィールドではなく、関連するオプションをまとめるメソッド（`numbering()`、`visibility()`、`limits()` など）で引数を読む |
 | `src/color.rs` | 端末の色深度の判定、256 色へのフォールバック、色・太字・リセットのエスケープシーケンス |
-| `src/config.rs` | 設定ファイルの読み込み（`HL_CONFIG` か設定ディレクトリ）と、設定・キャッシュディレクトリ（`Dirs`。`XDG_CONFIG_HOME`/`XDG_CACHE_HOME` と `HOME` から求める） |
+| `src/config.rs` | 設定ファイルの読み込み（`HL_CONFIG` か設定ディレクトリ）と、設定・キャッシュディレクトリ（`Dirs`。`XDG_CONFIG_HOME`/`XDG_CACHE_HOME`、Windows では `APPDATA`/`LOCALAPPDATA`、`HOME` から求める） |
+| `src/console.rs` | Windows のコンソールでエスケープシーケンスの処理を有効にする（Windows Terminal 以外の cmd.exe や PowerShell でも色が出るようにする） |
 | `src/diag.rs` | 標準エラー出力への警告・エラーメッセージ。標準エラー出力にはすべてここを通して書くので、`hl: ` の書式は 1 か所で決まる。エラーは原因まで含めて表示する（`パス: 理由`） |
 | `src/encoding.rs` | UTF-8/UTF-16 の BOM 判定と UTF-16 のデコード |
 | `build.rs` | two-face の JavaScript 構文の修正と、構文の同梱 |
 | `src/highlight.rs` | 言語判定、`--map-syntax` の対応付け、サイズの上限、ハイライト出力（syntect。専用のスレッドで、時間の上限付き）。警告は出さず、ハイライトをあきらめた理由は呼び出し側に渡す |
 | `src/lines.rs` | 行番号、空行の圧縮、`cat -v`/`-E`/`-T` の表記 |
-| `src/pager.rs` | `$PAGER` からのページャのコマンドの組み立て、起動、終了待ち |
+| `src/pager.rs` | `$PAGER` からのページャのコマンドの組み立て（シェルと同じ規則、Windows では Windows の規則で分ける）、起動、終了待ち。既定の `less` がないことはほかの失敗と分けて返し、`src/main.rs` が代わりに標準出力に表示できるようにする |
 | `src/print.rs` | 各入力の順次出力（ハイライトありかなしか）、ヘッダ、文字コードの扱い。警告は出さず、入力の問題（読めない、ハイライトをあきらめた）はコールバックに渡す。`print_all` は `PrintOutcome`（入力の失敗があったか、出力を中断させた書き込みエラー）を返す |
-| `src/stdout.rs` | 起動時に標準出力が閉じられていたかの判定（std が `/dev/null` で開き直す前に確かめる） |
+| `src/stdout.rs` | 起動時に標準出力が閉じられていたかの判定（Unix では std が `/dev/null` で開き直す前に確かめ、Windows では標準出力のハンドルがあるかを確かめる） |
 | `src/test_support.rs` | 単体テスト専用の補助。入力を指定したサイズずつ返すリーダーと、そのサイズを作る proptest の strategy |
 
 ### 依存関係
@@ -310,7 +350,7 @@ cargo deny check
    git push origin vX.Y.Z
    ```
 
-すると `.github/workflows/release.yml` が 4 つのプラットフォーム向けにバイナリをビルドし、`hl` 自身で生成した補完スクリプトと man ページとまとめてアーカイブし、SHA-256 のチェックサムとともに GitHub のリリースとして公開します。リリースノートは CHANGELOG の該当の節です。タグが `Cargo.toml` のバージョンと一致しない場合や、CHANGELOG にそのバージョンの節がない場合は、何も公開せずに失敗します。CI のワークフローの結果は待たないので、ビルドの前にテスト（Linux と macOS）と clippy を自分で実行し、失敗したら何も公開しません。ビルドキャッシュは使わず、タグのソースだけからビルドします。
+すると `.github/workflows/release.yml` が 5 つのプラットフォーム向けにバイナリをビルドし、`hl` 自身で生成した補完スクリプトと man ページとまとめてアーカイブし（Windows は zip、それ以外は tar.gz）、SHA-256 のチェックサムとともに GitHub のリリースとして公開します。リリースノートは CHANGELOG の該当の節です。タグが `Cargo.toml` のバージョンと一致しない場合や、CHANGELOG にそのバージョンの節がない場合は、何も公開せずに失敗します。CI のワークフローの結果は待たないので、ビルドの前にテスト（Linux、macOS、Windows）と clippy を自分で実行し、失敗したら何も公開しません。ビルドキャッシュは使わず、タグのソースだけからビルドします。
 
 `v*` のタグを push できる人は誰でもリリースを公開できます。これを制限するには、リポジトリの設定（Settings → Rules → Rulesets）で `v*` を対象にしたタグのルールセットを作り、タグの作成・更新・削除をメンテナーに限ってください。
 

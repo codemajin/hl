@@ -62,8 +62,8 @@ jobs:
     strategy:
       matrix:
         # As in ci.yml: ubuntu-24.04 and Homebrew's coreutils provide the GNU
-        # `cat` that one test compares `hl` with.
-        os: [ubuntu-24.04, macos-latest]
+        # `cat` that one test compares `hl` with; Windows skips it.
+        os: [ubuntu-24.04, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -109,6 +109,7 @@ jobs:
           target/debug/hl --completions bash > completions/hl.bash
           target/debug/hl --completions zsh > completions/_hl
           target/debug/hl --completions fish > completions/hl.fish
+          target/debug/hl --completions powershell > completions/_hl.ps1
           target/debug/hl --man > man/hl.1
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -134,6 +135,8 @@ jobs:
             os: macos-latest
           - target: aarch64-apple-darwin
             os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -149,18 +152,40 @@ jobs:
         with:
           name: assets
           path: assets
+      # Git Bash on Windows, so that one script packs every target: a zip
+      # with `hl.exe` there, a tar.gz elsewhere.
       - name: Package
+        shell: bash
         run: |
           name="hl-$GITHUB_REF_NAME-${{ matrix.target }}"
           mkdir "$name"
-          cp "target/${{ matrix.target }}/release/hl" LICENSE README.md README_ja.md CHANGELOG.md "$name/"
+          if [ "$RUNNER_OS" = Windows ]; then
+            exe=hl.exe
+          else
+            exe=hl
+          fi
+          cp "target/${{ matrix.target }}/release/$exe" LICENSE README.md README_ja.md CHANGELOG.md "$name/"
           cp -R assets/completions assets/man "$name/"
-          tar czf "$name.tar.gz" "$name"
-          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+          if [ "$RUNNER_OS" = Windows ]; then
+            archive="$name.zip"
+            7z a "$archive" "$name"
+          else
+            archive="$name.tar.gz"
+            tar czf "$archive" "$name"
+          fi
+          # Linux and Git Bash have sha256sum, macOS has shasum; the output
+          # is the same.
+          if command -v sha256sum > /dev/null; then
+            sha256sum "$archive" > "$archive.sha256"
+          else
+            shasum -a 256 "$archive" > "$archive.sha256"
+          fi
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: hl-${{ matrix.target }}
-          path: hl-*.tar.gz*
+          path: |
+            hl-*.tar.gz*
+            hl-*.zip*
 
   release:
     name: publish the release

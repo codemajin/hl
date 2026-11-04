@@ -20,7 +20,10 @@ pub struct Pager {
 #[derive(Debug)]
 pub enum SpawnError {
     /// `$PAGER` has an unclosed quote.
-    Parse(shell_words::ParseError),
+    Parse(String),
+    /// `$PAGER` is unset or blank and the default pager, `less`, is not
+    /// installed. Not an error: the output goes to stdout instead.
+    DefaultMissing,
     /// The pager program could not be run.
     Start { program: String, err: io::Error },
 }
@@ -29,6 +32,10 @@ impl fmt::Display for SpawnError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Parse(err) => write!(f, "invalid PAGER: {err}"),
+            Self::DefaultMissing => write!(
+                f,
+                "{DEFAULT_PAGER} not found, printing without a pager (set PAGER to choose one)"
+            ),
             Self::Start { program, err } => {
                 write!(f, "failed to start pager '{program}': {}", describe(err))
             }
@@ -37,6 +44,9 @@ impl fmt::Display for SpawnError {
 }
 
 impl std::error::Error for SpawnError {}
+
+/// The pager used when `$PAGER` is unset or blank.
+const DEFAULT_PAGER: &str = "less";
 
 impl Pager {
     /// Starts the pager for `pager`, the value of `$PAGER` (see [`command`]).
@@ -48,9 +58,10 @@ impl Pager {
         less_set: bool,
         quit_if_one_screen: bool,
     ) -> Result<Self, SpawnError> {
-        let (program, args) =
-            command(pager, less_set, quit_if_one_screen).map_err(SpawnError::Parse)?;
-        Self::start(&program, &args).map_err(|err| SpawnError::Start { program, err })
+        let words = split(pager.unwrap_or_default()).map_err(SpawnError::Parse)?;
+        let default = words.is_empty();
+        let (program, args) = command(words, less_set, quit_if_one_screen);
+        Self::start(&program, &args).map_err(|err| start_error(default, program, err))
     }
 
     /// Starts `program` with `args`, piping our output to its stdin.
@@ -82,32 +93,88 @@ impl Pager {
     }
 }
 
+/// The error for `program` failing to start with `err`; `default` tells
+/// whether it is the default pager, whose absence is not an error.
+fn start_error(default: bool, program: String, err: io::Error) -> SpawnError {
+    if default && err.kind() == io::ErrorKind::NotFound {
+        SpawnError::DefaultMissing
+    } else {
+        SpawnError::Start { program, err }
+    }
+}
+
 /// The flags `less` needs to show our colors (`-R`) and to leave the output
 /// on the screen (`-X`), plus `-F` to exit at once when it fits on one screen.
 fn less_flags(quit_if_one_screen: bool) -> &'static str {
     if quit_if_one_screen { "-RFX" } else { "-RX" }
 }
 
-/// The program and arguments to run for `$PAGER` (`pager`), split with the
-/// word splitting rules of the shell, or `less` when it is unset or blank.
+/// `$PAGER` split into words: with the word splitting rules of the shell,
+/// or on Windows with those of [`split_windows`], where a backslash is the
+/// path separator rather than an escape.
+fn split(pager: &str) -> Result<Vec<String>, String> {
+    if cfg!(windows) {
+        split_windows(pager)
+    } else {
+        shell_words::split(pager).map_err(|e| e.to_string())
+    }
+}
+
+/// Splits `s` at whitespace, keeping what is between double quotes together
+/// (`"C:\Program Files\Git\usr\bin\less.exe" -R`). Backslashes are kept
+/// as they are, and `""` is an empty word.
+fn split_windows(s: &str) -> Result<Vec<String>, String> {
+    let mut words = Vec::new();
+    let mut word: Option<String> = None;
+    let mut quoted = false;
+    for c in s.chars() {
+        match c {
+            '"' => {
+                quoted = !quoted;
+                word.get_or_insert_with(String::new);
+            }
+            c if c.is_whitespace() && !quoted => words.extend(word.take()),
+            c => word.get_or_insert_with(String::new).push(c),
+        }
+    }
+    if quoted {
+        return Err("missing closing quote".into());
+    }
+    words.extend(word);
+    Ok(words)
+}
+
+/// Whether `program` is `less`, also as a path, and on Windows as
+/// `less.exe` in any case.
+fn is_less(program: &str) -> bool {
+    let Some(name) = Path::new(program).file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    if cfg!(windows) {
+        name.eq_ignore_ascii_case("less") || name.eq_ignore_ascii_case("less.exe")
+    } else {
+        name == "less"
+    }
+}
+
+/// The program and arguments to run for the `words` of `$PAGER`, or `less`
+/// when there are none.
 ///
 /// A bare `less` (no arguments, `$LESS` unset) gets the same flags as the
 /// fallback; otherwise the user's own options are respected.
-fn command(
-    pager: Option<&str>,
-    less_set: bool,
-    quit_if_one_screen: bool,
-) -> Result<(String, Vec<String>), shell_words::ParseError> {
-    let mut words = shell_words::split(pager.unwrap_or_default())?.into_iter();
+fn command(words: Vec<String>, less_set: bool, quit_if_one_screen: bool) -> (String, Vec<String>) {
+    let mut words = words.into_iter();
     let Some(program) = words.next() else {
-        return Ok(("less".into(), vec![less_flags(quit_if_one_screen).into()]));
+        return (
+            DEFAULT_PAGER.into(),
+            vec![less_flags(quit_if_one_screen).into()],
+        );
     };
     let mut args: Vec<String> = words.collect();
-    let is_less = Path::new(&program).file_name().is_some_and(|n| n == "less");
-    if is_less && args.is_empty() && !less_set {
+    if is_less(&program) && args.is_empty() && !less_set {
         args.push(less_flags(quit_if_one_screen).into());
     }
-    Ok((program, args))
+    (program, args)
 }
 
 impl Drop for Pager {
@@ -121,9 +188,19 @@ impl Drop for Pager {
 mod tests {
     use super::*;
 
-    /// `command` with `$LESS` unset, unwrapped.
+    /// The command for `pager`, the value of `$PAGER`.
+    fn full(
+        pager: Option<&str>,
+        less_set: bool,
+        quit_if_one_screen: bool,
+    ) -> Result<(String, Vec<String>), String> {
+        let words = split(pager.unwrap_or_default())?;
+        Ok(command(words, less_set, quit_if_one_screen))
+    }
+
+    /// The command with `$LESS` unset, unwrapped.
     fn cmd(pager: Option<&str>, quit_if_one_screen: bool) -> (String, Vec<String>) {
-        command(pager, false, quit_if_one_screen).unwrap()
+        full(pager, false, quit_if_one_screen).unwrap()
     }
 
     fn words(program: &str, args: &[&str]) -> (String, Vec<String>) {
@@ -137,19 +214,15 @@ mod tests {
         assert_eq!(cmd(Some(""), true), words("less", &["-RFX"]));
         assert_eq!(cmd(Some(" \t"), false), words("less", &["-RX"]));
         // The fallback is the same with `$LESS` set.
-        assert_eq!(command(None, true, true).unwrap(), words("less", &["-RFX"]));
+        assert_eq!(full(None, true, true).unwrap(), words("less", &["-RFX"]));
     }
 
     #[test]
-    fn pager_is_split_like_the_shell() {
+    fn pager_is_split_into_words() {
         assert_eq!(cmd(Some("more"), true), words("more", &[]));
         assert_eq!(
             cmd(Some("  less  -R   -S "), true),
             words("less", &["-R", "-S"])
-        );
-        assert_eq!(
-            cmd(Some("sh -c 'exit 3'"), false),
-            words("sh", &["-c", "exit 3"])
         );
         assert_eq!(
             cmd(Some(r#""/opt/my pager/bin/pg" -x"#), false),
@@ -157,10 +230,38 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
+    #[test]
+    fn pager_is_split_like_the_shell() {
+        assert_eq!(
+            cmd(Some("sh -c 'exit 3'"), false),
+            words("sh", &["-c", "exit 3"])
+        );
+        assert_eq!(cmd(Some(r"a\ b c"), false), words("a b", &["c"]));
+    }
+
+    #[test]
+    fn splits_windows_commands_keeping_backslashes() {
+        let split = |s| split_windows(s).unwrap();
+        assert_eq!(split(r"C:\tools\less.exe -R"), [r"C:\tools\less.exe", "-R"]);
+        assert_eq!(
+            split(r#""C:\Program Files\Git\usr\bin\less.exe" -R"#),
+            [r"C:\Program Files\Git\usr\bin\less.exe", "-R"]
+        );
+        assert_eq!(split(r#"a" b "c"#), ["a b c"]);
+        assert_eq!(split(r#"pg "" x"#), ["pg", "", "x"]);
+        assert_eq!(split("'a b'"), ["'a", "b'"]);
+        assert_eq!(split(" \t "), Vec::<String>::new());
+        assert_eq!(
+            split_windows(r#""C:\x y"#).unwrap_err(),
+            "missing closing quote"
+        );
+    }
+
     #[test]
     fn rejects_an_unclosed_quote() {
-        assert!(command(Some("sh -c 'exit 3"), false, false).is_err());
-        let err = Pager::spawn(Some("sh -c 'exit 3"), false, false)
+        assert!(full(Some(r#"sh -c "exit 3"#), false, false).is_err());
+        let err = Pager::spawn(Some(r#"sh -c "exit 3"#), false, false)
             .err()
             .unwrap();
         assert_eq!(err.to_string(), "invalid PAGER: missing closing quote");
@@ -176,18 +277,47 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn bare_less_exe_gets_the_default_flags() {
+        for pager in [
+            "less.exe",
+            "LESS.EXE",
+            r"C:\tools\less.exe",
+            r#""C:\Program Files\less""#,
+        ] {
+            let (_, args) = cmd(Some(pager), true);
+            assert_eq!(args, ["-RFX"], "{pager}");
+        }
+    }
+
     #[test]
     fn respects_the_users_less_options() {
         // Arguments of its own.
         assert_eq!(cmd(Some("less -S"), true), words("less", &["-S"]));
         // Options in `$LESS`.
-        assert_eq!(
-            command(Some("less"), true, true).unwrap(),
-            words("less", &[])
-        );
+        assert_eq!(full(Some("less"), true, true).unwrap(), words("less", &[]));
         // Other programs, even with a similar name.
         assert_eq!(cmd(Some("lesspipe"), true), words("lesspipe", &[]));
         assert_eq!(cmd(Some("most"), true), words("most", &[]));
+    }
+
+    #[test]
+    fn a_missing_default_pager_is_not_an_error() {
+        let not_found = || io::Error::from(io::ErrorKind::NotFound);
+        let err = start_error(true, "less".into(), not_found());
+        assert!(matches!(err, SpawnError::DefaultMissing), "{err:?}");
+        assert_eq!(
+            err.to_string(),
+            "less not found, printing without a pager (set PAGER to choose one)"
+        );
+        // A pager the user chose is an error, even if it is `less`.
+        let err = start_error(false, "less".into(), not_found());
+        assert!(matches!(err, SpawnError::Start { .. }), "{err:?}");
+        // So is a default pager that is there but fails to start.
+        let denied = io::Error::from(io::ErrorKind::PermissionDenied);
+        let err = start_error(true, "less".into(), denied);
+        assert!(matches!(err, SpawnError::Start { .. }), "{err:?}");
     }
 
     /// A pager that copies its input to `path` instead of the terminal.

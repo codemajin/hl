@@ -1,9 +1,13 @@
 //! Whether stdout was open when `hl` started.
 //!
-//! Before `main`, std reopens a closed stdin, stdout or stderr on
-//! `/dev/null`, so a closed stdout (`hl >&-`) would silently swallow the
+//! On Unix, std reopens a closed stdin, stdout or stderr on `/dev/null`
+//! before `main`, so a closed stdout (`hl >&-`) would silently swallow the
 //! output and `hl` would exit with 0. A function run by the loader, before
 //! std's own setup, looks at fd 1 first.
+//!
+//! On Windows, std leaves the standard handles alone, but writing to a
+//! missing one (a null or invalid handle) succeeds without writing
+//! anything. `check` asks for the handle itself.
 
 use std::{
     io,
@@ -16,9 +20,54 @@ static ERROR: AtomicI32 = AtomicI32::new(0);
 /// An error if stdout was closed when `hl` started. Platforms without the
 /// check always get `Ok`.
 pub fn check() -> io::Result<()> {
+    #[cfg(windows)]
+    windows::check()?;
     match ERROR.load(Ordering::Relaxed) {
         0 => Ok(()),
         code => Err(io::Error::from_raw_os_error(code)),
+    }
+}
+
+#[cfg(windows)]
+mod windows {
+    use std::io;
+
+    use windows_sys::Win32::{
+        Foundation::{ERROR_INVALID_HANDLE, HANDLE, INVALID_HANDLE_VALUE},
+        System::Console::{GetStdHandle, STD_OUTPUT_HANDLE},
+    };
+
+    /// An error if the process has no stdout handle.
+    pub fn check() -> io::Result<()> {
+        // SAFETY: GetStdHandle takes no pointers and only reads the handle
+        // of the process.
+        let handle = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+        if is_missing(handle) {
+            #[expect(clippy::cast_possible_wrap, reason = "a small error code")]
+            return Err(io::Error::from_raw_os_error(ERROR_INVALID_HANDLE as i32));
+        }
+        Ok(())
+    }
+
+    /// Whether `handle`, as `GetStdHandle` returns it, is missing: null when
+    /// the process has none, `INVALID_HANDLE_VALUE` when the call failed.
+    fn is_missing(handle: HANDLE) -> bool {
+        handle.is_null() || handle == INVALID_HANDLE_VALUE
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn tells_missing_handles() {
+            assert!(is_missing(std::ptr::null_mut()));
+            assert!(is_missing(INVALID_HANDLE_VALUE));
+            // SAFETY: as in `check`.
+            let handle = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+            // The test harness runs with a stdout.
+            assert!(!is_missing(handle));
+        }
     }
 }
 

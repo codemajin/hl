@@ -6,7 +6,7 @@ use std::fs;
 use predicates::prelude::*;
 
 use crate::common::{
-    ANSI256, ESC, TRUECOLOR, assert_depth, colored, files, hl, hl_with_config, tempdir,
+    ANSI256, ESC, NOT_FOUND, TRUECOLOR, assert_depth, colored, files, hl, hl_with_config, tempdir,
 };
 
 #[test]
@@ -43,8 +43,25 @@ fn ignores_a_relative_xdg_config_home() {
         home.path(),
         &[(".config/hl/config.toml", "color = \"always\"\n")],
     );
+    // On Windows APPDATA comes before HOME.
     hl().env("HOME", home.path())
         .env("XDG_CONFIG_HOME", "relative")
+        .env_remove("APPDATA")
+        .arg("Cargo.toml")
+        .assert()
+        .success()
+        .stderr("")
+        .stdout(predicate::str::contains(ESC));
+}
+
+/// Without `XDG_CONFIG_HOME`, Windows reads the config from `%APPDATA%\hl`.
+#[cfg(windows)]
+#[test]
+fn reads_the_config_from_appdata() {
+    let dir = tempdir();
+    files(dir.path(), &[("hl/config.toml", "color = \"always\"\n")]);
+    hl().env_remove("XDG_CONFIG_HOME")
+        .env("APPDATA", dir.path())
         .arg("Cargo.toml")
         .assert()
         .success()
@@ -85,9 +102,9 @@ fn warns_when_the_hl_config_file_is_missing() {
         .arg("Cargo.toml")
         .assert()
         .success()
-        .stderr(predicate::str::contains(
-            "missing.toml: No such file or directory",
-        ))
+        .stderr(predicate::str::contains(format!(
+            "missing.toml: {NOT_FOUND}"
+        )))
         .stdout(content);
 }
 

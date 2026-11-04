@@ -2,6 +2,7 @@ mod assets;
 mod cli;
 mod color;
 mod config;
+mod console;
 mod diag;
 mod encoding;
 mod escape;
@@ -28,7 +29,7 @@ use config::{Config, Dirs};
 use diag::{describe, describe_error, escape_controls};
 use highlight::{Highlighter, Limits, Origin, Syntax, SyntaxMapping, find_language};
 use lines::{LineHighlight, LineState};
-use pager::Pager;
+use pager::{Pager, SpawnError};
 use print::{Headers, Input, PrintOutcome, Printer, Problem, TrackedWriter, is_stdin, print_all};
 use syntect::{highlighting::Theme, parsing::SyntaxSet};
 
@@ -219,6 +220,9 @@ fn print_inputs(
     // An empty `LESS` gives `less` no options, so it counts as unset.
     let less_set = env::var_os("LESS").is_some_and(|v| !v.is_empty());
     let mut pager = start_pager(args.paging(), tty, pager_env.as_deref(), less_set)?;
+    if color && pager.is_none() {
+        console::enable_vt();
+    }
     let mut out = TrackedWriter::new(BufWriter::new(match pager.as_mut() {
         Some(p) => Box::new(p.stdin()) as Box<dyn Write>,
         None => Box::new(io::stdout().lock()),
@@ -264,11 +268,21 @@ fn start_pager(
     if !when.should_page(tty) {
         return Ok(None);
     }
-    Ok(Some(Pager::spawn(
-        pager,
-        less_set,
-        when == PagingWhen::Auto,
-    )?))
+    pager_or_stdout(Pager::spawn(pager, less_set, when == PagingWhen::Auto))
+}
+
+/// The pager that `spawned` started, or `None` with a warning when the
+/// default pager is missing, as `less` usually is on Windows, so that the
+/// output goes to stdout.
+fn pager_or_stdout(spawned: Result<Pager, SpawnError>) -> Result<Option<Pager>> {
+    match spawned {
+        Ok(pager) => Ok(Some(pager)),
+        Err(err @ SpawnError::DefaultMissing) => {
+            diag::note(err);
+            Ok(None)
+        }
+        Err(err) => Err(err.into()),
+    }
 }
 
 fn open_input(path: &Path, limits: Limits) -> io::Result<Input<'_>> {
@@ -279,12 +293,23 @@ fn open_input(path: &Path, limits: Limits) -> io::Result<Input<'_>> {
             too_large: false,
         });
     }
-    let file = File::open(path)?;
+    let file = File::open(path).map_err(|e| directory_error(path, e))?;
     Ok(Input {
         too_large: limits.exceeds_size(file.metadata()?.len()),
         source: Box::new(file),
         path: Some(path),
     })
+}
+
+/// `err`, from opening `path`, as "Is a directory" on Windows when `path` is
+/// one. On Unix a directory opens and fails to read with that message, but
+/// on Windows opening it fails with "Access is denied".
+fn directory_error(path: &Path, err: io::Error) -> io::Error {
+    if cfg!(windows) && path.is_dir() {
+        io::Error::new(io::ErrorKind::IsADirectory, "Is a directory")
+    } else {
+        err
+    }
 }
 
 fn is_broken_pipe(err: &io::Error) -> bool {
@@ -477,6 +502,20 @@ mod tests {
             let pager = start_pager(when, tty, MISSING, false).unwrap();
             assert!(pager.is_none(), "{when:?}, tty {tty}");
         }
+    }
+
+    #[test]
+    fn a_missing_default_pager_falls_back_to_stdout() {
+        assert!(
+            pager_or_stdout(Err(SpawnError::DefaultMissing))
+                .unwrap()
+                .is_none()
+        );
+        let err = SpawnError::Start {
+            program: "less".into(),
+            err: io::ErrorKind::NotFound.into(),
+        };
+        assert!(pager_or_stdout(Err(err)).is_err());
     }
 
     /// The error goes up through `run`, and `main` turns every error into

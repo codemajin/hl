@@ -20,7 +20,7 @@ use syntect::{
 use two_face::theme::LazyThemeSet;
 
 use crate::{
-    config::Dirs,
+    config::{CACHE_VAR, Dirs},
     diag::{describe, note, warn},
 };
 
@@ -71,7 +71,7 @@ pub enum CacheReport {
 
 /// Merges the custom syntaxes and writes them to the cache.
 pub fn build_cache(dirs: &Dirs) -> Result<CacheReport> {
-    let path = cache_path(dirs).ok_or_else(|| anyhow!("no cache directory (set HOME)"))?;
+    let path = cache_path(dirs).ok_or_else(|| anyhow!("no cache directory (set {CACHE_VAR})"))?;
     let files = syntax_files(dirs);
     if files.is_empty() {
         remove_cache(&path)?;
@@ -495,7 +495,10 @@ contexts:
             cache: None,
         };
         let err = build_cache(&dirs).err().unwrap();
-        assert_eq!(err.to_string(), "no cache directory (set HOME)");
+        assert_eq!(
+            err.to_string(),
+            format!("no cache directory (set {CACHE_VAR})")
+        );
         clear_cache(&dirs).unwrap();
     }
 

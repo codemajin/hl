@@ -326,11 +326,16 @@ fn build_cache_needs_a_cache_directory() {
     assets
         .hl()
         .env_remove("XDG_CACHE_HOME")
+        .env_remove("LOCALAPPDATA")
         .env_remove("HOME")
         .arg("--build-cache")
         .assert()
         .code(1)
-        .stderr("hl: no cache directory (set HOME)\n");
+        .stderr(if cfg!(windows) {
+            "hl: no cache directory (set LOCALAPPDATA)\n"
+        } else {
+            "hl: no cache directory (set HOME)\n"
+        });
 }
 
 #[test]

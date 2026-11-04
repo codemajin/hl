@@ -169,7 +169,8 @@ pub struct Args {
 
     /// When to send output through a pager ($PAGER, or `less`): `auto` pages
     /// only when the output does not fit on one screen. A bare `less` in
-    /// $PAGER gets -RX (-RFX with `auto`) unless $LESS is set.
+    /// $PAGER gets -RX (-RFX with `auto`) unless $LESS is set. Without $PAGER
+    /// and `less`, the output is printed with a warning.
     #[arg(long, value_enum, value_name = "WHEN", default_value_t = PagingWhen::Never, overrides_with = "page")]
     paging: PagingWhen,
 

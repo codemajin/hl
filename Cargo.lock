@@ -372,6 +372,7 @@ dependencies = [
  "tempfile",
  "toml",
  "two-face",
+ "windows-sys",
 ]
 
 [[package]]

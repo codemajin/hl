@@ -12,40 +12,67 @@ use crate::diag::{describe, warn};
 /// The directories `hl` reads its files from, resolved once at startup and
 /// handed to the code that needs them.
 pub struct Dirs {
-    /// `$XDG_CONFIG_HOME/hl`, else `~/.config/hl`. Unlike the config file,
-    /// it does not follow `HL_CONFIG`.
+    /// `$XDG_CONFIG_HOME/hl`, else `%APPDATA%\hl` on Windows, else
+    /// `~/.config/hl`. Unlike the config file, it does not follow
+    /// `HL_CONFIG`.
     pub config: Option<PathBuf>,
-    /// `$XDG_CACHE_HOME/hl`, else `~/.cache/hl`.
+    /// `$XDG_CACHE_HOME/hl`, else `%LOCALAPPDATA%\hl` on Windows, else
+    /// `~/.cache/hl`.
     pub cache: Option<PathBuf>,
 }
 
+/// One of the directories: the XDG variable, the Windows variable used
+/// next, and the directory under `HOME` used last.
+struct Lookup {
+    xdg: &'static str,
+    windows: &'static str,
+    home: &'static str,
+}
+
+const CONFIG: Lookup = Lookup {
+    xdg: "XDG_CONFIG_HOME",
+    windows: "APPDATA",
+    home: ".config",
+};
+
+const CACHE: Lookup = Lookup {
+    xdg: "XDG_CACHE_HOME",
+    windows: "LOCALAPPDATA",
+    home: ".cache",
+};
+
+/// The variable to set for a cache directory, for the message shown when
+/// there is none.
+pub const CACHE_VAR: &str = if cfg!(windows) { CACHE.windows } else { "HOME" };
+
 impl Dirs {
     pub fn from_env() -> Self {
-        Self::from_getenv(|name| env::var_os(name))
+        Self::from_getenv(|name| env::var_os(name), cfg!(windows))
     }
 
     /// The directories as given by the environment variables that `getenv`
-    /// returns.
-    fn from_getenv(getenv: impl Fn(&str) -> Option<OsString>) -> Self {
+    /// returns; `windows` adds the Windows variables to the lookup.
+    fn from_getenv(getenv: impl Fn(&str) -> Option<OsString>, windows: bool) -> Self {
         Self {
-            config: xdg_dir(&getenv, "XDG_CONFIG_HOME", ".config"),
-            cache: xdg_dir(&getenv, "XDG_CACHE_HOME", ".cache"),
+            config: lookup(&getenv, &CONFIG, windows),
+            cache: lookup(&getenv, &CACHE, windows),
         }
     }
 }
 
-/// `hl` under the XDG base directory in `var`, else under `~/<fallback>`.
-fn xdg_dir(
+/// `hl` under the XDG base directory of `dir`, else (on Windows) under the
+/// Windows one, else under `HOME`. Relative paths are ignored, as the XDG
+/// spec says, and so are empty ones.
+fn lookup(
     getenv: &impl Fn(&str) -> Option<OsString>,
-    var: &str,
-    fallback: &str,
+    dir: &Lookup,
+    windows: bool,
 ) -> Option<PathBuf> {
-    // The XDG spec says relative paths are invalid and should be ignored.
-    let dir = getenv(var)
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| getenv("HOME").map(|home| Path::new(&home).join(fallback)))?;
-    Some(dir.join("hl"))
+    let absolute = |var: &str| getenv(var).map(PathBuf::from).filter(|p| p.is_absolute());
+    let base = absolute(dir.xdg)
+        .or_else(|| windows.then(|| absolute(dir.windows)).flatten())
+        .or_else(|| getenv("HOME").map(|home| Path::new(&home).join(dir.home)))?;
+    Some(base.join("hl"))
 }
 
 /// Default option values read from the config file.
@@ -113,62 +140,117 @@ mod tests {
 
     use super::*;
 
-    /// `Dirs` for an environment with only `vars` set.
-    fn dirs_with(vars: &[(&str, &str)]) -> Dirs {
-        let vars: HashMap<_, _> = vars.iter().copied().collect();
-        Dirs::from_getenv(|name| vars.get(name).map(OsString::from))
+    /// `Dirs` for an environment with only `vars` set, outside Windows.
+    fn dirs_with(vars: &[(&str, String)]) -> Dirs {
+        dirs_on(vars, false)
+    }
+
+    /// `Dirs` for an environment with only `vars` set; `windows` tells
+    /// whether the Windows variables are looked up.
+    fn dirs_on(vars: &[(&str, String)], windows: bool) -> Dirs {
+        let vars: HashMap<_, _> = vars.iter().cloned().collect();
+        Dirs::from_getenv(|name| vars.get(name).map(OsString::from), windows)
+    }
+
+    /// `path`, made absolute on Windows too, where a path needs a drive.
+    fn abs(path: &str) -> String {
+        if cfg!(windows) {
+            format!("C:{path}")
+        } else {
+            path.to_string()
+        }
+    }
+
+    fn p(path: &str) -> PathBuf {
+        PathBuf::from(abs(path))
     }
 
     #[test]
     fn uses_absolute_xdg_dirs() {
-        let dirs = dirs_with(&[
-            ("XDG_CONFIG_HOME", "/xdg/config"),
-            ("XDG_CACHE_HOME", "/xdg/cache"),
-            ("HOME", "/home/u"),
-        ]);
-        assert_eq!(dirs.config.as_deref(), Some(Path::new("/xdg/config/hl")));
-        assert_eq!(dirs.cache.as_deref(), Some(Path::new("/xdg/cache/hl")));
+        for windows in [false, true] {
+            let dirs = dirs_on(
+                &[
+                    ("XDG_CONFIG_HOME", abs("/xdg/config")),
+                    ("XDG_CACHE_HOME", abs("/xdg/cache")),
+                    ("APPDATA", abs("/appdata")),
+                    ("LOCALAPPDATA", abs("/localappdata")),
+                    ("HOME", abs("/home/u")),
+                ],
+                windows,
+            );
+            assert_eq!(dirs.config, Some(p("/xdg/config/hl")), "{windows}");
+            assert_eq!(dirs.cache, Some(p("/xdg/cache/hl")), "{windows}");
+        }
     }
 
     #[test]
     fn falls_back_to_home_without_xdg_dirs() {
-        let dirs = dirs_with(&[("HOME", "/home/u")]);
-        assert_eq!(
-            dirs.config.as_deref(),
-            Some(Path::new("/home/u/.config/hl"))
-        );
-        assert_eq!(dirs.cache.as_deref(), Some(Path::new("/home/u/.cache/hl")));
+        let dirs = dirs_with(&[("HOME", abs("/home/u"))]);
+        assert_eq!(dirs.config, Some(p("/home/u/.config/hl")));
+        assert_eq!(dirs.cache, Some(p("/home/u/.cache/hl")));
     }
 
-    /// The XDG spec says relative paths are invalid and must be ignored.
     #[test]
-    fn ignores_relative_and_empty_xdg_dirs() {
+    fn uses_appdata_on_windows_only() {
+        let vars = [
+            ("APPDATA", abs("/appdata")),
+            ("LOCALAPPDATA", abs("/localappdata")),
+            ("HOME", abs("/home/u")),
+        ];
+        let dirs = dirs_on(&vars, true);
+        assert_eq!(dirs.config, Some(p("/appdata/hl")));
+        assert_eq!(dirs.cache, Some(p("/localappdata/hl")));
+
+        let dirs = dirs_on(&vars, false);
+        assert_eq!(dirs.config, Some(p("/home/u/.config/hl")));
+        assert_eq!(dirs.cache, Some(p("/home/u/.cache/hl")));
+    }
+
+    /// The XDG spec says relative paths are invalid and must be ignored; the
+    /// Windows variables are treated the same.
+    #[test]
+    fn ignores_relative_and_empty_dirs() {
         for value in ["relative", "./relative", ""] {
-            let dirs = dirs_with(&[
-                ("XDG_CONFIG_HOME", value),
-                ("XDG_CACHE_HOME", value),
-                ("HOME", "/home/u"),
-            ]);
-            assert_eq!(
-                dirs.config.as_deref(),
-                Some(Path::new("/home/u/.config/hl")),
-                "{value:?}"
-            );
-            assert_eq!(
-                dirs.cache.as_deref(),
-                Some(Path::new("/home/u/.cache/hl")),
-                "{value:?}"
-            );
+            let vars = [
+                ("XDG_CONFIG_HOME", value.to_string()),
+                ("XDG_CACHE_HOME", value.to_string()),
+                ("APPDATA", value.to_string()),
+                ("LOCALAPPDATA", value.to_string()),
+                ("HOME", abs("/home/u")),
+            ];
+            for windows in [false, true] {
+                let dirs = dirs_on(&vars, windows);
+                assert_eq!(dirs.config, Some(p("/home/u/.config/hl")), "{value:?}");
+                assert_eq!(dirs.cache, Some(p("/home/u/.cache/hl")), "{value:?}");
+            }
         }
     }
 
     #[test]
     fn has_no_dirs_without_home_or_xdg() {
-        let dirs = dirs_with(&[]);
+        let dirs = dirs_on(&[], true);
         assert_eq!(dirs.config, None);
         assert_eq!(dirs.cache, None);
 
-        let dirs = dirs_with(&[("XDG_CONFIG_HOME", "rel"), ("XDG_CACHE_HOME", "rel")]);
+        let rel = || "rel".to_string();
+        let dirs = dirs_on(
+            &[
+                ("XDG_CONFIG_HOME", rel()),
+                ("XDG_CACHE_HOME", rel()),
+                ("APPDATA", rel()),
+                ("LOCALAPPDATA", rel()),
+            ],
+            true,
+        );
+        assert_eq!(dirs.config, None);
+        assert_eq!(dirs.cache, None);
+    }
+
+    /// Outside Windows the Windows variables mean nothing, even when HOME is
+    /// missing.
+    #[test]
+    fn ignores_appdata_outside_windows() {
+        let dirs = dirs_with(&[("APPDATA", abs("/appdata")), ("LOCALAPPDATA", abs("/l"))]);
         assert_eq!(dirs.config, None);
         assert_eq!(dirs.cache, None);
     }

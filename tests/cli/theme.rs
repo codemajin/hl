@@ -4,7 +4,7 @@ use std::fs;
 
 use predicates::prelude::*;
 
-use crate::common::{colored, hl, strip_ansi};
+use crate::common::{NOT_FOUND, colored, hl, strip_ansi};
 
 #[test]
 fn theme_long_option_selects_the_theme() {
@@ -20,9 +20,7 @@ fn short_t_is_show_tabs_not_theme() {
     hl().args(["-t", "Nord"])
         .assert()
         .code(1)
-        .stderr(predicate::str::contains(
-            "hl: Nord: No such file or directory",
-        ));
+        .stderr(predicate::str::contains(format!("hl: Nord: {NOT_FOUND}")));
 }
 
 #[test]

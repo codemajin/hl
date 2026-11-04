@@ -13,6 +13,21 @@ pub const ESC: &str = "\x1b[";
 pub const TRUECOLOR: &str = "\x1b[38;2;";
 pub const ANSI256: &str = "\x1b[38;5;";
 
+/// The message of the OS for a file that does not exist.
+pub const NOT_FOUND: &str = if cfg!(windows) {
+    "The system cannot find the file specified."
+} else {
+    "No such file or directory"
+};
+
+/// A directory that does not exist, as an absolute path on every platform
+/// (`/nonexistent` has no drive, so it is not absolute on Windows).
+fn nonexistent(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join("nonexistent")
+        .join(name)
+}
+
 /// `hl` with `args`, run without `assert_cmd` to control its standard
 /// streams. Like `hl()`, it does not see the developer's environment.
 pub fn raw_hl(args: &[&str]) -> std::process::Command {
@@ -26,13 +41,16 @@ pub fn raw_hl(args: &[&str]) -> std::process::Command {
         .env_remove("WT_SESSION")
         .env("TERM", "xterm-256color")
         // Keeps the user's own config file, syntaxes, themes and cache out of
-        // the tests. HOME is set as well, so that a test that unsets an XDG
-        // variable never falls back to the user's `~/.config` or `~/.cache`;
-        // a test that needs it points it to a temporary directory.
+        // the tests. The Windows variables and HOME are set as well, so that
+        // a test that unsets an XDG variable never falls back to the user's
+        // `%APPDATA%`, `~/.config` and the like; a test that needs one points
+        // it to a temporary directory.
         .env_remove("HL_CONFIG")
-        .env("XDG_CONFIG_HOME", "/nonexistent/hl-test-config")
-        .env("XDG_CACHE_HOME", "/nonexistent/hl-test-cache")
-        .env("HOME", "/nonexistent/hl-test-home");
+        .env("XDG_CONFIG_HOME", nonexistent("hl-test-config"))
+        .env("XDG_CACHE_HOME", nonexistent("hl-test-cache"))
+        .env("APPDATA", nonexistent("hl-test-appdata"))
+        .env("LOCALAPPDATA", nonexistent("hl-test-localappdata"))
+        .env("HOME", nonexistent("hl-test-home"));
     cmd
 }
 

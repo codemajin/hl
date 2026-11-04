@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Windows (x86_64) support: CI runs the tests on Windows, and each release has a zip for `x86_64-pc-windows-msvc`. The README describes installing it with PowerShell.
+- The PowerShell completion script (`completions/_hl.ps1`) in every release archive.
+- On Windows, the config directory is `%APPDATA%\hl` and the cache directory `%LOCALAPPDATA%\hl` when `XDG_CONFIG_HOME` / `XDG_CACHE_HOME` is not set; `~/.config` and `~/.cache` are used only without them.
+- On Windows, colored output turns on escape sequence processing in the console, so that the colors show in cmd.exe and PowerShell outside Windows Terminal too.
+- On Windows, starting without a stdout handle is a write error (exit status 1), as a closed stdout is on Unix, instead of discarding the output.
+
+### Changed
+
+- When `PAGER` is unset or blank and `less` is not installed, `--paging` and `-p` print the output without a pager and warn (`hl: less not found, printing without a pager (set PAGER to choose one)`) instead of failing. A pager set in `PAGER` that fails to start is still an error.
+
+### Fixed
+
+- On Windows, `PAGER` is split by Windows rules: backslashes are kept, and double quotes group words (`PAGER='"C:\Program Files\Git\usr\bin\less.exe" -R'`). A bare `less.exe` gets `-RX` / `-RFX` like `less`.
+- On Windows, a `--map-syntax` pattern with `\` (such as `**\conf\*.cfg:INI`) matches the path, like one with `/`.
+- On Windows, a directory given as an input is reported as `Is a directory`, as on Unix, instead of `Access is denied.`.
+
 ## [0.2.0] - 2026-11-03
 
 ### Added

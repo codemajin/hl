@@ -4,7 +4,7 @@ use std::{fs, path::PathBuf};
 
 use predicates::prelude::*;
 
-use crate::common::{files, hl, stdout, strip_ansi, tempdir, utf16_with_bom};
+use crate::common::{NOT_FOUND, files, hl, stdout, strip_ansi, tempdir, utf16_with_bom};
 
 #[test]
 fn prints_a_header_before_each_file() {
@@ -129,7 +129,7 @@ fn prints_no_header_for_a_missing_file() {
         .assert()
         .code(1)
         .stdout(format!("==> {} <==\nhello\n", files[0].display()))
-        .stderr(predicate::str::contains("No such file or directory"));
+        .stderr(predicate::str::contains(NOT_FOUND));
 }
 
 /// A directory opens but cannot be read, so it gets no header either.
