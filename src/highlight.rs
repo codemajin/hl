@@ -242,10 +242,11 @@ impl Highlighter {
             // rather than replacing its bytes with U+FFFD.
             let text = std::str::from_utf8(&buf).ok();
             let Some(line) = text.filter(|_| !too_long && !limits.exceeds_size(total)) else {
-                match pipeline.finish(out, lines)? {
-                    Flow::Continue => {}
-                    Flow::Done => return Ok(()),
-                    Flow::Plain => return write_plain(reader, out, lines, Visibility::default()),
+                // The pending lines are printed, highlighted or, if
+                // highlighting was given up on the way, plain. Either way
+                // `buf` comes next.
+                if pipeline.finish(out, lines)? == Flow::Done {
+                    return Ok(());
                 }
                 if lines.begin_line(&buf, out)? {
                     lines.write_raw(&buf, out)?;
@@ -1082,34 +1083,171 @@ contexts:
       set: main
 ";
 
-    #[test]
-    fn prints_the_rest_plain_when_a_line_takes_too_long() {
+    /// A syntax that fails on `x`: it pushes a syntax that does not exist.
+    const FAILING_SYNTAX: &str = r"%YAML 1.2
+---
+name: Fail
+scope: source.fail
+contexts:
+  main:
+    - match: \bx\b
+      push: scope:source.nonexistent
+";
+
+    /// A stall timeout short enough to keep the tests fast. A busy machine
+    /// may take longer than this to start the worker, so the tests using it
+    /// do not check which lines before `x` were highlighted.
+    const SHORT_STALL: Duration = Duration::from_millis(200);
+
+    /// The syntax defined by `yaml`, in a syntax set of its own.
+    fn custom_syntax(yaml: &str) -> (&'static SyntaxSet, &'static Syntax) {
         let definition =
-            syntect::parsing::SyntaxDefinition::load_from_str(LOOPING_SYNTAX, true, None).unwrap();
+            syntect::parsing::SyntaxDefinition::load_from_str(yaml, true, None).unwrap();
         let mut builder = syntect::parsing::SyntaxSetBuilder::new();
         builder.add(definition);
-        let looping: &'static SyntaxSet = Box::leak(Box::new(builder.build()));
-        let syntax = looping.find_syntax_by_name("Loop").unwrap();
+        let set: &'static SyntaxSet = Box::leak(Box::new(builder.build()));
+        (set, &set.syntaxes()[0])
+    }
+
+    /// Highlights `input` with the syntax defined by `yaml`, and returns the
+    /// output and the reasons highlighting was given up.
+    fn write_custom(
+        yaml: &str,
+        input: &[u8],
+        lines: &mut LineState,
+        limits: Limits,
+        stall_timeout: Duration,
+    ) -> (Vec<u8>, Vec<String>) {
+        let (set, syntax) = custom_syntax(yaml);
         let mut hl = highlighter(syntaxes(), &[]);
-        hl.syntaxes = looping;
-        hl.stall_timeout = Duration::from_millis(200);
-        let mut lines = LineState::new(Numbering::All, false, None);
+        hl.syntaxes = set;
+        hl.stall_timeout = stall_timeout;
         let mut out = Vec::new();
         let mut reasons = Vec::new();
         hl.write(
-            &mut Cursor::new("a\nb\nx\nc\n"),
+            &mut Cursor::new(input),
             &mut |reason| reasons.push(reason.to_string()),
             &mut out,
             syntax,
-            &mut lines,
-            NO_LIMITS,
+            lines,
+            limits,
         )
         .unwrap();
-        assert_eq!(reasons, ["a line took longer than 200ms"]);
+        (out, reasons)
+    }
+
+    /// The syntaxes that give up on `x`, by stalling or by failing.
+    const GIVING_UP: [&str; 2] = [LOOPING_SYNTAX, FAILING_SYNTAX];
+
+    #[test]
+    fn prints_the_rest_plain_when_a_line_takes_too_long() {
+        // Long enough for the worker to start and highlight `a` and `b` on
+        // a busy machine.
+        let stall = Duration::from_secs(2);
+        let mut lines = LineState::new(Numbering::All, false, None);
+        let (out, reasons) = write_custom(
+            LOOPING_SYNTAX,
+            b"a\nb\nx\nc\n",
+            &mut lines,
+            NO_LIMITS,
+            stall,
+        );
+        assert_eq!(reasons, ["a line took longer than 2s"]);
         let (highlighted, plain) = out.split_at(out.len() - "     3\tx\n     4\tc\n".len());
         assert_eq!(plain, b"     3\tx\n     4\tc\n", "{out:?}");
         assert!(has_escape(highlighted), "{out:?}");
         assert_eq!(strip_ansi(highlighted), b"     1\ta\n     2\tb\n");
+    }
+
+    #[test]
+    fn keeps_the_line_that_ends_highlighting_after_giving_up() {
+        let not_utf8 = (&b"a\nx\n\xff\nc\n"[..], NO_LIMITS);
+        let too_long = (&b"a\nx\nyyyyyyyyyyyyyyyy\nc\n"[..], max_line(4));
+        let too_big = (
+            &b"a\nx\nb\nc\n"[..],
+            Limits {
+                max_size: Some(5),
+                max_line: None,
+            },
+        );
+        for yaml in GIVING_UP {
+            for (input, limits) in [not_utf8, too_long, too_big] {
+                let mut lines = LineState::new(Numbering::None, false, None);
+                let (out, reasons) = write_custom(yaml, input, &mut lines, limits, SHORT_STALL);
+                assert_eq!(reasons.len(), 1, "{input:?}: {reasons:?}");
+                assert_eq!(strip_ansi(&out), input, "{input:?}: {out:?}");
+                assert!(out.ends_with(&input[2..]), "{input:?}: {out:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn gives_up_with_too_many_batches_in_flight() {
+        // `x` is in the first batch, which is printed once more than
+        // `MAX_IN_FLIGHT` batches are handed over, long before the end.
+        let mut input = "a\n".repeat(5) + "x\n";
+        input += &"b\n".repeat(BATCH_LINES * (MAX_IN_FLIGHT + 2));
+        input += "c\n";
+        let plain = &input[input.find('x').unwrap()..];
+        for yaml in GIVING_UP {
+            let mut lines = LineState::new(Numbering::None, false, None);
+            let (out, reasons) =
+                write_custom(yaml, input.as_bytes(), &mut lines, NO_LIMITS, SHORT_STALL);
+            assert_eq!(reasons.len(), 1, "{reasons:?}");
+            assert_eq!(strip_ansi(&out), input.as_bytes());
+            assert!(out.ends_with(plain.as_bytes()));
+        }
+    }
+
+    #[test]
+    fn gives_up_on_a_line_before_the_range() {
+        let range = LineRange {
+            start: 3,
+            end: None,
+        };
+        for yaml in GIVING_UP {
+            for (numbering, expected) in [
+                (Numbering::None, &b"c\nd\n"[..]),
+                (Numbering::All, b"     3\tc\n     4\td\n"),
+            ] {
+                let mut lines = LineState::new(numbering, false, Some(range));
+                let (out, reasons) =
+                    write_custom(yaml, b"a\nx\nc\nd\n", &mut lines, NO_LIMITS, SHORT_STALL);
+                assert_eq!(reasons.len(), 1, "{reasons:?}");
+                assert_eq!(out, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn squeezes_the_lines_printed_plain_after_giving_up() {
+        for yaml in GIVING_UP {
+            let mut lines = LineState::new(Numbering::None, true, None);
+            let (out, reasons) =
+                write_custom(yaml, b"a\nx\n\n\n\nc\n", &mut lines, NO_LIMITS, SHORT_STALL);
+            assert_eq!(reasons.len(), 1, "{reasons:?}");
+            assert_eq!(strip_ansi(&out), b"a\nx\n\nc\n");
+            assert!(out.ends_with(b"x\n\nc\n"), "{out:?}");
+        }
+    }
+
+    #[test]
+    fn reports_a_worker_that_hung_up() {
+        let (batches, _) = mpsc::channel();
+        let (results_tx, results) = mpsc::channel();
+        drop(results_tx);
+        let worker = Worker {
+            batches,
+            results,
+            done: Arc::default(),
+            progress: Arc::default(),
+            stall_timeout: STALL_TIMEOUT,
+        };
+        let Err(Stopped { done, reason }) = worker.recv() else {
+            panic!("received results from a worker that hung up");
+        };
+        assert_eq!(done, Vec::<LineResult>::new());
+        assert_eq!(reason, "the highlighter stopped");
     }
 
     #[test]

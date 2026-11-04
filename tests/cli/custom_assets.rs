@@ -183,6 +183,49 @@ fn prints_the_rest_after_a_syntax_error() {
     );
 }
 
+#[test]
+fn keeps_the_line_that_ends_highlighting_after_a_syntax_error() {
+    let assets = Assets::new();
+    assets.syntax(
+        "Foo",
+        &HLTEST_SYNTAX.replace("[hltest]", "[foo]").replace(
+            "scope: keyword.control.hltest",
+            "push: scope:source.nonexistent",
+        ),
+    );
+    // The syntax fails on `kw`, which is still waiting to be printed when
+    // a later line goes over a limit or is not UTF-8.
+    let long_line = format!("{}\n", "y".repeat(100));
+    let mut not_utf8 = format!("{}\nkw\n", "a".repeat(9000)).into_bytes();
+    not_utf8.extend_from_slice(b"\xffLINE\nb\n");
+    let cases: [(&[&str], Vec<u8>); 3] = [
+        (&["--max-size=12"], b"a\nkw\nb\nLINE4\nLINE5\n".to_vec()),
+        (
+            &["--max-line-length=10"],
+            format!("a\nkw\n{long_line}b\n").into_bytes(),
+        ),
+        (&[], not_utf8),
+    ];
+    for (args, input) in cases {
+        let out = assets
+            .hl()
+            .args(["--color", "always", "-l", "foo"])
+            .args(args)
+            .write_stdin(input.clone())
+            .assert()
+            .success()
+            .get_output()
+            .clone();
+        assert_eq!(strip_ansi(&out.stdout), input, "{args:?}");
+        let stderr = String::from_utf8(out.stderr).unwrap();
+        assert_eq!(
+            stderr.matches("printing the rest as plain text").count(),
+            1,
+            "{args:?}: {stderr}"
+        );
+    }
+}
+
 /// A syntax that hands `x` back and forth between two contexts without
 /// consuming it, which makes syntect loop forever.
 const LOOPING_SYNTAX: &str = "%YAML 1.2
