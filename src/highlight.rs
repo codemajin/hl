@@ -977,7 +977,7 @@ mod tests {
         assert!(!out.contains("38;2;"), "{out:?}");
     }
 
-    /// Whether parsing `text` as `language` ends within a few seconds. The
+    /// Whether parsing `text` as `language` ends within `HANG_TIMEOUT`. The
     /// parser runs on a thread of its own, left behind if it hangs.
     fn parses_in_time(language: &str, text: &str) -> bool {
         let syntaxes = syntaxes();
@@ -991,8 +991,14 @@ mod tests {
             }
             let _ = tx.send(());
         });
-        rx.recv_timeout(Duration::from_secs(5)).is_ok()
+        rx.recv_timeout(HANG_TIMEOUT).is_ok()
     }
+
+    /// How long `parses_in_time` waits. A hang never ends, so this only has
+    /// to be well above the time a slow CI runner takes: compiling the
+    /// regexes of a big syntax such as Markdown in a debug build takes
+    /// seconds there, more so while other tests keep its cores busy.
+    const HANG_TIMEOUT: Duration = Duration::from_secs(30);
 
     #[test]
     fn javascript_does_not_hang_on_a_comment_after_an_expression() {
@@ -1070,6 +1076,13 @@ mod tests {
 
     /// A syntax whose two contexts hand `x` back and forth without
     /// consuming it, which makes syntect loop forever.
+    ///
+    /// Every input highlighted with it leaves a thread spinning until the
+    /// test process exits, which slows down the other tests and can make the
+    /// ones that wait for a deadline fail on a CI runner with few cores. So
+    /// only the tests of the stall itself use it, and the tests of what
+    /// happens after giving up use `FAILING_SYNTAX`, which takes the same
+    /// path from `Pipeline::give_up` on.
     const LOOPING_SYNTAX: &str = r"%YAML 1.2
 ---
 name: Loop
@@ -1093,11 +1106,6 @@ contexts:
     - match: \bx\b
       push: scope:source.nonexistent
 ";
-
-    /// A stall timeout short enough to keep the tests fast. A busy machine
-    /// may take longer than this to start the worker, so the tests using it
-    /// do not check which lines before `x` were highlighted.
-    const SHORT_STALL: Duration = Duration::from_millis(200);
 
     /// The syntax defined by `yaml`, in a syntax set of its own.
     fn custom_syntax(yaml: &str) -> (&'static SyntaxSet, &'static Syntax) {
@@ -1136,9 +1144,6 @@ contexts:
         (out, reasons)
     }
 
-    /// The syntaxes that give up on `x`, by stalling or by failing.
-    const GIVING_UP: [&str; 2] = [LOOPING_SYNTAX, FAILING_SYNTAX];
-
     #[test]
     fn prints_the_rest_plain_when_a_line_takes_too_long() {
         // Long enough for the worker to start and highlight `a` and `b` on
@@ -1170,14 +1175,13 @@ contexts:
                 max_line: None,
             },
         );
-        for yaml in GIVING_UP {
-            for (input, limits) in [not_utf8, too_long, too_big] {
-                let mut lines = LineState::new(Numbering::None, false, None);
-                let (out, reasons) = write_custom(yaml, input, &mut lines, limits, SHORT_STALL);
-                assert_eq!(reasons.len(), 1, "{input:?}: {reasons:?}");
-                assert_eq!(strip_ansi(&out), input, "{input:?}: {out:?}");
-                assert!(out.ends_with(&input[2..]), "{input:?}: {out:?}");
-            }
+        for (input, limits) in [not_utf8, too_long, too_big] {
+            let mut lines = LineState::new(Numbering::None, false, None);
+            let (out, reasons) =
+                write_custom(FAILING_SYNTAX, input, &mut lines, limits, STALL_TIMEOUT);
+            assert_eq!(reasons.len(), 1, "{input:?}: {reasons:?}");
+            assert_eq!(strip_ansi(&out), input, "{input:?}: {out:?}");
+            assert!(out.ends_with(&input[2..]), "{input:?}: {out:?}");
         }
     }
 
@@ -1189,14 +1193,17 @@ contexts:
         input += &"b\n".repeat(BATCH_LINES * (MAX_IN_FLIGHT + 2));
         input += "c\n";
         let plain = &input[input.find('x').unwrap()..];
-        for yaml in GIVING_UP {
-            let mut lines = LineState::new(Numbering::None, false, None);
-            let (out, reasons) =
-                write_custom(yaml, input.as_bytes(), &mut lines, NO_LIMITS, SHORT_STALL);
-            assert_eq!(reasons.len(), 1, "{reasons:?}");
-            assert_eq!(strip_ansi(&out), input.as_bytes());
-            assert!(out.ends_with(plain.as_bytes()));
-        }
+        let mut lines = LineState::new(Numbering::None, false, None);
+        let (out, reasons) = write_custom(
+            FAILING_SYNTAX,
+            input.as_bytes(),
+            &mut lines,
+            NO_LIMITS,
+            STALL_TIMEOUT,
+        );
+        assert_eq!(reasons.len(), 1, "{reasons:?}");
+        assert_eq!(strip_ansi(&out), input.as_bytes());
+        assert!(out.ends_with(plain.as_bytes()));
     }
 
     #[test]
@@ -1205,30 +1212,36 @@ contexts:
             start: 3,
             end: None,
         };
-        for yaml in GIVING_UP {
-            for (numbering, expected) in [
-                (Numbering::None, &b"c\nd\n"[..]),
-                (Numbering::All, b"     3\tc\n     4\td\n"),
-            ] {
-                let mut lines = LineState::new(numbering, false, Some(range));
-                let (out, reasons) =
-                    write_custom(yaml, b"a\nx\nc\nd\n", &mut lines, NO_LIMITS, SHORT_STALL);
-                assert_eq!(reasons.len(), 1, "{reasons:?}");
-                assert_eq!(out, expected);
-            }
+        for (numbering, expected) in [
+            (Numbering::None, &b"c\nd\n"[..]),
+            (Numbering::All, b"     3\tc\n     4\td\n"),
+        ] {
+            let mut lines = LineState::new(numbering, false, Some(range));
+            let (out, reasons) = write_custom(
+                FAILING_SYNTAX,
+                b"a\nx\nc\nd\n",
+                &mut lines,
+                NO_LIMITS,
+                STALL_TIMEOUT,
+            );
+            assert_eq!(reasons.len(), 1, "{reasons:?}");
+            assert_eq!(out, expected);
         }
     }
 
     #[test]
     fn squeezes_the_lines_printed_plain_after_giving_up() {
-        for yaml in GIVING_UP {
-            let mut lines = LineState::new(Numbering::None, true, None);
-            let (out, reasons) =
-                write_custom(yaml, b"a\nx\n\n\n\nc\n", &mut lines, NO_LIMITS, SHORT_STALL);
-            assert_eq!(reasons.len(), 1, "{reasons:?}");
-            assert_eq!(strip_ansi(&out), b"a\nx\n\nc\n");
-            assert!(out.ends_with(b"x\n\nc\n"), "{out:?}");
-        }
+        let mut lines = LineState::new(Numbering::None, true, None);
+        let (out, reasons) = write_custom(
+            FAILING_SYNTAX,
+            b"a\nx\n\n\n\nc\n",
+            &mut lines,
+            NO_LIMITS,
+            STALL_TIMEOUT,
+        );
+        assert_eq!(reasons.len(), 1, "{reasons:?}");
+        assert_eq!(strip_ansi(&out), b"a\nx\n\nc\n");
+        assert!(out.ends_with(b"x\n\nc\n"), "{out:?}");
     }
 
     #[test]
