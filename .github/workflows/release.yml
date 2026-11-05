@@ -165,7 +165,7 @@ jobs:
             exe=hl
           fi
           cp "target/${{ matrix.target }}/release/$exe" LICENSE README.md README_ja.md CHANGELOG.md "$name/"
-          cp -R assets/completions assets/man "$name/"
+          cp -R docs assets/completions assets/man "$name/"
           if [ "$RUNNER_OS" = Windows ]; then
             archive="$name.zip"
             7z a "$archive" "$name"

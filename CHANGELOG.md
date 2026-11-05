@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 
 - When `PAGER` is unset or blank and `less` is not installed, `--paging` and `-p` print the output without a pager and warn (`hl: less not found, printing without a pager (set PAGER to choose one)`) instead of failing. A pager set in `PAGER` that fails to start is still an error.
+- The README covers installation and a quick start only. The specification, a new design document and the development guide are in `docs/` (`SPEC.md`, `DESIGN.md`, `DEV.md`, each also in Japanese), which every release archive includes.
 
 ### Fixed
 

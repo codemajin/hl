@@ -1,0 +1,67 @@
+# hl development guide
+
+[English](DEV.md) | [日本語](DEV_ja.md) · [README](../README.md)
+
+This document is for working on `hl` itself: building and testing, dependencies, releasing and test coverage. How the code is organized is described in [DESIGN.md](DESIGN.md).
+
+## Building and testing
+
+```sh
+cargo build
+cargo test          # unit tests in src/ and integration tests in tests/cli/ (one file per feature)
+cargo clippy
+cargo fmt --check   # formatting (rustfmt.toml)
+```
+
+GitHub Actions runs `cargo fmt --check`, `cargo clippy` (warnings are errors) and `cargo test` on every push and pull request, on Linux, macOS and Windows with stable Rust and the minimum supported version (1.88). The tests spell out the output they expect from the `cat` options. One more test compares `hl` with GNU coreutils `cat` 9.0 or later, found as `gcat` or `cat`, and is skipped with a message when there is none (as on Windows); on macOS, `brew install coreutils` provides `gcat`. The tests ignore the `HL_*` variables, `HL_CONFIG`, the XDG directories, `APPDATA`, `LOCALAPPDATA` and `HOME`, so your own settings, config file and custom syntaxes don't affect them. The escape removal, the UTF-16 decoding and the parsing of `--max-size`/`--line-range` also have property tests ([proptest](https://github.com/proptest-rs/proptest)) that try random inputs, split at random places between reads, 256 cases each. Set `PROPTEST_CASES` (such as `PROPTEST_CASES=20000 cargo test`) to try more locally. A failing case is saved in `proptest-regressions/`; commit it, so that it is tried first from then on. Formatting is checked with nightly rustfmt, because some options in `rustfmt.toml` are nightly-only; run `cargo +nightly fmt` to match it. `.gitattributes` checks the files out with LF line endings, also on Windows with `core.autocrlf`, so that the tests see the same files everywhere. To type-check the Windows code from Linux or macOS, run `rustup target add x86_64-pc-windows-msvc` once and then `cargo clippy --all-targets --target x86_64-pc-windows-msvc`; it doesn't link, so it needs no Windows toolchain, but only Windows runs the tests. Clippy runs on a fixed Rust version (the `clippy` jobs in `.github/workflows/ci.yml` and `release.yml`), so that lints added in a new Rust release don't fail CI by themselves; raise it by hand in both files, and fix the new warnings in the same change. The `[lints]` table in `Cargo.toml` turns on the `clippy::pedantic` lints as well; where one of them is wrong for a piece of code, silence it there with `#[expect(clippy::..., reason = "...")]`, saying why.
+
+The role of each source file is listed in [DESIGN.md](DESIGN.md#modules).
+
+## Dependencies
+
+Dependabot (`.github/dependabot.yml`) opens update PRs every week, for the crates and for the GitHub Actions. Minor and patch updates of the crates come in one PR, a major update in a PR of its own, and the Actions in one PR.
+
+The workflows pin each action to a commit SHA, with the version in a comment (`uses: actions/checkout@<sha> # v7.0.1`), since a tag can be moved to other code; Dependabot updates the SHA and the comment together. When adding an action, pin it the same way. The workflows get a read-only `GITHUB_TOKEN` (only the job that publishes a release can write), and `actions/checkout` runs with `persist-credentials: false`, so the token isn't left in `.git/config` for the build to read.
+
+[cargo-deny](https://github.com/EmbarkStudios/cargo-deny) (`.github/workflows/deny.yml`) checks the dependencies on every push and pull request: known vulnerabilities and yanked versions (advisories), licenses, bans and sources (crates.io only). The advisories are also checked every day, since new ones appear while the dependencies stay the same. The allowed licenses, and the advisories ignored for now with the reason, are listed in `deny.toml`. To run it locally:
+
+```sh
+cargo install cargo-deny --locked
+cargo deny check
+```
+
+The syntaxes come from two-face, but `build.rs` fixes its JavaScript and Scala syntaxes at build time (see [Behavior details](SPEC.md#behavior-details)). If an update of two-face changes one of them so that its fix no longer applies, the build fails, naming the syntax. Then check whether `printf 'x /*' | hl --color=always -l js` (JavaScript) or `printf ':a@<' | hl --color=always -l scala` (Scala) still hangs with two-face's own syntaxes (for example by having `assets::bundled_syntaxes` return `two_face::syntax::extra_newlines()`), and update the fix in `build.rs`, or remove it once it is fixed upstream.
+
+The minimum supported Rust version (MSRV, `rust-version` in `Cargo.toml`) may be raised when an update needs it, to a version at least six releases behind the latest stable; to get a fix for a vulnerability, it is always raised. Such an update fails the CI job with the MSRV. When raising it, update `rust-version` in `Cargo.toml`, the matrix in `.github/workflows/ci.yml`, the version in the README (Requirements) and in this document (Building and testing) and `CHANGELOG.md` together.
+
+## Releasing
+
+Versions follow [Semantic Versioning](https://semver.org/), and a release is tagged `vX.Y.Z` with the version in `Cargo.toml`. Changes are recorded in [CHANGELOG.md](../CHANGELOG.md).
+
+1. Set `version` in `Cargo.toml` and run `cargo build` to update `Cargo.lock`.
+2. In `CHANGELOG.md`, move the entries under `Unreleased` to a new `## [X.Y.Z] - YYYY-MM-DD` section, and update the links at the end.
+3. Commit, then push the tag:
+
+   ```sh
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
+   ```
+
+`.github/workflows/release.yml` then builds the binaries for the five platforms, packs each (in a zip for Windows, a tar.gz otherwise) with the documentation (the READMEs, `docs/` and the changelog) and the completion scripts and the man page generated by `hl` itself, and publishes them, with SHA-256 checksums, as a GitHub release whose notes are the changelog section. It fails without publishing anything if the tag doesn't match the version in `Cargo.toml` or the changelog has no section for it. Before the builds it runs the tests (on Linux, macOS and Windows) and clippy, since it doesn't wait for the CI workflow, and publishes nothing if they fail. Nothing in it uses a build cache, so the release is built from the tagged source only.
+
+Anyone who can push a `v*` tag can publish a release. To limit that, add a tag ruleset in the repository settings (Settings → Rules → Rulesets) that targets `v*` and restricts creating, updating and deleting the tags to the maintainers.
+
+## Test coverage
+
+Coverage is measured with [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov). It also covers the `hl` binary that the integration tests start as a child process. Install it once:
+
+```sh
+rustup component add llvm-tools-preview
+cargo install cargo-llvm-cov --locked
+```
+
+```sh
+cargo llvm-cov          # run the tests and print a per-file summary
+cargo llvm-cov --html   # write an HTML report to target/llvm-cov/html/index.html
+                        # (add --open to open it in a browser)
+```
