@@ -2,20 +2,22 @@
 //! for. Opening the inputs and choosing the output are left to the caller.
 
 use std::{
-    io::{self, BufRead, BufReader, Read, Write},
+    io::{self, BufRead, BufReader, Cursor, Read, Write},
     path::{Path, PathBuf},
 };
 
 use crate::{
     color::{BOLD, RESET},
     diag::display_safe,
-    encoding::{UTF8_BOM, Utf16Decoder, is_utf8_prefix, utf16_bom},
+    encoding::{Endian, UTF8_BOM, Utf16Decoder, is_utf8_prefix, utf16_bom},
     escape::StripEscapes,
     highlight::{Highlighter, Limits, Syntax},
     lines::{LineState, Visibility, write_plain},
 };
 
-/// How many leading bytes are inspected for binary detection.
+/// How many leading bytes are read before deciding how to print an input:
+/// whether it starts with a UTF-16 BOM, whether it is binary or not UTF-8,
+/// and what its first line (a shebang) is.
 const PEEK_LEN: usize = 8 * 1024;
 
 /// The size of the buffer each input is read through.
@@ -214,26 +216,66 @@ impl Printer {
         if hl.is_none() && !self.strip {
             return write_plain(reader, out, lines, self.vis);
         }
-        let head = reader.fill_buf()?;
-        if let Some(endian) = utf16_bom(head) {
+        // A pipe may return only a few bytes per read, so the head is read in
+        // full before anything is decided from it.
+        let mut head = Vec::with_capacity(PEEK_LEN);
+        reader
+            .by_ref()
+            .take(PEEK_LEN as u64)
+            .read_to_end(&mut head)?;
+        let utf16 = utf16_bom(&head);
+        let binary = utf16.is_none() && (head.contains(&0) || !is_utf8_prefix(&head));
+        let target = match hl.filter(|_| !binary) {
+            Some(hl) => Some((hl, self.choose_syntax(hl, &head, utf16, path)?)),
+            None => None,
+        };
+        let name = path.unwrap_or(Path::new("-"));
+        let mut on_give_up = |reason: &str| report(name, Problem::CannotHighlight(reason));
+        let mut head = Cursor::new(head);
+        if let Some(endian) = utf16 {
             // Terminals expect UTF-8, so UTF-16 is converted for highlighting.
             // It is also converted to remove its escape sequences, because
             // dropping single bytes of UTF-16 would break it.
-            reader.consume(2);
-            let decoded = BufReader::new(Utf16Decoder::new(&mut *reader, endian));
-            return match hl {
-                Some(hl) => {
-                    self.filtered(decoded, |r| self.highlight(hl, r, path, out, lines, report))
-                }
+            head.set_position(2);
+            let rest = head.chain(reader);
+            let decoded = BufReader::new(Utf16Decoder::new(rest, endian));
+            return match target {
+                Some((hl, syntax)) => self.filtered(decoded, |r| {
+                    self.highlight(hl, r, syntax, out, lines, &mut on_give_up)
+                }),
                 None => self.filtered(decoded, |mut r| write_plain(&mut r, out, lines, self.vis)),
             };
         }
-        let peek = &head[..head.len().min(PEEK_LEN)];
-        let binary = peek.contains(&0) || !is_utf8_prefix(peek);
-        match hl.filter(|_| !binary) {
-            Some(hl) => self.filtered(reader, |r| self.highlight(hl, r, path, out, lines, report)),
-            None => self.filtered(reader, |mut r| write_plain(&mut r, out, lines, self.vis)),
+        let rest = head.chain(reader);
+        match target {
+            Some((hl, syntax)) => self.filtered(rest, |r| {
+                self.highlight(hl, r, syntax, out, lines, &mut on_give_up)
+            }),
+            None => self.filtered(rest, |mut r| write_plain(&mut r, out, lines, self.vis)),
         }
+    }
+
+    /// The first line of the input starting with `head`, as the syntax is
+    /// detected from it: converted from UTF-16, without a UTF-8 BOM, and
+    /// with the escape sequences removed when asked.
+    fn first_line(&self, head: &[u8], utf16: Option<Endian>) -> io::Result<String> {
+        let mut decoded = Vec::new();
+        let head = match utf16 {
+            Some(endian) => {
+                Utf16Decoder::new(&head[2..], endian).read_to_end(&mut decoded)?;
+                &decoded[..]
+            }
+            None => head.strip_prefix(UTF8_BOM).unwrap_or(head),
+        };
+        let line = head.split(|&b| b == b'\n').next().unwrap_or_default();
+        let mut stripped = Vec::new();
+        let line = if self.strip {
+            StripEscapes::new(line).read_to_end(&mut stripped)?;
+            &stripped[..]
+        } else {
+            line
+        };
+        Ok(String::from_utf8_lossy(line).into_owned())
     }
 
     /// Runs `f` on `reader`, with the escape sequences removed when asked.
@@ -254,38 +296,27 @@ impl Printer {
         &self,
         hl: &Highlighter,
         mut reader: &mut dyn BufRead,
-        path: Option<&Path>,
+        syntax: &'static Syntax,
         out: &mut impl Write,
         lines: &mut LineState,
-        report: &mut dyn FnMut(&Path, Problem),
+        on_give_up: &mut dyn FnMut(&str),
     ) -> io::Result<()> {
-        let syntax = self.choose_syntax(hl, &mut reader, path)?;
-        let name = path.unwrap_or(Path::new("-"));
-        let mut on_give_up = |reason: &str| report(name, Problem::CannotHighlight(reason));
-        hl.write(
-            &mut reader,
-            &mut on_give_up,
-            out,
-            syntax,
-            lines,
-            self.limits,
-        )
+        hl.write(&mut reader, on_give_up, out, syntax, lines, self.limits)
     }
 
-    /// Uses the forced syntax, or detects one from the path and the first line.
+    /// Uses the forced syntax, or detects one from the path and the first
+    /// line in `head`.
     fn choose_syntax(
         &self,
         hl: &Highlighter,
-        reader: &mut impl BufRead,
+        head: &[u8],
+        utf16: Option<Endian>,
         path: Option<&Path>,
     ) -> io::Result<&'static Syntax> {
         if let Some(syntax) = self.forced {
             return Ok(syntax);
         }
-        let head = reader.fill_buf()?;
-        let head = head.strip_prefix(UTF8_BOM).unwrap_or(head);
-        let first_line = head.split(|&b| b == b'\n').next().unwrap_or_default();
-        Ok(hl.detect(path, &String::from_utf8_lossy(first_line)))
+        Ok(hl.detect(path, &self.first_line(head, utf16)?))
     }
 }
 
@@ -296,7 +327,7 @@ mod tests {
     use syntect::{highlighting::Theme, parsing::SyntaxSet};
 
     use super::*;
-    use crate::{color::Depth, encoding::Endian, lines::Numbering};
+    use crate::{color::Depth, lines::Numbering, test_support::Chunked};
 
     fn plain() -> Printer {
         Printer {
@@ -501,15 +532,34 @@ mod tests {
     }
 
     /// The output of `printer` for `bytes` read from `path`, which must
-    /// cause no problem.
+    /// cause no problem. The output is the same when `bytes` are read one
+    /// byte at a time, as from a slow pipe.
     fn print(printer: &Printer, bytes: &[u8], path: &str, too_large: bool) -> Vec<u8> {
+        let out = print_from(printer, &mut Cursor::new(bytes), path, too_large);
+        let one_byte = print_one_byte(printer, bytes, path, too_large);
+        assert_eq!(one_byte, out, "read one byte at a time");
+        out
+    }
+
+    /// `print`, with `bytes` read one byte at a time only.
+    fn print_one_byte(printer: &Printer, bytes: &[u8], path: &str, too_large: bool) -> Vec<u8> {
+        let mut reader = BufReader::new(Chunked::one_byte(bytes));
+        print_from(printer, &mut reader, path, too_large)
+    }
+
+    fn print_from(
+        printer: &Printer,
+        reader: &mut impl BufRead,
+        path: &str,
+        too_large: bool,
+    ) -> Vec<u8> {
         let path = Path::new(path);
         let mut out = Vec::new();
         let mut lines = LineState::new(Numbering::None, false, None);
         let mut report = |path: &Path, problem: Problem| panic!("{}: {problem:?}", path.display());
         printer
             .print(
-                &mut Cursor::new(bytes),
+                reader,
                 Some(path),
                 too_large,
                 &mut out,
@@ -591,6 +641,12 @@ mod tests {
     }
 
     #[test]
+    fn copies_input_with_a_nul_on_the_second_line_read_byte_by_byte() {
+        let bytes = b"fn main() {}\na\0b\n";
+        assert_eq!(print_one_byte(&colored(), bytes, "a.rs", false), bytes);
+    }
+
+    #[test]
     fn highlights_input_with_a_nul_past_the_first_8_kb() {
         let bytes = padded(PEEK_LEN, b"\0");
         let out = print(&colored(), &bytes, "a.rs", false);
@@ -635,6 +691,20 @@ mod tests {
     }
 
     #[test]
+    fn detects_a_utf16_bom_split_across_reads() {
+        let expected = print(&colored(), RUST, "a.rs", false);
+        for endian in [Endian::Little, Endian::Big] {
+            let text = std::str::from_utf8(RUST).unwrap();
+            let bytes = utf16(text, endian);
+            let out = print_one_byte(&colored(), &bytes, "a.rs", false);
+            assert_eq!(out, expected, "{endian:?}");
+        }
+        let bytes = utf16("a\x1b[31mb\n", Endian::Little);
+        let out = print_one_byte(&stripping(plain()), &bytes, "a.txt", false);
+        assert_eq!(out, b"ab\n");
+    }
+
+    #[test]
     fn converts_utf16_to_strip_it_without_color() {
         let bytes = utf16("a\x1b[31mb\n", Endian::Little);
         assert_eq!(print(&stripping(plain()), &bytes, "a.txt", false), b"ab\n");
@@ -670,6 +740,35 @@ mod tests {
         );
         let out = print(&stripping(colored()), text, "a.rs", false);
         assert_eq!(out, print(&colored(), RUST, "a.rs", false));
+    }
+
+    #[test]
+    fn detects_a_shebang_split_across_reads() {
+        let script = b"#!/usr/bin/env python3\nprint(1)\n";
+        let python = Printer {
+            forced: syntaxes().find_syntax_by_extension("py"),
+            ..colored()
+        };
+        let expected = print(&python, script, "script", false);
+        assert_ne!(expected, print(&colored(), script, "script.txt", false));
+        assert_eq!(
+            print_one_byte(&colored(), script, "script", false),
+            expected
+        );
+    }
+
+    #[test]
+    fn detects_the_shebang_of_utf16_and_after_removing_escapes() {
+        let python = Printer {
+            forced: syntaxes().find_syntax_by_extension("py"),
+            ..colored()
+        };
+        let expected = print(&python, b"#!/usr/bin/env python3\n", "script", false);
+        let bytes = utf16("#!/usr/bin/env python3\n", Endian::Big);
+        assert_eq!(print(&colored(), &bytes, "script", false), expected);
+        let escaped = b"#!/usr/bin/env \x1b[1mpython3\n";
+        let out = print(&stripping(colored()), escaped, "script", false);
+        assert_eq!(out, expected);
     }
 
     #[test]
