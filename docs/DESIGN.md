@@ -36,7 +36,7 @@ Most of the work is done once per run before the first input: the syntaxes and t
 | `src/console.rs` | Turning on escape sequence processing in the Windows console, so that colors work in cmd.exe and PowerShell outside Windows Terminal |
 | `src/diag.rs` | Warning and error messages on stderr. Everything written to stderr goes through it, so the `hl: ` format is set in one place; an error is shown with its causes (`path: reason`) |
 | `src/encoding.rs` | UTF-8/UTF-16 BOM detection and UTF-16 decoding |
-| `src/escape.rs` | Removing the escape sequences of the input (CSI, OSC and the other strings, C1 controls) as a reader, also when a sequence is split across reads |
+| `src/escape.rs` | Removing the escape sequences of the input (CSI, OSC and the other strings, C1 controls in UTF-8) and the C0 controls that act on the terminal (BEL, BS, SO, ...) as a reader, also when a sequence is split across reads |
 | `src/highlight.rs` | Language detection, `--map-syntax` mappings, size limits, and highlighted output (syntect, on a thread of its own with a time limit). Writes no warnings: the reason highlighting was given up goes to the caller |
 | `src/lines.rs` | Line numbering, blank-line squeezing, and `cat -v`/`-E`/`-T` notation |
 | `src/pager.rs` | Building the pager command from `$PAGER` (split like the shell, or by Windows rules on Windows), starting the pager and waiting for it to exit. A missing default `less` is reported apart from other failures, so that `src/main.rs` can print to stdout instead |
@@ -118,7 +118,7 @@ sequenceDiagram
 
 ## Problems, messages and exit status
 
-All output on stderr goes through `src/diag.rs`, so the `hl: ` prefix and the escaping of control characters (`diag::escape_controls`, `diag::display_safe`) are done in one place, and a failure to write stderr is ignored. The modules that do the printing do not write messages themselves: they return what went wrong, and `src/main.rs` decides what it becomes.
+All output on stderr goes through `src/diag.rs`, so the `hl: ` prefix and the escaping of control characters (`diag::escape_controls`, `diag::display_safe`, and `diag::warn`, which escapes the path and the message, as it may quote a key or a value of the config file) are done in one place, and a failure to write stderr is ignored. The modules that do the printing do not write messages themselves: they return what went wrong, and `src/main.rs` decides what it becomes.
 
 ```mermaid
 flowchart TD

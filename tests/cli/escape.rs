@@ -128,6 +128,35 @@ fn strips_c1_controls_encoded_in_utf8() {
         .stdout(&input[..]);
 }
 
+#[test]
+fn strips_c0_controls_but_keeps_raw_bytes() {
+    // An 8-bit CSI and OSC as raw bytes, BEL, SO, BS and VT. The raw bytes
+    // are kept, as they are not UTF-8 and may be Shift_JIS.
+    let input = b"a\x9b31mRED\x9d0;PWN\x07b\x0e\x08\x0bc\x00\t\r\n";
+    let expected = b"a\x9b31mRED\x9d0;PWNbc\x00\t\r\n";
+    hl().args(["--strip-ansi", "always"])
+        .write_stdin(&input[..])
+        .assert()
+        .success()
+        .stdout(&expected[..]);
+    hl().args(["--color", "always"])
+        .write_stdin(&input[..])
+        .assert()
+        .success()
+        .stdout(&expected[..]);
+    hl().write_stdin(&input[..])
+        .assert()
+        .success()
+        .stdout(&input[..]);
+}
+
+#[test]
+fn strips_c0_controls_from_highlighted_input() {
+    let out = colored(hl().args(["-l", "txt"]).write_stdin("a\x0eb\x07c\x08\n"));
+    assert!(has_escape(&out));
+    assert_eq!(strip_ansi(&out), b"abc\n");
+}
+
 /// A file name that sets the window title.
 const ESCAPED_NAME: &str = "x\x1b]0;PWN\x07y";
 const VISIBLE_NAME: &str = r"x\x1b]0;PWN\x07y";
@@ -174,6 +203,50 @@ fn shows_control_characters_of_fatal_errors() {
         .assert()
         .code(1)
         .stderr("hl: unknown language 'no\\x1b]0;PWN\\x07such' (see --list-languages)\n");
+}
+
+#[test]
+fn shows_control_characters_of_config_entries() {
+    let dir = tempdir();
+    let config = files(
+        dir.path(),
+        &[(
+            "config.toml",
+            r#""k\u001b[31mX" = 1
+color = "n\u001b[33mZ"
+number = "v\u001b[35mV"
+map-syntax = ["bad\u001b[32mY", "*.q:no\u001b[34mW"]
+"#,
+        )],
+    );
+    let out = hl_with_config(&config[0])
+        .args(["--color", "always", "-l", "txt"])
+        .write_stdin("a\n")
+        .assert()
+        .success();
+    let stderr = String::from_utf8_lossy(&out.get_output().stderr).into_owned();
+    assert!(!stderr.contains('\x1b'), "{stderr:?}");
+    for expected in [
+        r"unknown key 'k\x1b[31mX'",
+        r"invalid value 'n\x1b[33mZ' for 'color'",
+        r"invalid map-syntax entry 'bad\x1b[32mY': 'bad\x1b[32mY' is not PATTERN:LANG",
+        r"unknown language 'no\x1b[34mW' in map-syntax '*.q:no\x1b[34mW'",
+    ] {
+        assert!(stderr.contains(expected), "{expected:?} not in {stderr:?}");
+    }
+}
+
+#[test]
+fn shows_control_characters_of_broken_config_files() {
+    let dir = tempdir();
+    let config = files(dir.path(), &[("config.toml", "color = \"\x1b[2J\"\n")]);
+    hl_with_config(&config[0])
+        .write_stdin("a\n")
+        .assert()
+        .success()
+        .stdout("a\n")
+        .stderr(predicate::str::contains("invalid TOML"))
+        .stderr(predicate::str::contains("\x1b").not());
 }
 
 #[test]

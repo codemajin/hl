@@ -92,15 +92,17 @@ fn rejects_unknown_language() {
 }
 
 #[test]
-fn passes_binary_through_unmodified() {
+fn passes_binary_through_unhighlighted() {
     let dir = tempdir();
     let bytes = b"\x00\x01\x02hello\n\xff";
     let bin = files(dir.path(), &[("data.bin", bytes)]);
+    hl().args(&bin).assert().success().stdout(&bytes[..]);
+    // Only the control characters that act on the terminal are removed.
     hl().args(["--color", "always"])
         .args(&bin)
         .assert()
         .success()
-        .stdout(&bytes[..]);
+        .stdout(&b"\x00hello\n\xff"[..]);
 }
 
 #[test]

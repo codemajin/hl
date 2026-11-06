@@ -187,9 +187,9 @@ pub struct Args {
     #[arg(long, env = "HL_COLOR_DEPTH", value_enum, value_name = "DEPTH", default_value_t = ColorDepth::Auto)]
     color_depth: ColorDepth,
 
-    /// When to remove escape sequences (colors, OSC, ...) from the input:
-    /// `auto` removes them only when the output is colored, `always` also
-    /// when it is not.
+    /// When to remove escape sequences (colors, OSC, ...) and control
+    /// characters (BEL, BS, ...) from the input: `auto` removes them only
+    /// when the output is colored, `always` also when it is not.
     #[arg(long, value_enum, value_name = "WHEN", default_value_t = StripAnsi::Auto)]
     strip_ansi: StripAnsi,
 

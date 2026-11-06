@@ -21,6 +21,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Warnings about the config file show the control characters of its keys, values and `map-syntax` entries as `\x1b` and the like, as they already did for file names, so that a crafted config file cannot control the terminal through stderr.
+- When escape sequences are removed (colored output, or `--strip-ansi=always`), the C0 control characters other than tab, newline, carriage return and NUL (BEL, BS, SO, VT, FF, ENQ, ...) are removed too, so that they cannot ring the bell, hide text, switch the character set or make the terminal answer. Raw bytes 0x80–0x9F outside UTF-8 are still kept, as they belong to text in encodings such as Shift_JIS; the specification now says that they can act as C1 controls on a terminal that does not use UTF-8.
 - Input that arrives a little at a time, such as from a pipe, is no longer judged by the first read alone. hl reads the first 8 KB (or up to the end, if shorter) before telling binary and invalid UTF-8, a UTF-16 BOM and the shebang, so a NUL on the second line, a BOM split across reads, or a shebang cut off midway gives the same output as from a file.
 - A line is no longer lost when highlighting is given up (after an error in the syntax or a line that takes longer than 3 seconds) just before a line that goes over `--max-size` or `--max-line-length` or is not UTF-8. That line, or the part of it already read, is printed with the rest.
 - Scala no longer hangs on an operator right after `@` in a type, such as `type L = A @> B` or `x: A @< B`, which printed the rest of the input without highlighting after 3 seconds and kept a CPU core busy. The bundled Scala syntax carries a fix for it until it is fixed upstream.

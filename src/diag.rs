@@ -15,9 +15,15 @@ pub fn note(msg: impl fmt::Display) {
     let _ = writeln!(io::stderr().lock(), "hl: {msg}");
 }
 
-/// Warns about a problem with `path` that does not stop `hl`.
+/// Warns about a problem with `path` that does not stop `hl`. The control
+/// characters of `msg` are made visible too, as it may quote what the file
+/// holds, such as a key or a value of the config file.
 pub fn warn(path: &Path, msg: &str) {
-    note(format_args!("{}: {msg}", display_safe(path)));
+    note(format_args!(
+        "{}: {}",
+        display_safe(path),
+        escape_controls(msg)
+    ));
 }
 
 /// `path` as shown to the user, with its control characters made visible so

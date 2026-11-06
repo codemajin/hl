@@ -1,6 +1,6 @@
-//! Removing the escape sequences of the input, so that they neither mix
-//! with the colors of `hl` nor control the terminal (window title,
-//! hyperlinks, clipboard).
+//! Removing the escape sequences and control characters of the input, so
+//! that they neither mix with the colors of `hl` nor control the terminal
+//! (window title, hyperlinks, clipboard, character sets).
 
 use std::io::{self, BufRead, Read};
 
@@ -34,7 +34,15 @@ enum State {
 /// DCS, SOS, PM, APC) ended by BEL or ST, and the other sequences starting
 /// with ESC. The C1 controls encoded in UTF-8 (U+0080..=U+009F) are removed
 /// too, and the 8-bit CSI and strings among them start a sequence like their
-/// 7-bit forms. A sequence split across reads is still removed.
+/// 7-bit forms. So are the C0 controls (BEL, BS, SO, ...) other than NUL,
+/// tab, newline and carriage return, which `cat` users rely on to overwrite
+/// a line; NUL and DEL do nothing on a terminal and are kept, so binary
+/// input keeps its shape. A sequence split across reads is still removed.
+///
+/// Bytes in `0x80..=0x9F` that are not part of a C1 control in UTF-8 are
+/// kept: they are the lead bytes of `Shift_JIS` and the like, and do nothing
+/// on a UTF-8 terminal. A terminal that does not read UTF-8 (Latin-1, for
+/// example) takes them for C1 controls.
 ///
 /// A string also ends at a newline, which is kept, so that an unterminated
 /// one does not swallow the rest of the input. A sequence cut off by the end
@@ -94,9 +102,10 @@ fn feed(state: State, b: u8, out: &mut Output) -> State {
         (State::Ground, C1_LEAD) => State::C1,
         // With the lone 0xC2 kept before it, this byte makes a C1 control.
         (State::Ground, 0x80..=0x9f) if out.lone_lead => after_c1_lead(b, out),
+        (State::Ground, 0x01..=0x1f) if !matches!(b, b'\t' | b'\n' | b'\r') => State::Ground,
         #[expect(
             clippy::match_same_arms,
-            reason = "the ground state keeps every byte; a string keeps only the newline that ends it"
+            reason = "the ground state keeps every other byte; a string keeps only the newline that ends it"
         )]
         (State::Ground, _) => {
             out.push(b);
@@ -107,7 +116,7 @@ fn feed(state: State, b: u8, out: &mut Output) -> State {
         (State::EscIntermediate, 0x20..=0x2f) | (State::Csi, 0x20..=0x3f) => state,
         (State::EscIntermediate, 0x30..=0x7e) | (State::Csi, 0x40..=0x7e) => State::Ground,
         // A byte that cannot be part of the sequence ends it and is kept,
-        // unless it starts another one.
+        // unless it starts another one or is a control removed.
         (State::EscIntermediate | State::Csi, _) => feed(State::Ground, b, out),
         (State::Str | State::StrC1, b'\n') => {
             out.push(b);
@@ -146,7 +155,7 @@ fn after_esc(state: State, b: u8, out: &mut Output) -> State {
         0x20..=0x2f => State::EscIntermediate,
         0x30..=0x7e => State::Ground,
         ESC => State::Esc,
-        // A lone ESC is dropped and the byte after it is kept.
+        // A lone ESC is dropped and the byte after it is fed again.
         _ => feed(State::Ground, b, out),
     }
 }
@@ -220,8 +229,8 @@ mod tests {
     #[test]
     fn keeps_text_without_escapes() {
         assert_strips(
-            "a\tb\r\n日本語\x07\n".as_bytes(),
-            "a\tb\r\n日本語\x07\n".as_bytes(),
+            "a\tb\r\n日本語\x00\x7f\n".as_bytes(),
+            "a\tb\r\n日本語\x00\x7f\n".as_bytes(),
         );
         assert_strips(b"", b"");
     }
@@ -323,6 +332,20 @@ mod tests {
     }
 
     #[test]
+    fn removes_c0_controls() {
+        assert_strips(b"a\x07b\x0e\x0f\x08\x0b\x0c\x05\x01\x1fc\n", b"abc\n");
+        assert_strips(b"a\x1b[3\x0e1mx", b"a1mx");
+        assert_strips(b"\x1b\x08y\x1b(\x07z", b"yz");
+    }
+
+    #[test]
+    fn keeps_raw_bytes_in_the_c1_range() {
+        // Not UTF-8: "日本" in Shift_JIS, and a raw 8-bit CSI.
+        assert_strips(b"\x93\xfa\x96\x7b\n", b"\x93\xfa\x96\x7b\n");
+        assert_strips(b"a\x9b31mb\x9d0;t\x07c", b"a\x9b31mb\x9d0;tc");
+    }
+
+    #[test]
     fn keeps_other_characters_starting_with_0xc2() {
         assert_strips("\u{a0}é©\n".as_bytes(), "\u{a0}é©\n".as_bytes());
         assert_strips("\x1b[3\u{a0}".as_bytes(), "\u{a0}".as_bytes());
@@ -362,6 +385,7 @@ mod tests {
             1 => Just(b'\n'),
             2 => prop::sample::select(&b"[]\\PX^_(#;0m"[..]),
             2 => 0x20..=0x7eu8,
+            1 => 0x00..=0x1fu8,
             2 => any::<u8>(),
         ]
     }
@@ -371,10 +395,17 @@ mod tests {
     fn interesting_text() -> impl Strategy<Value = String> {
         const CHARS: &[char] = &[
             '\x1b', '\u{9b}', '\u{9c}', '\u{9d}', '\u{85}', '\x07', '\n', '[', ']', '\\', 'P', ';',
-            'm', 'a', '\u{a0}', 'é', '日', '😀',
+            'm', 'a', '\u{a0}', 'é', '日', '😀', '\x0e', '\x00', '\r',
         ];
         let c = prop_oneof![4 => prop::sample::select(CHARS), 1 => any::<char>()];
         vec(c, 0..256).prop_map(String::from_iter)
+    }
+
+    /// Whether `bytes` holds a C0 control that the filter removes.
+    fn has_c0(bytes: &[u8]) -> bool {
+        bytes
+            .iter()
+            .any(|&b| b <= 0x1f && !matches!(b, 0 | b'\t' | b'\n' | b'\r'))
     }
 
     /// Whether `bytes` holds a C1 control in UTF-8.
@@ -394,9 +425,9 @@ mod tests {
         }
 
         #[test]
-        fn leaves_no_esc_or_c1_control(input in vec(interesting_byte(), 0..256)) {
+        fn leaves_no_control_characters(input in vec(interesting_byte(), 0..256)) {
             let out = strip(&input);
-            prop_assert!(!out.contains(&ESC), "{:?} -> {:?}", input, out);
+            prop_assert!(!has_c0(&out), "{:?} -> {:?}", input, out);
             prop_assert!(!has_c1(&out), "{:?} -> {:?}", input, out);
         }
 

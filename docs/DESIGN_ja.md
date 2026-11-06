@@ -36,7 +36,7 @@ flowchart TD
 | `src/console.rs` | Windows のコンソールでエスケープシーケンスの処理を有効にする（Windows Terminal 以外の cmd.exe や PowerShell でも色が出るようにする） |
 | `src/diag.rs` | 標準エラー出力への警告・エラーメッセージ。標準エラー出力にはすべてここを通して書くので、`hl: ` の書式は 1 か所で決まる。エラーは原因まで含めて表示する（`パス: 理由`） |
 | `src/encoding.rs` | UTF-8/UTF-16 の BOM 判定と UTF-16 のデコード |
-| `src/escape.rs` | 入力からエスケープシーケンス（CSI、OSC などの文字列、C1 制御文字）を取り除くリーダー。読み込みの境目で分かれたシーケンスも取り除く |
+| `src/escape.rs` | 入力からエスケープシーケンス（CSI、OSC などの文字列、UTF-8 で表した C1 制御文字）と、端末を操作する C0 制御文字（BEL、BS、SO など）を取り除くリーダー。読み込みの境目で分かれたシーケンスも取り除く |
 | `src/highlight.rs` | 言語判定、`--map-syntax` の対応付け、サイズの上限、ハイライト出力（syntect。専用のスレッドで、時間の上限付き）。警告は出さず、ハイライトをあきらめた理由は呼び出し側に渡す |
 | `src/lines.rs` | 行番号、空行の圧縮、`cat -v`/`-E`/`-T` の表記 |
 | `src/pager.rs` | `$PAGER` からのページャのコマンドの組み立て（シェルと同じ規則、Windows では Windows の規則で分ける）、起動、終了待ち。既定の `less` がないことはほかの失敗と分けて返し、`src/main.rs` が代わりに標準出力に表示できるようにする |
@@ -118,7 +118,7 @@ sequenceDiagram
 
 ## 問題の扱い、メッセージ、終了ステータス
 
-stderr への出力はすべて `src/diag.rs` を通します。`hl: ` の接頭辞と制御文字のエスケープ（`diag::escape_controls`、`diag::display_safe`）を 1 か所で行い、stderr への書き込みの失敗は無視します。出力を担うモジュールは、自分ではメッセージを書きません。何が起きたかを返し、それをどう扱うかは `src/main.rs` が決めます。
+stderr への出力はすべて `src/diag.rs` を通します。`hl: ` の接頭辞と制御文字のエスケープ（`diag::escape_controls`、`diag::display_safe`、それにパスとメッセージの両方をエスケープする `diag::warn`。メッセージには設定ファイルのキーや値が入ることがあるため）を 1 か所で行い、stderr への書き込みの失敗は無視します。出力を担うモジュールは、自分ではメッセージを書きません。何が起きたかを返し、それをどう扱うかは `src/main.rs` が決めます。
 
 ```mermaid
 flowchart TD
