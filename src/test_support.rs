@@ -1,11 +1,14 @@
 //! Helpers shared by the unit tests.
 
-use std::io::{self, Read};
+use std::{
+    io::{self, Read},
+    sync::Arc,
+};
 
 use proptest::{collection::vec, prelude::*};
 use syntect::parsing::{SyntaxDefinition, SyntaxSet, SyntaxSetBuilder};
 
-use crate::highlight::Syntax;
+use crate::highlight::{Syntax, find_language};
 
 /// Returns `data` in reads of the sizes in `sizes`, taken in turn and
 /// repeated, so that the reader under test sees its input split at those
@@ -72,12 +75,12 @@ contexts:
       set: main
 ";
 
-/// The syntax defined by `yaml`, in a syntax set of its own. Both are
-/// leaked, as `Highlighter` needs them `'static`.
-pub fn custom_syntax(yaml: &str) -> (&'static SyntaxSet, &'static Syntax) {
+/// The syntax defined by `yaml`, in a syntax set of its own.
+pub fn custom_syntax(yaml: &str) -> Syntax {
     let definition = SyntaxDefinition::load_from_str(yaml, true, None).unwrap();
+    let name = definition.name.clone();
     let mut builder = SyntaxSetBuilder::new();
     builder.add(definition);
-    let set: &'static SyntaxSet = Box::leak(Box::new(builder.build()));
-    (set, &set.syntaxes()[0])
+    let set: Arc<SyntaxSet> = Arc::new(builder.build());
+    find_language(&set, &name).unwrap()
 }

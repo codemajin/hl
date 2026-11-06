@@ -37,17 +37,18 @@ Most of the work is done once per run before the first input: the syntaxes and t
 | `src/diag.rs` | Warning and error messages on stderr. Everything written to stderr goes through it, so the `hl: ` format is set in one place; an error is shown with its causes (`path: reason`) |
 | `src/encoding.rs` | UTF-8/UTF-16 BOM detection and UTF-16 decoding |
 | `src/escape.rs` | Removing the escape sequences of the input (CSI, OSC and the other strings, C1 controls in UTF-8) and the C0 controls that act on the terminal (BEL, BS, SO, ...) as a reader, also when a sequence is split across reads |
-| `src/highlight.rs` | Language detection, `--map-syntax` mappings, size limits, and highlighted output (syntect, on a thread of its own with a time limit). Writes no warnings: the reason highlighting was given up goes to the caller |
+| `src/highlight.rs` | Language detection, `--map-syntax` mappings, size limits, and highlighted output (syntect, on a thread of its own with a time limit). A language is a `Syntax`: a syntax with the `Arc` of its syntax set. Writes no warnings: the reason highlighting was given up goes to the caller |
+| `src/highlight/worker.rs` | The highlighting thread of one input (`Worker`) and the pipeline that hands it lines in batches, prints what comes back and gives up when no line finishes in time (`Pipeline`) |
 | `src/lines.rs` | Line numbering, blank-line squeezing, and `cat -v`/`-E`/`-T` notation |
 | `src/pager.rs` | Building the pager command from `$PAGER` (split like the shell, or by Windows rules on Windows), starting the pager and waiting for it to exit. A missing default `less` is reported apart from other failures, so that `src/main.rs` can print to stdout instead |
 | `src/print.rs` | Printing each input in turn, highlighted or plain, with headers and encoding handling. Writes no warnings: problems with an input (unreadable, highlighting given up) go to a callback, and `print_all` returns a `PrintOutcome` (whether an input failed, the write error that ended the output) |
 | `src/stdout.rs` | Telling whether stdout was closed at startup, before std reopens it on `/dev/null` (Unix), or whether there is a stdout handle at all (Windows) |
-| `src/test_support.rs` | Helpers for the unit tests only: a reader that returns its input in chunks of the given sizes, and a proptest strategy for those sizes |
+| `src/test_support.rs` | Helpers for the unit tests only: a reader that returns its input in chunks of the given sizes, a proptest strategy for those sizes, a syntax that makes syntect loop forever (`LOOPING_SYNTAX`), and a syntax built from YAML (`custom_syntax`) |
 | `build.rs` | Fixes the JavaScript and Scala syntaxes of two-face and bundles the syntaxes |
 
 ## Module dependencies
 
-The arrows show which module uses which (`use crate::...`, not counting the tests). `src/main.rs` uses all of them and is left out.
+The arrows show which module uses which (`use crate::...`, not counting the tests). `src/main.rs` uses all of them and is left out. `highlight` includes its submodule `highlight::worker`.
 
 ```mermaid
 flowchart LR
@@ -89,7 +90,7 @@ There are no cycles. `color`, `diag`, `encoding`, `escape`, `console` and `stdou
 
 ## Highlighting pipeline
 
-syntect can loop forever on some syntaxes and inputs, and a call into it cannot be interrupted. So `Highlighter::write` (`src/highlight.rs`) reads and prints the lines on the main thread, and highlights them on a thread of its own:
+syntect can loop forever on some syntaxes and inputs, and a call into it cannot be interrupted. So `Highlighter::write` (`src/highlight.rs`) reads and prints the lines on the main thread, and highlights them on a thread of its own (`src/highlight/worker.rs`):
 
 ```mermaid
 sequenceDiagram
@@ -113,7 +114,7 @@ sequenceDiagram
 - Lines are handed over in batches (`BATCH_LINES`, `BATCH_BYTES`) because handing over each line costs more than highlighting it. `MAX_IN_FLIGHT` bounds how far the reading runs ahead, and so the memory used.
 - The main thread waits for a batch with `recv_timeout`, ten times per `STALL_TIMEOUT` (3 seconds), and compares the count of lines done each time. Highlighting is given up only when no line has finished for the whole timeout, so a big batch of slow but progressing lines is not cut short.
 - A stall sets the `stalled` flag of the `Highlighter` (in `Pipeline::give_up`, on `GiveUp::Stalled` only), and `Printer::print` highlights no input once it is set. Without it, each input that trips the same syntax would wait another 3 seconds and leave one more thread spinning. An error in the syntax does not set it: the thread ends, and the next input is highlighted as usual. The reason goes to `on_give_up` as a `GiveUp`, so that `main.rs` can say in the warning that the later inputs are plain too.
-- The syntaxes are `'static` (leaked by `main`) and the theme is shared through an `Arc`, because a stuck thread outlives the input it was started for.
+- The thread gets the syntax as a `highlight::Syntax`, which holds an `Arc` of its syntax set and its index in the set, and the theme through an `Arc`, because a stuck thread outlives the input it was started for. The thread highlights with the syntax set of that `Syntax`, so a syntax is never used with a set it does not belong to.
 - syntect's state carries over from line to line, so highlighting cannot resume after a line that was not highlighted. A line over `--max-line-length`, an input over `--max-size`, a line that is not UTF-8, an error in the syntax and a stuck line all switch the rest of the input to plain output.
 - Lines that are not printed (before the range, squeezed) are still highlighted, so that the printed ones get the same colors. Reading stops at the end of the range.
 

@@ -193,7 +193,7 @@ pub struct Printer {
     /// `None` when the output is not colored.
     pub highlighter: Option<Highlighter>,
     /// The syntax given by `--language`.
-    pub forced: Option<&'static Syntax>,
+    pub forced: Option<Syntax>,
     pub vis: Visibility,
     pub limits: Limits,
     /// Whether to remove the escape sequences of the input.
@@ -301,7 +301,7 @@ impl Printer {
         &self,
         hl: &Highlighter,
         mut reader: &mut dyn BufRead,
-        syntax: &'static Syntax,
+        syntax: Syntax,
         out: &mut impl Write,
         lines: &mut LineState,
         on_give_up: &mut dyn FnMut(&GiveUp),
@@ -317,9 +317,9 @@ impl Printer {
         head: &[u8],
         utf16: Option<Endian>,
         path: Option<&Path>,
-    ) -> io::Result<&'static Syntax> {
-        if let Some(syntax) = self.forced {
-            return Ok(syntax);
+    ) -> io::Result<Syntax> {
+        if let Some(syntax) = &self.forced {
+            return Ok(syntax.clone());
         }
         Ok(hl.detect(path, &self.first_line(head, utf16)?))
     }
@@ -329,7 +329,7 @@ impl Printer {
 mod tests {
     use std::{
         io::Cursor,
-        sync::LazyLock,
+        sync::{Arc, LazyLock},
         time::{Duration, Instant},
     };
 
@@ -338,6 +338,7 @@ mod tests {
     use super::*;
     use crate::{
         color::Depth,
+        highlight::find_language,
         lines::Numbering,
         test_support::{Chunked, LOOPING_SYNTAX, custom_syntax},
     };
@@ -524,8 +525,9 @@ mod tests {
         // that is would be reported and take another `timeout`. Only the
         // first leaves a thread spinning.
         let timeout = Duration::from_secs(1);
-        let (set, syntax) = custom_syntax(LOOPING_SYNTAX);
-        let highlighter = Highlighter::new(set, Theme::default(), Depth::TrueColor, Vec::new());
+        let syntax = custom_syntax(LOOPING_SYNTAX);
+        let highlighter =
+            Highlighter::new(syntaxes(), Theme::default(), Depth::TrueColor, Vec::new());
         let printer = Printer {
             highlighter: Some(highlighter.with_stall_timeout(timeout)),
             forced: Some(syntax),
@@ -562,10 +564,12 @@ mod tests {
         assert!(has_stalled);
     }
 
-    /// The bundled syntaxes only, so the user's custom ones stay out.
-    fn syntaxes() -> &'static SyntaxSet {
-        static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(crate::assets::bundled_syntaxes);
-        &SYNTAXES
+    /// The bundled syntaxes only, so the user's custom ones stay out. They
+    /// are loaded once for all the tests, which is much faster.
+    fn syntaxes() -> Arc<SyntaxSet> {
+        static SYNTAXES: LazyLock<Arc<SyntaxSet>> =
+            LazyLock::new(|| Arc::new(crate::assets::bundled_syntaxes()));
+        Arc::clone(&SYNTAXES)
     }
 
     /// A printer that colors the output.
@@ -803,7 +807,7 @@ mod tests {
     fn detects_a_shebang_split_across_reads() {
         let script = b"#!/usr/bin/env python3\nprint(1)\n";
         let python = Printer {
-            forced: syntaxes().find_syntax_by_extension("py"),
+            forced: find_language(&syntaxes(), "py"),
             ..colored()
         };
         let expected = print(&python, script, "script", false);
@@ -817,7 +821,7 @@ mod tests {
     #[test]
     fn detects_the_shebang_of_utf16_and_after_removing_escapes() {
         let python = Printer {
-            forced: syntaxes().find_syntax_by_extension("py"),
+            forced: find_language(&syntaxes(), "py"),
             ..colored()
         };
         let expected = print(&python, b"#!/usr/bin/env python3\n", "script", false);
@@ -833,7 +837,7 @@ mod tests {
         let rust = print(&colored(), RUST, "a.rs", false);
         assert_ne!(print(&colored(), RUST, "a.txt", false), rust);
         let forced = Printer {
-            forced: syntaxes().find_syntax_by_extension("rs"),
+            forced: find_language(&syntaxes(), "rs"),
             ..colored()
         };
         assert_eq!(print(&forced, RUST, "a.txt", false), rust);

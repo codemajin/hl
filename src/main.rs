@@ -20,6 +20,7 @@ use std::{
     io::{self, BufWriter, IsTerminal, Write},
     path::{Path, PathBuf},
     process::ExitCode,
+    sync::Arc,
 };
 
 use anyhow::{Result, anyhow, bail};
@@ -60,11 +61,9 @@ fn run(args: &Args, dirs: &Dirs, stdout: &io::Result<()>) -> Result<ExitCode> {
 
     let tty = io::stdout().is_terminal();
     let color = args.use_color(tty);
-    // Leaked so that highlighting threads can share them; they live as long
-    // as the process anyway.
-    let syntaxes: Option<&'static SyntaxSet> = args
+    let syntaxes = args
         .needs_syntaxes(color)
-        .then(|| &*Box::leak(Box::new(assets::syntaxes(dirs))));
+        .then(|| Arc::new(assets::syntaxes(dirs)));
     let printer = build_printer(args, color, syntaxes, || load_theme(&args.theme, dirs))?;
     let lines = build_line_state(args, printer.highlighter.as_ref());
     print_inputs(args, &printer, lines, color, tty, stdout)
@@ -99,10 +98,10 @@ fn run_info_command(args: &Args, dirs: &Dirs, stdout: &io::Result<()>) -> Result
 fn build_printer(
     args: &Args,
     color: bool,
-    syntaxes: Option<&'static SyntaxSet>,
+    syntaxes: Option<Arc<SyntaxSet>>,
     theme: impl FnOnce() -> Theme,
 ) -> Result<Printer> {
-    let (forced, mappings) = match syntaxes {
+    let (forced, mappings) = match &syntaxes {
         Some(syntaxes) => {
             let forced = args
                 .language
@@ -137,10 +136,10 @@ fn build_printer(
 /// Looks up the language of each syntax mapping. An unknown language is an
 /// error on the command line, but only a warning in the config file, which
 /// never stops `hl` from printing.
-fn resolve_mappings<'a, 'm>(
-    syntaxes: &'a SyntaxSet,
+fn resolve_mappings<'m>(
+    syntaxes: &Arc<SyntaxSet>,
     mappings: impl IntoIterator<Item = &'m SyntaxMapping>,
-) -> Result<Vec<(SyntaxMapping, &'a Syntax)>> {
+) -> Result<Vec<(SyntaxMapping, Syntax)>> {
     let mut resolved = Vec::new();
     for mapping in mappings {
         let Some(syntax) = find_language(syntaxes, &mapping.language) else {
@@ -389,10 +388,12 @@ mod tests {
     use super::*;
     use crate::color::Depth;
 
-    /// two-face's syntaxes, so that the user's custom ones stay out.
-    fn syntaxes() -> &'static SyntaxSet {
-        static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(two_face::syntax::extra_newlines);
-        &SYNTAXES
+    /// two-face's syntaxes, so that the user's custom ones stay out. They
+    /// are loaded once for all the tests, which is much faster.
+    fn syntaxes() -> Arc<SyntaxSet> {
+        static SYNTAXES: LazyLock<Arc<SyntaxSet>> =
+            LazyLock::new(|| Arc::new(two_face::syntax::extra_newlines()));
+        Arc::clone(&SYNTAXES)
     }
 
     /// `argv` with a fixed color depth, so that the terminal of the
@@ -437,7 +438,7 @@ mod tests {
         let origin = Origin::ConfigFile(PathBuf::from("config.toml"));
         let unknown = SyntaxMapping::parse("*.x:no-such-language", origin).unwrap();
         let known = SyntaxMapping::parse("*.y:Rust", Origin::CommandLine).unwrap();
-        let resolved = resolve_mappings(syntaxes(), [&unknown, &known]).unwrap();
+        let resolved = resolve_mappings(&syntaxes(), [&unknown, &known]).unwrap();
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].0.spec, "*.y:Rust");
         assert_eq!(resolved[0].1.name, "Rust");
