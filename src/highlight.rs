@@ -298,7 +298,7 @@ impl Highlighter {
             if n == 0 {
                 return match pipeline.finish(out, lines)? {
                     Flow::Continue | Flow::Done => Ok(()),
-                    Flow::Plain => write_plain(reader, out, lines, Visibility::default()),
+                    Flow::Plain => plain_rest(reader, out, lines),
                 };
             }
             let n = u64::try_from(n).expect("a line read into memory fits in u64");
@@ -318,7 +318,7 @@ impl Highlighter {
                 if lines.begin_line(&buf, out)? {
                     lines.write_raw(&buf, out)?;
                 }
-                return write_plain(reader, out, lines, Visibility::default());
+                return plain_rest(reader, out, lines);
             };
             // Keep the BOM in the output, but out of syntect's way.
             let bom = total == n && line.starts_with('\u{FEFF}');
@@ -332,10 +332,20 @@ impl Highlighter {
             match pipeline.push(text, PendingLine { raw: buf, bom }, out, lines)? {
                 Flow::Continue => {}
                 Flow::Done => return Ok(()),
-                Flow::Plain => return write_plain(reader, out, lines, Visibility::default()),
+                Flow::Plain => return plain_rest(reader, out, lines),
             }
         }
     }
+}
+
+/// Copies the rest of the input as is, once highlighting is given up. There
+/// is no `-v`, `-E` or `-T` to apply: `Printer` does not highlight with them.
+fn plain_rest(
+    reader: &mut impl BufRead,
+    out: &mut impl Write,
+    lines: &mut LineState,
+) -> io::Result<()> {
+    write_plain(reader, out, lines, Visibility::default())
 }
 
 /// Resolves an explicit `--language` value by name or extension.

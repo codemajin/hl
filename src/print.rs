@@ -194,6 +194,8 @@ pub struct Printer {
     pub highlighter: Option<Highlighter>,
     /// The syntax given by `--language`.
     pub forced: Option<Syntax>,
+    /// `-v`, `-E` and `-T`. With any of them, nothing is highlighted, even
+    /// with a `highlighter`.
     pub vis: Visibility,
     pub limits: Limits,
     /// Whether to remove the escape sequences of the input.
@@ -212,12 +214,15 @@ impl Printer {
         lines: &mut LineState,
         report: &mut dyn FnMut(&Path, Problem),
     ) -> io::Result<()> {
+        // `-v`, `-E` and `-T` change how the lines are shown, which cannot be
+        // combined with highlighting. `Args::use_color` turns colors off with
+        // them too, but the printer does not rely on that.
         // After a stall, highlighting another input could get stuck too, and
         // leave one more thread spinning (see `Highlighter::has_stalled`).
         let hl = self
             .highlighter
             .as_ref()
-            .filter(|hl| !too_large && !hl.has_stalled());
+            .filter(|hl| !too_large && !self.vis.any() && !hl.has_stalled());
         if hl.is_none() && !self.strip {
             return write_plain(reader, out, lines, self.vis);
         }
@@ -739,6 +744,20 @@ mod tests {
     #[test]
     fn copies_input_that_is_too_large() {
         assert_eq!(print(&colored(), RUST, "a.rs", true), RUST);
+    }
+
+    #[test]
+    fn shows_nonprinting_like_cat_a_even_with_a_highlighter() {
+        let printer = Printer {
+            vis: Visibility {
+                nonprinting: true,
+                ends: true,
+                tabs: true,
+            },
+            ..colored()
+        };
+        let out = print(&printer, b"a\x1b[31m\tb\n", "a.rs", false);
+        assert_eq!(out, b"a^[[31m^Ib$\n");
     }
 
     #[test]
