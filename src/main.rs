@@ -27,7 +27,7 @@ use assets::{CacheReport, DEFAULT_THEME, ThemeFallback};
 use cli::{Args, PagingWhen};
 use config::{Config, Dirs};
 use diag::{describe, describe_error, escape_controls};
-use highlight::{Highlighter, Limits, Origin, Syntax, SyntaxMapping, find_language};
+use highlight::{GiveUp, Highlighter, Limits, Origin, Syntax, SyntaxMapping, find_language};
 use lines::{LineHighlight, LineState};
 use pager::{Pager, SpawnError};
 use print::{Headers, Input, PrintOutcome, Printer, Problem, TrackedWriter, is_stdin, print_all};
@@ -185,9 +185,15 @@ fn warn_theme_fallback(name: &str, fallback: &ThemeFallback) {
 fn report(path: &Path, problem: Problem) {
     match problem {
         Problem::Unreadable(e) => diag::warn(path, &describe(e)),
-        Problem::CannotHighlight(reason) => diag::warn(
+        Problem::CannotHighlight(reason @ GiveUp::Failed(_)) => diag::warn(
             path,
             &format!("cannot highlight: {reason}, printing the rest as plain text"),
+        ),
+        Problem::CannotHighlight(reason @ GiveUp::Stalled(_)) => diag::warn(
+            path,
+            &format!(
+                "cannot highlight: {reason}, printing the rest and any later inputs as plain text"
+            ),
         ),
     }
 }

@@ -79,7 +79,7 @@ flowchart LR
 
 1 つの入力をどう出力するかは `Printer::print`（`src/print.rs`）が決めます。流れは [動作の詳細](SPEC_ja.md#動作の詳細) の 2 つ目の図のとおりです。
 
-1. ハイライトせず、エスケープシーケンスも残すときは、入力をそのまま `lines::write_plain` に渡し、`cat` と同じようにコピーします。出力先がパイプのときなど、色を付けない実行はすべてこの経路を通ります。
+1. ハイライトせず、エスケープシーケンスも残すときは、入力をそのまま `lines::write_plain` に渡し、`cat` と同じようにコピーします。出力先がパイプのときなど、色を付けない実行はすべてこの経路を通ります。`--max-size` を超えるファイルと、ハイライトが止まった入力より後の入力（`Highlighter::has_stalled`）も、ハイライトしないのでこの経路です。
 2. それ以外のときは、先頭 8 KB（`PEEK_LEN`）を最後まで読みます。パイプは 1 回の読み込みで数バイトしか返さないことがあるので、最初の読み込みだけで判定すると、同じバイト列でもファイルから読んだときとパイプから読んだときで出力が変わってしまいます。
 3. 読んだバイト列から、`encoding::utf16_bom` で UTF-16 の BOM を探し、NUL バイトか不正な UTF-8 があればバイナリとみなします。構文はパスと先頭行から選びます（`Printer::choose_syntax`、`Highlighter::detect`）。
 4. 読んだバイト列は残りの入力の前に戻す（`Cursor::chain`）ので、何も失われません。UTF-16 は `encoding::Utf16Decoder` でデコードし、指定があれば `escape::StripEscapes` でエスケープシーケンスを取り除きます。どちらもリーダーなので、入力全体をメモリに持つことはありません。
@@ -104,14 +104,15 @@ sequenceDiagram
         M->>O: LineState を通して各行を出力
     end
     alt 3 秒間 1 行も終わらない、または構文定義のエラー
-        M->>M: on_give_up(reason)
+        M->>M: on_give_up(GiveUp)
         M->>O: 処理待ちの行と残りの入力をそのまま出力
-        Note over W: 止まったスレッドは残り、<br/>hl が終了するまで CPU コアを 1 つ使い続ける
+        Note over W: 止まったスレッドは残り、<br/>hl が終了するまで CPU コアを 1 つ使い続ける。<br/>後の入力はハイライトしないので、残るのは 1 本まで
     end
 ```
 
 - 行はバッチ（`BATCH_LINES`、`BATCH_BYTES`）にまとめて渡します。1 行ずつ渡すと、受け渡しのほうがハイライトより高くつくからです。`MAX_IN_FLIGHT` で読み込みが先に進みすぎないようにし、メモリの使用量を抑えます。
 - メインスレッドは `recv_timeout` でバッチを待ち、`STALL_TIMEOUT`（3 秒）の間に 10 回、終わった行数を確かめます。タイムアウトの間ずっと 1 行も終わらなかったときだけハイライトをあきらめるので、遅くても進んでいる大きなバッチは打ち切りません。
+- 止まると `Highlighter` の `stalled` フラグが立ち（`Pipeline::give_up` で、`GiveUp::Stalled` のときだけ）、立ったあとは `Printer::print` がどの入力もハイライトしません。これがないと、同じ構文で止まる入力のたびに 3 秒待ち、回り続けるスレッドが 1 本ずつ増えます。構文定義のエラーではフラグは立ちません。スレッドは終わるので、次の入力は普段どおりハイライトします。理由は `GiveUp` として `on_give_up` に渡すので、`main.rs` は後の入力もプレーンになることを警告に書けます。
 - 構文は `'static`（`main` でリークさせたもの）で、テーマは `Arc` で共有します。止まったスレッドは、それを起動した入力より長く生き残るからです。
 - syntect の状態は行から行へ引き継がれるので、ハイライトしなかった行のあとから再開することはできません。`--max-line-length` を超える行、`--max-size` を超えた入力、UTF-8 として不正な行、構文定義のエラー、止まった行のどれでも、入力の残りはそのまま出力します。
 - 出力しない行（範囲より前の行、圧縮した空行）もハイライトします。出力する行の色を、ファイル全体を表示したときと同じにするためです。読み込みは範囲の終わりで止めます。
@@ -122,7 +123,7 @@ stderr への出力はすべて `src/diag.rs` を通します。`hl: ` の接頭
 
 ```mermaid
 flowchart TD
-    giveup["highlight: on_give_up(reason)"] --> cannot["print: Problem::CannotHighlight"]
+    giveup["highlight: on_give_up(GiveUp)"] --> cannot["print: Problem::CannotHighlight"]
     unreadable["print: 入力を開けない、<br/>または読めない"] --> unread["print: Problem::Unreadable"]
     cannot --> report["main: report<br/>（print_all のコールバック）"]
     unread --> report

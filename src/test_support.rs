@@ -3,6 +3,9 @@
 use std::io::{self, Read};
 
 use proptest::{collection::vec, prelude::*};
+use syntect::parsing::{SyntaxDefinition, SyntaxSet, SyntaxSetBuilder};
+
+use crate::highlight::Syntax;
 
 /// Returns `data` in reads of the sizes in `sizes`, taken in turn and
 /// repeated, so that the reader under test sees its input split at those
@@ -46,4 +49,35 @@ impl Read for Chunked<'_> {
 /// many places, and sometimes large.
 pub fn chunk_sizes() -> impl Strategy<Value = Vec<usize>> {
     vec(prop_oneof![9 => 1..=16usize, 1 => 17..=4096usize], 1..8)
+}
+
+/// A syntax whose two contexts hand `x` back and forth without consuming
+/// it, which makes syntect loop forever.
+///
+/// Every input highlighted with it leaves a thread spinning until the test
+/// process exits, which slows down the other tests and can make the ones
+/// that wait for a deadline fail on a CI runner with few cores. So only the
+/// tests of the stall itself use it, each with as few stuck inputs as it
+/// can.
+pub const LOOPING_SYNTAX: &str = r"%YAML 1.2
+---
+name: Loop
+scope: source.loop
+contexts:
+  main:
+    - match: (?=x)
+      set: other
+  other:
+    - match: (?=x)
+      set: main
+";
+
+/// The syntax defined by `yaml`, in a syntax set of its own. Both are
+/// leaked, as `Highlighter` needs them `'static`.
+pub fn custom_syntax(yaml: &str) -> (&'static SyntaxSet, &'static Syntax) {
+    let definition = SyntaxDefinition::load_from_str(yaml, true, None).unwrap();
+    let mut builder = SyntaxSetBuilder::new();
+    builder.add(definition);
+    let set: &'static SyntaxSet = Box::leak(Box::new(builder.build()));
+    (set, &set.syntaxes()[0])
 }

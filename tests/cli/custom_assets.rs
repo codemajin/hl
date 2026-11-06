@@ -4,7 +4,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use assert_cmd::Command;
@@ -267,10 +267,47 @@ fn prints_the_rest_plain_when_highlighting_hangs() {
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert!(
         stderr.contains(
-            "cannot highlight: a line took longer than 3s, printing the rest as plain text"
+            "cannot highlight: a line took longer than 3s, printing the rest and any later inputs \
+             as plain text"
         ),
         "{stderr}"
     );
+}
+
+#[test]
+fn stops_highlighting_after_the_first_stall() {
+    let assets = Assets::new();
+    assets.syntax("Loop", LOOPING_SYNTAX);
+    let inputs = [("a.loop", "a\nx\n"), ("b.loop", "x\n"), ("c.loop", "x\n")];
+    let files = files(assets.dir(), &inputs);
+    let run = |files: &[PathBuf]| {
+        let start = Instant::now();
+        let out = assets
+            .hl()
+            .args(["--color", "always"])
+            .args(files)
+            .timeout(Duration::from_secs(30))
+            .assert()
+            .success()
+            .get_output()
+            .clone();
+        (out, start.elapsed())
+    };
+    let (_, one) = run(&files[..1]);
+    let (out, three) = run(&files);
+    // Each input getting stuck would take two more stalls of 3 seconds than
+    // the first input alone; loading the syntaxes takes the same in both.
+    assert!(
+        three < one + Duration::from_secs(3),
+        "three inputs took {three:?}, one {one:?}"
+    );
+    let stdout = out.stdout;
+    assert!(stdout.ends_with(b"x\nx\nx\n"), "{stdout:?}");
+    assert!(has_escape(&stdout[..stdout.len() - 6]), "{stdout:?}");
+    assert_eq!(strip_ansi(&stdout), b"a\nx\nx\nx\n");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert_eq!(stderr.matches("took longer than").count(), 1, "{stderr}");
+    assert!(stderr.contains("a.loop: cannot highlight"), "{stderr}");
 }
 
 #[test]

@@ -1,10 +1,11 @@
 use std::{
     collections::VecDeque,
+    fmt,
     io::{self, BufRead, Read, Write},
     path::{self, Path, PathBuf},
     sync::{
         Arc, Mutex, PoisonError,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, Sender},
     },
     thread,
@@ -33,7 +34,9 @@ const FALLBACK_HIGHLIGHT_ALPHA: u8 = 0x33;
 
 /// How long highlighting may go without finishing a line before it is given
 /// up. syntect can loop forever on some syntaxes and inputs, and cannot be
-/// interrupted, so it runs on a thread of its own that is left behind.
+/// interrupted, so it runs on a thread of its own that is left behind. No
+/// input is highlighted after that (see `Highlighter::has_stalled`), so a
+/// run waits this long and leaves a thread behind once at most.
 const STALL_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// How many times per `STALL_TIMEOUT` the highlighting thread is checked
@@ -124,6 +127,25 @@ impl SyntaxMapping {
     }
 }
 
+/// Why highlighting an input was given up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GiveUp {
+    /// An error in the syntax, or the highlighting thread ended.
+    Failed(String),
+    /// No line finished for this long. The thread is stuck and left behind,
+    /// so no later input is highlighted either.
+    Stalled(Duration),
+}
+
+impl fmt::Display for GiveUp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Failed(reason) => f.write_str(reason),
+            Self::Stalled(timeout) => write!(f, "a line took longer than {timeout:?}"),
+        }
+    }
+}
+
 /// Highlights inputs. The syntaxes are `'static` because they are shared
 /// with the highlighting thread, which may outlive the input it was started
 /// for (see `STALL_TIMEOUT`).
@@ -134,6 +156,8 @@ pub struct Highlighter {
     /// User mappings with their languages resolved; the last match wins.
     mappings: Vec<(SyntaxMapping, &'static Syntax)>,
     stall_timeout: Duration,
+    /// Whether highlighting got stuck on an input.
+    stalled: AtomicBool,
 }
 
 impl Highlighter {
@@ -149,7 +173,24 @@ impl Highlighter {
             depth,
             mappings,
             stall_timeout: STALL_TIMEOUT,
+            stalled: AtomicBool::new(false),
         }
+    }
+
+    /// Gives up highlighting a line after `timeout` instead of
+    /// `STALL_TIMEOUT`.
+    #[cfg(test)]
+    pub fn with_stall_timeout(mut self, timeout: Duration) -> Self {
+        self.stall_timeout = timeout;
+        self
+    }
+
+    /// Whether highlighting got stuck on an input, which leaves a thread
+    /// spinning until the process exits. The caller prints the later inputs
+    /// without highlighting, so that each of them does not wait
+    /// `STALL_TIMEOUT` and leave one more thread behind.
+    pub fn has_stalled(&self) -> bool {
+        self.stalled.load(Ordering::Relaxed)
     }
 
     /// The escape sequence for the background of `--highlight-line`: the
@@ -197,16 +238,17 @@ impl Highlighter {
     /// A line that is not valid UTF-8 switches to plain output the same way,
     /// and so does an error in the syntax or a line that takes longer than
     /// `STALL_TIMEOUT` to highlight, after passing the reason to `on_give_up`.
+    /// The latter also makes `has_stalled` true.
     pub fn write(
         &self,
         reader: &mut impl BufRead,
-        on_give_up: &mut dyn FnMut(&str),
+        on_give_up: &mut dyn FnMut(&GiveUp),
         out: &mut impl Write,
         syntax: &'static Syntax,
         lines: &mut LineState,
         limits: Limits,
     ) -> io::Result<()> {
-        let mut pipeline = Pipeline::new(self.spawn_worker(syntax)?, on_give_up);
+        let mut pipeline = Pipeline::new(self.spawn_worker(syntax)?, on_give_up, &self.stalled);
         let max_line = limits.max_line.unwrap_or(u64::MAX);
         let range_end = lines.range_end();
         let mut total: u64 = 0;
@@ -324,7 +366,7 @@ type LineResult = Result<String, String>;
 /// the worker stopped, and why it stopped.
 struct Stopped {
     done: Vec<LineResult>,
-    reason: String,
+    reason: GiveUp,
 }
 
 /// Locks `mutex`, even after a panic on the worker, whose results are
@@ -372,11 +414,11 @@ impl Worker {
                         seen = now;
                         since = Instant::now();
                     } else if since.elapsed() >= self.stall_timeout {
-                        break format!("a line took longer than {:?}", self.stall_timeout);
+                        break GiveUp::Stalled(self.stall_timeout);
                     }
                 }
                 Err(RecvTimeoutError::Disconnected) => {
-                    break "the highlighter stopped".to_string();
+                    break GiveUp::Failed("the highlighter stopped".to_string());
                 }
             }
         };
@@ -415,7 +457,9 @@ enum Flow {
 struct Pipeline<'r> {
     worker: Worker,
     /// Told why highlighting was given up.
-    on_give_up: &'r mut dyn FnMut(&str),
+    on_give_up: &'r mut dyn FnMut(&GiveUp),
+    /// Set when the worker gets stuck (`Highlighter::has_stalled`).
+    stalled: &'r AtomicBool,
     batch: Vec<String>,
     batch_bytes: usize,
     in_flight: usize,
@@ -423,10 +467,15 @@ struct Pipeline<'r> {
 }
 
 impl<'r> Pipeline<'r> {
-    fn new(worker: Worker, on_give_up: &'r mut dyn FnMut(&str)) -> Self {
+    fn new(
+        worker: Worker,
+        on_give_up: &'r mut dyn FnMut(&GiveUp),
+        stalled: &'r AtomicBool,
+    ) -> Self {
         Self {
             worker,
             on_give_up,
+            stalled,
             batch: Vec::new(),
             batch_bytes: 0,
             in_flight: 0,
@@ -508,7 +557,7 @@ impl<'r> Pipeline<'r> {
                     if print {
                         lines.write_raw(&line.raw, out)?;
                     }
-                    return self.give_up(&e, out, lines);
+                    return self.give_up(&GiveUp::Failed(e), out, lines);
                 }
             }
         }
@@ -521,10 +570,13 @@ impl<'r> Pipeline<'r> {
     /// Reports why highlighting failed and prints the pending lines plain.
     fn give_up(
         &mut self,
-        reason: &str,
+        reason: &GiveUp,
         out: &mut impl Write,
         lines: &mut LineState,
     ) -> io::Result<Flow> {
+        if matches!(reason, GiveUp::Stalled(_)) {
+            self.stalled.store(true, Ordering::Relaxed);
+        }
         (self.on_give_up)(reason);
         while let Some(line) = self.pending.pop_front() {
             if lines.is_done() {
@@ -563,7 +615,10 @@ mod tests {
     use std::{fmt::Write as _, io::Cursor, sync::LazyLock};
 
     use super::*;
-    use crate::lines::{LineHighlight, LineRange, Numbering};
+    use crate::{
+        lines::{LineHighlight, LineRange, Numbering},
+        test_support::{LOOPING_SYNTAX, custom_syntax},
+    };
 
     /// The bundled syntaxes only, so the user's custom ones stay out.
     fn syntaxes() -> &'static SyntaxSet {
@@ -1074,29 +1129,11 @@ mod tests {
         assert!(scopes("class A @Inject() (a: Int)\n").contains("variable.annotation"));
     }
 
-    /// A syntax whose two contexts hand `x` back and forth without
-    /// consuming it, which makes syntect loop forever.
-    ///
-    /// Every input highlighted with it leaves a thread spinning until the
-    /// test process exits, which slows down the other tests and can make the
-    /// ones that wait for a deadline fail on a CI runner with few cores. So
-    /// only the tests of the stall itself use it, and the tests of what
-    /// happens after giving up use `FAILING_SYNTAX`, which takes the same
-    /// path from `Pipeline::give_up` on.
-    const LOOPING_SYNTAX: &str = r"%YAML 1.2
----
-name: Loop
-scope: source.loop
-contexts:
-  main:
-    - match: (?=x)
-      set: other
-  other:
-    - match: (?=x)
-      set: main
-";
-
     /// A syntax that fails on `x`: it pushes a syntax that does not exist.
+    ///
+    /// The tests of what happens after giving up use it rather than
+    /// `LOOPING_SYNTAX`, which leaves a thread spinning for each input. It
+    /// takes the same path from `Pipeline::give_up` on.
     const FAILING_SYNTAX: &str = r"%YAML 1.2
 ---
 name: Fail
@@ -1107,25 +1144,16 @@ contexts:
       push: scope:source.nonexistent
 ";
 
-    /// The syntax defined by `yaml`, in a syntax set of its own.
-    fn custom_syntax(yaml: &str) -> (&'static SyntaxSet, &'static Syntax) {
-        let definition =
-            syntect::parsing::SyntaxDefinition::load_from_str(yaml, true, None).unwrap();
-        let mut builder = syntect::parsing::SyntaxSetBuilder::new();
-        builder.add(definition);
-        let set: &'static SyntaxSet = Box::leak(Box::new(builder.build()));
-        (set, &set.syntaxes()[0])
-    }
-
     /// Highlights `input` with the syntax defined by `yaml`, and returns the
-    /// output and the reasons highlighting was given up.
+    /// output and the reasons highlighting was given up. Checks that only a
+    /// stall makes `has_stalled` true.
     fn write_custom(
         yaml: &str,
         input: &[u8],
         lines: &mut LineState,
         limits: Limits,
         stall_timeout: Duration,
-    ) -> (Vec<u8>, Vec<String>) {
+    ) -> (Vec<u8>, Vec<GiveUp>) {
         let (set, syntax) = custom_syntax(yaml);
         let mut hl = highlighter(syntaxes(), &[]);
         hl.syntaxes = set;
@@ -1134,13 +1162,16 @@ contexts:
         let mut reasons = Vec::new();
         hl.write(
             &mut Cursor::new(input),
-            &mut |reason| reasons.push(reason.to_string()),
+            &mut |reason| reasons.push(reason.clone()),
             &mut out,
             syntax,
             lines,
             limits,
         )
         .unwrap();
+        // Only a stuck line keeps the later inputs from being highlighted.
+        let stalled = reasons.iter().any(|r| matches!(r, GiveUp::Stalled(_)));
+        assert_eq!(hl.has_stalled(), stalled, "{reasons:?}");
         (out, reasons)
     }
 
@@ -1157,7 +1188,8 @@ contexts:
             NO_LIMITS,
             stall,
         );
-        assert_eq!(reasons, ["a line took longer than 2s"]);
+        assert_eq!(reasons, [GiveUp::Stalled(stall)]);
+        assert_eq!(reasons[0].to_string(), "a line took longer than 2s");
         let (highlighted, plain) = out.split_at(out.len() - "     3\tx\n     4\tc\n".len());
         assert_eq!(plain, b"     3\tx\n     4\tc\n", "{out:?}");
         assert!(has_escape(highlighted), "{out:?}");
@@ -1260,7 +1292,10 @@ contexts:
             panic!("received results from a worker that hung up");
         };
         assert_eq!(done, Vec::<LineResult>::new());
-        assert_eq!(reason, "the highlighter stopped");
+        assert_eq!(
+            reason,
+            GiveUp::Failed("the highlighter stopped".to_string())
+        );
     }
 
     #[test]

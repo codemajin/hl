@@ -11,7 +11,7 @@ use crate::{
     diag::display_safe,
     encoding::{Endian, UTF8_BOM, Utf16Decoder, is_utf8_prefix, utf16_bom},
     escape::StripEscapes,
-    highlight::{Highlighter, Limits, Syntax},
+    highlight::{GiveUp, Highlighter, Limits, Syntax},
     lines::{LineState, Visibility, write_plain},
 };
 
@@ -30,8 +30,8 @@ pub enum Problem<'a> {
     /// The input could not be opened or read, and was skipped.
     Unreadable(&'a io::Error),
     /// Highlighting failed for this reason, and the rest of the input was
-    /// printed plain.
-    CannotHighlight(&'a str),
+    /// printed plain. After `GiveUp::Stalled`, so are the later inputs.
+    CannotHighlight(&'a GiveUp),
 }
 
 /// What happened in `print_all`.
@@ -212,7 +212,12 @@ impl Printer {
         lines: &mut LineState,
         report: &mut dyn FnMut(&Path, Problem),
     ) -> io::Result<()> {
-        let hl = self.highlighter.as_ref().filter(|_| !too_large);
+        // After a stall, highlighting another input could get stuck too, and
+        // leave one more thread spinning (see `Highlighter::has_stalled`).
+        let hl = self
+            .highlighter
+            .as_ref()
+            .filter(|hl| !too_large && !hl.has_stalled());
         if hl.is_none() && !self.strip {
             return write_plain(reader, out, lines, self.vis);
         }
@@ -230,7 +235,7 @@ impl Printer {
             None => None,
         };
         let name = path.unwrap_or(Path::new("-"));
-        let mut on_give_up = |reason: &str| report(name, Problem::CannotHighlight(reason));
+        let mut on_give_up = |reason: &GiveUp| report(name, Problem::CannotHighlight(reason));
         let mut head = Cursor::new(head);
         if let Some(endian) = utf16 {
             // Terminals expect UTF-8, so UTF-16 is converted for highlighting.
@@ -299,7 +304,7 @@ impl Printer {
         syntax: &'static Syntax,
         out: &mut impl Write,
         lines: &mut LineState,
-        on_give_up: &mut dyn FnMut(&str),
+        on_give_up: &mut dyn FnMut(&GiveUp),
     ) -> io::Result<()> {
         hl.write(&mut reader, on_give_up, out, syntax, lines, self.limits)
     }
@@ -322,12 +327,20 @@ impl Printer {
 
 #[cfg(test)]
 mod tests {
-    use std::{io::Cursor, sync::LazyLock};
+    use std::{
+        io::Cursor,
+        sync::LazyLock,
+        time::{Duration, Instant},
+    };
 
     use syntect::{highlighting::Theme, parsing::SyntaxSet};
 
     use super::*;
-    use crate::{color::Depth, lines::Numbering, test_support::Chunked};
+    use crate::{
+        color::Depth,
+        lines::Numbering,
+        test_support::{Chunked, LOOPING_SYNTAX, custom_syntax},
+    };
 
     fn plain() -> Printer {
         Printer {
@@ -503,6 +516,50 @@ mod tests {
         assert!(write_error.is_some_and(|e| e.kind() == io::ErrorKind::BrokenPipe));
         assert!(out.failed());
         assert_eq!(opened, 1);
+    }
+
+    #[test]
+    fn stops_highlighting_inputs_after_a_stall() {
+        // Each input would get stuck if it were highlighted, so a later one
+        // that is would be reported and take another `timeout`. Only the
+        // first leaves a thread spinning.
+        let timeout = Duration::from_secs(1);
+        let (set, syntax) = custom_syntax(LOOPING_SYNTAX);
+        let highlighter = Highlighter::new(set, Theme::default(), Depth::TrueColor, Vec::new());
+        let printer = Printer {
+            highlighter: Some(highlighter.with_stall_timeout(timeout)),
+            forced: Some(syntax),
+            ..plain()
+        };
+        let mut out = TrackedWriter::new(Vec::new());
+        let lines = LineState::new(Numbering::None, false, None);
+        let mut reasons = Vec::new();
+        let report = |path: &Path, problem: Problem| match problem {
+            Problem::CannotHighlight(reason) => reasons.push(reason.clone()),
+            Problem::Unreadable(e) => panic!("{}: {e}", path.display()),
+        };
+        let start = Instant::now();
+        let open = |_: &Path| Ok(input("x\n"));
+        let outcome = print_all(
+            &paths(&["a", "b", "c"]),
+            open,
+            &printer,
+            &mut out,
+            lines,
+            None,
+            report,
+        );
+        let elapsed = start.elapsed();
+        assert!(!outcome.input_failed);
+        assert!(outcome.write_error.is_none());
+        assert_eq!(reasons, [GiveUp::Stalled(timeout)]);
+        assert_eq!(out.inner, b"x\nx\nx\n");
+        assert!(elapsed < timeout * 2, "took {elapsed:?}");
+        let has_stalled = printer
+            .highlighter
+            .as_ref()
+            .is_some_and(Highlighter::has_stalled);
+        assert!(has_stalled);
     }
 
     /// The bundled syntaxes only, so the user's custom ones stay out.

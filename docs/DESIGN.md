@@ -79,7 +79,7 @@ There are no cycles. `color`, `diag`, `encoding`, `escape`, `console` and `stdou
 
 `Printer::print` (`src/print.rs`) decides how one input is printed, following the second diagram in [Behavior details](SPEC.md#behavior-details):
 
-1. When there is nothing to highlight and the escape sequences are kept, the input goes straight to `lines::write_plain`, which copies it like `cat`. This is the path of every run without colors, as when the output is a pipe.
+1. When there is nothing to highlight and the escape sequences are kept, the input goes straight to `lines::write_plain`, which copies it like `cat`. This is the path of every run without colors, as when the output is a pipe. A file over `--max-size`, and every input after one that got stuck (`Highlighter::has_stalled`), have nothing to highlight either.
 2. Otherwise the first 8 KB (`PEEK_LEN`) are read in full. A pipe can return a few bytes per read, so deciding from the first read alone would give different output for the same bytes from a file and from a pipe.
 3. From those bytes `encoding::utf16_bom` finds a UTF-16 BOM, and a NUL byte or invalid UTF-8 makes the input binary. The syntax is chosen from the path and the first line (`Printer::choose_syntax`, `Highlighter::detect`).
 4. The bytes already read are put back in front of the rest of the input (`Cursor::chain`), so nothing is lost. UTF-16 is decoded by `encoding::Utf16Decoder`, and the escape sequences are removed by `escape::StripEscapes` when asked. Both are readers, so the input is never held in memory as a whole.
@@ -104,14 +104,15 @@ sequenceDiagram
         M->>O: Print the lines through LineState
     end
     alt No line finished for 3 seconds, or an error in the syntax
-        M->>M: on_give_up(reason)
+        M->>M: on_give_up(GiveUp)
         M->>O: The pending lines and the rest of the input, plain
-        Note over W: A stuck thread is left behind<br/>and keeps a CPU core busy until hl exits
+        Note over W: A stuck thread is left behind<br/>and keeps a CPU core busy until hl exits.<br/>No later input is highlighted, so there is one at most
     end
 ```
 
 - Lines are handed over in batches (`BATCH_LINES`, `BATCH_BYTES`) because handing over each line costs more than highlighting it. `MAX_IN_FLIGHT` bounds how far the reading runs ahead, and so the memory used.
 - The main thread waits for a batch with `recv_timeout`, ten times per `STALL_TIMEOUT` (3 seconds), and compares the count of lines done each time. Highlighting is given up only when no line has finished for the whole timeout, so a big batch of slow but progressing lines is not cut short.
+- A stall sets the `stalled` flag of the `Highlighter` (in `Pipeline::give_up`, on `GiveUp::Stalled` only), and `Printer::print` highlights no input once it is set. Without it, each input that trips the same syntax would wait another 3 seconds and leave one more thread spinning. An error in the syntax does not set it: the thread ends, and the next input is highlighted as usual. The reason goes to `on_give_up` as a `GiveUp`, so that `main.rs` can say in the warning that the later inputs are plain too.
 - The syntaxes are `'static` (leaked by `main`) and the theme is shared through an `Arc`, because a stuck thread outlives the input it was started for.
 - syntect's state carries over from line to line, so highlighting cannot resume after a line that was not highlighted. A line over `--max-line-length`, an input over `--max-size`, a line that is not UTF-8, an error in the syntax and a stuck line all switch the rest of the input to plain output.
 - Lines that are not printed (before the range, squeezed) are still highlighted, so that the printed ones get the same colors. Reading stops at the end of the range.
@@ -122,7 +123,7 @@ All output on stderr goes through `src/diag.rs`, so the `hl: ` prefix and the es
 
 ```mermaid
 flowchart TD
-    giveup["highlight: on_give_up(reason)"] --> cannot["print: Problem::CannotHighlight"]
+    giveup["highlight: on_give_up(GiveUp)"] --> cannot["print: Problem::CannotHighlight"]
     unreadable["print: an input cannot be<br/>opened or read"] --> unread["print: Problem::Unreadable"]
     cannot --> report["main: report<br/>(callback of print_all)"]
     unread --> report
