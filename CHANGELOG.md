@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Windows (x86_64) support: CI runs the tests on Windows, and each release has a zip for `x86_64-pc-windows-msvc`. The README describes installing it with PowerShell.
 - The PowerShell completion script (`completions/_hl.ps1`) in every release archive.
+- A build provenance attestation for every release archive, so that `gh attestation verify <archive> --repo codemajin/hl --signer-workflow codemajin/hl/.github/workflows/release.yml` can check that it was built from this repository by its release workflow. The `.sha256` checksums only find a broken download, as they are published next to the archives; the README now says so and shows both checks.
 - On Windows, the config directory is `%APPDATA%\hl` and the cache directory `%LOCALAPPDATA%\hl` when `XDG_CONFIG_HOME` / `XDG_CACHE_HOME` is not set; `~/.config` and `~/.cache` are used only without them.
 - On Windows, colored output turns on escape sequence processing in the console, so that the colors show in cmd.exe and PowerShell outside Windows Terminal too.
 - On Windows, starting without a stdout handle is a write error (exit status 1), as a closed stdout is on Unix, instead of discarding the output.

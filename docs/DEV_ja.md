@@ -25,7 +25,7 @@ push と pull request のたびに、GitHub Actions が `cargo fmt --check`、`c
 
 Dependabot（`.github/dependabot.yml`）が、依存クレートと GitHub Actions の更新 PR を毎週作ります。クレートのマイナー・パッチ更新は 1 本の PR にまとめ、メジャー更新は個別の PR にします。Actions の更新も 1 本にまとめます。どの更新も、公開から 7 日たったバージョンだけを取り込みます（`cooldown`）。乗っ取られたアカウントから公開されたバージョンは、その間に見つかって取り下げられることが多いからです。セキュリティ更新は待ちません。
 
-タグは付け替えられるので、ワークフローでは各 Action をコミットの SHA で固定し、バージョンをコメントに書いています（`uses: actions/checkout@<sha> # v7.0.1`）。Dependabot は SHA とコメントを一緒に更新します。Action を追加するときも同じ形で固定してください。ワークフローの `GITHUB_TOKEN` は読み取り専用です（書き込めるのはリリースを公開するジョブだけ）。`actions/checkout` には `persist-credentials: false` を付けているので、トークンが `.git/config` に残ってビルドから読まれることはありません。
+タグは付け替えられるので、ワークフローでは各 Action をコミットの SHA で固定し、バージョンをコメントに書いています（`uses: actions/checkout@<sha> # v7.0.1`）。Dependabot は SHA とコメントを一緒に更新します。Action を追加するときも同じ形で固定してください。ワークフローの `GITHUB_TOKEN` は読み取り専用です（リポジトリに書き込めるのはリリースを公開するジョブだけで、来歴の構成証明に署名できるのはリリースの build ジョブだけ）。`actions/checkout` には `persist-credentials: false` を付けているので、トークンが `.git/config` に残ってビルドから読まれることはありません。
 
 [cargo-deny](https://github.com/EmbarkStudios/cargo-deny)（`.github/workflows/deny.yml`）は push と pull request のたびに依存を確認します。確認するのは、既知の脆弱性と yank されたバージョン（advisories）、ライセンス、bans、取得元（crates.io 以外は不可）です。依存が変わらなくても新しい脆弱性は公開されるので、advisories は毎日も確認します。許可するライセンスと、理由を付けて当面無視する advisory は `deny.toml` に書いてあります。手元で実行するときは次のようにします。
 
@@ -51,9 +51,17 @@ cargo deny check
    git push origin vX.Y.Z
    ```
 
-すると `.github/workflows/release.yml` が 5 つのプラットフォーム向けにバイナリをビルドし、ドキュメント（README、`docs/`、変更履歴）や、`hl` 自身で生成した補完スクリプトと man ページとまとめてアーカイブし（Windows は zip、それ以外は tar.gz）、SHA-256 のチェックサムとともに GitHub のリリースとして公開します。リリースノートは CHANGELOG の該当の節です。タグが `Cargo.toml` のバージョンと一致しない場合や、CHANGELOG にそのバージョンの節がない場合は、何も公開せずに失敗します。CI のワークフローの結果は待たないので、ビルドの前にテスト（Linux、macOS、Windows）、clippy、doc のビルドを自分で実行し、失敗したら何も公開しません。ビルドキャッシュは使わず、タグのソースだけからビルドします。
+すると `.github/workflows/release.yml` が 5 つのプラットフォーム向けにバイナリをビルドし、ドキュメント（README、`docs/`、変更履歴）や、`hl` 自身で生成した補完スクリプトと man ページとまとめてアーカイブし（Windows は zip、それ以外は tar.gz）、SHA-256 のチェックサムと、アーカイブごとのビルドの来歴の構成証明（attestation）とともに GitHub のリリースとして公開します。リリースノートは CHANGELOG の該当の節です。タグが `Cargo.toml` のバージョンと一致しない場合や、CHANGELOG にそのバージョンの節がない場合は、何も公開せずに失敗します。CI のワークフローの結果は待たないので、ビルドの前にテスト（Linux、macOS、Windows）、clippy、doc のビルドを自分で実行し、失敗したら何も公開しません。ビルドキャッシュは使わず、タグのソースだけからビルドします。
 
-`v*` のタグを push できる人は誰でもリリースを公開できます。これを制限するには、リポジトリの設定（Settings → Rules → Rulesets）で `v*` を対象にしたタグのルールセットを作り、タグの作成・更新・削除をメンテナーに限ってください。
+チェックサムはアーカイブと同じジョブで作り、同じリリースに置いています。そのため、ダウンロードの破損は見つけられても、差し替えられたアーカイブは見つけられません。構成証明は build ジョブの `actions/attest` が作ります。ジョブの OIDC トークン（`id-token: write`）でワークフローの実行ごとに発行される、有効期間の短い Sigstore の証明書で署名し、リリースとは別に、リポジトリの構成証明として保存します（`attestations: write`）。この権限を持つのは build ジョブだけです。利用者は、README のとおり `gh attestation verify <アーカイブ> --repo codemajin/hl --signer-workflow codemajin/hl/.github/workflows/release.yml` で確かめます。来歴は最初は見送っていました（issue 030）。非公開のリポジトリでアーティファクトの構成証明を使うには GitHub Enterprise Cloud が必要だったためです。2026-11-03 にリポジトリを公開したので、そのあとで追加しました。
+
+`v*` のタグを push できる人は誰でもリリースを公開できます。そのため、誰が公開できるか、公開したあと何を変えられるかを、リポジトリの設定で制限します。設定は手で行い、次のようにしておきます。
+
+- `v*` を対象にしたタグのルールセット（Settings → Rules → Rulesets）。タグの作成・更新・削除を制限し、バイパスできるのはメンテナーだけにする
+- `master` を対象にしたブランチのルールセット。ブランチの削除と force-push を禁止する
+- immutable releases（Settings → General → Releases）。公開したリリースの資産とタグを変えられないようにする。ワークフローの `gh release create` は資産をアップロードしてからリリースを公開するので、有効にしても動く
+
+確かめるには、`gh api repos/codemajin/hl/rulesets` と `gh api repos/codemajin/hl/immutable-releases` を実行します。
 
 ## テストカバレッジ
 

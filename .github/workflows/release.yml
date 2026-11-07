@@ -126,6 +126,14 @@ jobs:
     name: build (${{ matrix.target }})
     needs: [check, assets, test, clippy]
     runs-on: ${{ matrix.os }}
+    # The only job that can sign: the OIDC token (`id-token`) gets a Sigstore
+    # certificate for this workflow run, and `attestations` stores the signed
+    # provenance in the repository. A job-level block replaces the top-level
+    # one, so `contents: read` is repeated here.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       matrix:
         include:
@@ -159,6 +167,7 @@ jobs:
       # Git Bash on Windows, so that one script packs every target: a zip
       # with `hl.exe` there, a tar.gz elsewhere.
       - name: Package
+        id: package
         shell: bash
         run: |
           name="hl-$GITHUB_REF_NAME-${{ matrix.target }}"
@@ -184,6 +193,16 @@ jobs:
           else
             shasum -a 256 "$archive" > "$archive.sha256"
           fi
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+      # The .sha256 sits next to the archive in the release, so whoever can
+      # replace one can replace both: it finds a broken download, not a
+      # tampered one. The provenance attestation is signed for this workflow
+      # run and kept by GitHub apart from the release, so
+      # `gh attestation verify` can tell that the archive was built here.
+      # (actions/attest-build-provenance is now a wrapper around this action.)
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ steps.package.outputs.archive }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: hl-${{ matrix.target }}

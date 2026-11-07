@@ -12,6 +12,7 @@
 
 ## 必要なもの
 
+- ビルド済みバイナリの来歴を確かめる場合は [GitHub CLI](https://cli.github.com/) 2.49 以降（[ビルド済みバイナリ](#ビルド済みバイナリ)を参照）
 - ソースからビルドする場合は Rust ツールチェーン（edition 2024 に対応した Rust 1.88 以降）
 - ページャ機能（`--paging`、`-p`）を使う場合は `less`。環境変数 `$PAGER` を設定していればそちらを使います。どちらもなければ、警告を出してページャなしで表示します。Windows では普通 `less` に PATH が通っていません。Git for Windows には `C:\Program Files\Git\usr\bin\less.exe` があるので、`PAGER` でこれを指定できます（[docs/SPEC_ja.md](docs/SPEC_ja.md#オプション) の `--paging` を参照）。
 - 24bit カラー（Windows Terminal、iTerm2、GNOME Terminal、WezTerm など）か 256 色に対応した端末。Windows では、Windows 10 以降のコンソール（cmd.exe、PowerShell）でも表示できます。
@@ -46,6 +47,14 @@ install "$NAME/hl" ~/.local/bin/hl
 
 `~/.local/bin` に PATH が通っていることを確認してください。更新するときは、新しいバージョンで同じコマンドを実行します。
 
+`.sha256` で分かるのは、ダウンロードが壊れていないかどうかまでです。改ざんは見つけられません。チェックサムはアーカイブと同じ場所に置いてあるので、片方を差し替えられる人はもう片方も差し替えられるからです。アーカイブがこのリポジトリのリリース用ワークフローでビルドされたことを確かめるには、展開する前に、[GitHub CLI](https://cli.github.com/)（2.49 以降）でビルドの来歴の構成証明（attestation）を検証します。
+
+```sh
+gh attestation verify "$NAME.tar.gz" --repo codemajin/hl --signer-workflow codemajin/hl/.github/workflows/release.yml
+```
+
+アーカイブがこのワークフローで署名されていなければ失敗します。構成証明は v0.2.0 の次のリリースから付いています。v0.2.0 以前にはチェックサムしかありません。
+
 macOS では、Web ブラウザでダウンロードしたファイルに隔離属性が付き、Gatekeeper に実行を止められます。そのときは `xattr -d com.apple.quarantine ~/.local/bin/hl` で属性を外してください。`curl` でダウンロードした場合は付きません。
 
 アンインストールするときは、ファイルを削除します。
@@ -54,7 +63,7 @@ macOS では、Web ブラウザでダウンロードしたファイルに隔離�
 rm ~/.local/bin/hl
 ```
 
-Windows 版は tar.gz ではなく zip（`hl.exe` 入り）で、v0.2.0 の次のリリースから用意しています。PowerShell でダウンロードして検証し、`%LOCALAPPDATA%\Programs\hl` にインストールする例です。
+Windows 版は tar.gz ではなく zip（`hl.exe` 入り）で、v0.2.0 の次のリリースから用意しています。PowerShell でダウンロードして検証し（チェックサムと、上と同じく GitHub CLI で構成証明を確かめます）、`%LOCALAPPDATA%\Programs\hl` にインストールする例です。
 
 ```powershell
 $Version = "vX.Y.Z"                 # インストールするリリース
@@ -64,6 +73,8 @@ Invoke-WebRequest "$Base/$Name.zip" -OutFile "$Name.zip"
 Invoke-WebRequest "$Base/$Name.zip.sha256" -OutFile "$Name.zip.sha256"
 $Expected = (Get-Content "$Name.zip.sha256").Split(" ")[0]
 if ((Get-FileHash "$Name.zip" -Algorithm SHA256).Hash -ne $Expected) { throw "checksum mismatch" }
+gh attestation verify "$Name.zip" --repo codemajin/hl --signer-workflow codemajin/hl/.github/workflows/release.yml
+if ($LASTEXITCODE -ne 0) { throw "attestation verification failed" }
 Expand-Archive "$Name.zip" -DestinationPath .
 $Dir = "$env:LOCALAPPDATA\Programs\hl"
 New-Item -ItemType Directory -Force $Dir | Out-Null
