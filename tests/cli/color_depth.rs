@@ -6,7 +6,9 @@ use std::fs;
 
 use predicates::prelude::*;
 
-use crate::common::{ANSI256, TRUECOLOR, assert_depth, colored, has_escape, hl, strip_ansi};
+use crate::common::{
+    ANSI256, TRUECOLOR, assert_depth, colored, fixture, has_escape, hl, strip_ansi,
+};
 
 #[test]
 fn uses_truecolor_when_colorterm_advertises_it() {
@@ -53,7 +55,8 @@ fn color_depth_can_be_set_from_env() {
 
 #[test]
 fn rejects_unknown_color_depth() {
-    hl().args(["--color-depth", "16", "Cargo.toml"])
+    hl().args(["--color-depth", "16"])
+        .arg(fixture("sample.toml"))
         .assert()
         .code(2)
         .stderr(predicate::str::contains("invalid value"));
@@ -61,8 +64,11 @@ fn rejects_unknown_color_depth() {
 
 #[test]
 fn keeps_the_text_with_256_colors() {
-    let content = fs::read("src/main.rs").unwrap();
-    let out = colored(hl().args(["--color-depth", "256", "src/main.rs"]));
+    let content = fs::read(fixture("sample.rs")).unwrap();
+    let out = colored(
+        hl().args(["--color-depth", "256"])
+            .arg(fixture("sample.rs")),
+    );
     assert!(has_escape(&out));
     assert_eq!(strip_ansi(&out), content);
 }

@@ -6,7 +6,8 @@ use std::fs;
 use predicates::prelude::*;
 
 use crate::common::{
-    ANSI256, ESC, NOT_FOUND, TRUECOLOR, assert_depth, colored, files, hl, hl_with_config, tempdir,
+    ANSI256, ESC, NOT_FOUND, TRUECOLOR, assert_depth, colored, files, fixture, hl, hl_with_config,
+    tempdir,
 };
 
 #[test]
@@ -14,7 +15,7 @@ fn reads_the_config_from_xdg_config_home() {
     let dir = tempdir();
     files(dir.path(), &[("hl/config.toml", "color = \"always\"\n")]);
     hl().env("XDG_CONFIG_HOME", dir.path())
-        .arg("Cargo.toml")
+        .arg(fixture("sample.toml"))
         .assert()
         .success()
         .stderr("")
@@ -29,7 +30,8 @@ fn hl_config_overrides_the_config_location() {
     let config = files(dir.path(), &[("config.toml", "color = \"never\"\n")]);
     hl_with_config(&config[0])
         .env("XDG_CONFIG_HOME", xdg.path())
-        .args(["--color-depth", "256", "Cargo.toml"])
+        .args(["--color-depth", "256"])
+        .arg(fixture("sample.toml"))
         .assert()
         .success()
         .stdout(predicate::str::contains(ESC).not());
@@ -47,7 +49,7 @@ fn ignores_a_relative_xdg_config_home() {
     hl().env("HOME", home.path())
         .env("XDG_CONFIG_HOME", "relative")
         .env_remove("APPDATA")
-        .arg("Cargo.toml")
+        .arg(fixture("sample.toml"))
         .assert()
         .success()
         .stderr("")
@@ -62,7 +64,7 @@ fn reads_the_config_from_appdata() {
     files(dir.path(), &[("hl/config.toml", "color = \"always\"\n")]);
     hl().env_remove("XDG_CONFIG_HOME")
         .env("APPDATA", dir.path())
-        .arg("Cargo.toml")
+        .arg(fixture("sample.toml"))
         .assert()
         .success()
         .stderr("")
@@ -75,7 +77,7 @@ fn empty_hl_config_counts_as_unset() {
     files(dir.path(), &[("hl/config.toml", "color = \"always\"\n")]);
     hl().env("XDG_CONFIG_HOME", dir.path())
         .env("HL_CONFIG", "")
-        .arg("Cargo.toml")
+        .arg(fixture("sample.toml"))
         .assert()
         .success()
         .stderr("")
@@ -85,9 +87,9 @@ fn empty_hl_config_counts_as_unset() {
 #[test]
 fn prints_nothing_extra_without_a_config_file() {
     let dir = tempdir();
-    let content = fs::read("Cargo.toml").unwrap();
+    let content = fs::read(fixture("sample.toml")).unwrap();
     hl().env("XDG_CONFIG_HOME", dir.path())
-        .arg("Cargo.toml")
+        .arg(fixture("sample.toml"))
         .assert()
         .success()
         .stderr("")
@@ -97,9 +99,9 @@ fn prints_nothing_extra_without_a_config_file() {
 #[test]
 fn warns_when_the_hl_config_file_is_missing() {
     let dir = tempdir();
-    let content = fs::read("Cargo.toml").unwrap();
+    let content = fs::read(fixture("sample.toml")).unwrap();
     hl_with_config(&dir.path().join("missing.toml"))
-        .arg("Cargo.toml")
+        .arg(fixture("sample.toml"))
         .assert()
         .success()
         .stderr(predicate::str::contains(format!(
@@ -132,9 +134,10 @@ fn command_line_beats_env_beats_config() {
 fn command_line_overrides_the_config_color() {
     let dir = tempdir();
     let config = files(dir.path(), &[("config.toml", "color = \"always\"\n")]);
-    let content = fs::read("Cargo.toml").unwrap();
+    let content = fs::read(fixture("sample.toml")).unwrap();
     hl_with_config(&config[0])
-        .args(["--color", "never", "Cargo.toml"])
+        .args(["--color", "never"])
+        .arg(fixture("sample.toml"))
         .assert()
         .success()
         .stdout(content);
@@ -144,11 +147,12 @@ fn command_line_overrides_the_config_color() {
 fn reads_the_theme_from_the_config() {
     let dir = tempdir();
     let config = files(dir.path(), &[("config.toml", "theme = \"Nord\"\n")]);
-    let expected = colored(hl().args(["--theme", "Nord", "Cargo.toml"]));
-    let default = colored(hl().arg("Cargo.toml"));
+    let expected = colored(hl().args(["--theme", "Nord"]).arg(fixture("sample.toml")));
+    let default = colored(hl().arg(fixture("sample.toml")));
     assert_ne!(expected, default);
     hl_with_config(&config[0])
-        .args(["--color", "always", "Cargo.toml"])
+        .args(["--color", "always"])
+        .arg(fixture("sample.toml"))
         .assert()
         .success()
         .stderr("")
@@ -159,13 +163,16 @@ fn reads_the_theme_from_the_config() {
 fn env_theme_beats_the_config_theme() {
     let dir = tempdir();
     let config = files(dir.path(), &[("config.toml", "theme = \"Nord\"\n")]);
-    let expected = colored(hl().args(["--theme", "Monokai Extended", "Cargo.toml"]));
-    let nord = colored(hl().args(["--theme", "Nord", "Cargo.toml"]));
+    let expected = colored(
+        hl().args(["--theme", "Monokai Extended"])
+            .arg(fixture("sample.toml")),
+    );
+    let nord = colored(hl().args(["--theme", "Nord"]).arg(fixture("sample.toml")));
     assert_ne!(expected, nord);
     let out = colored(
         hl_with_config(&config[0])
             .env("HL_THEME", "Monokai Extended")
-            .arg("Cargo.toml"),
+            .arg(fixture("sample.toml")),
     );
     assert_eq!(out, expected);
 }
@@ -197,9 +204,9 @@ fn ignores_a_broken_config_file() {
         dir.path(),
         &[("config.toml", "color = \"always\"\ntheme =\n")],
     );
-    let content = fs::read("Cargo.toml").unwrap();
+    let content = fs::read(fixture("sample.toml")).unwrap();
     hl_with_config(&config[0])
-        .arg("Cargo.toml")
+        .arg(fixture("sample.toml"))
         .assert()
         .success()
         .stderr(predicate::str::contains("invalid TOML, ignoring the file"))
@@ -217,7 +224,7 @@ fn ignores_bad_config_entries_and_keeps_the_rest() {
         )],
     );
     hl_with_config(&config[0])
-        .arg("Cargo.toml")
+        .arg(fixture("sample.toml"))
         .assert()
         .success()
         .stderr(
@@ -263,9 +270,10 @@ fn command_line_cancels_config_flags() {
         dir.path(),
         &[("config.toml", "number = true\nheader = true\n")],
     );
-    let content = fs::read("Cargo.toml").unwrap();
+    let content = fs::read(fixture("sample.toml")).unwrap();
     hl_with_config(&config[0])
-        .args(["--no-number", "--no-header", "Cargo.toml"])
+        .args(["--no-number", "--no-header"])
+        .arg(fixture("sample.toml"))
         .assert()
         .success()
         .stderr("")
@@ -278,7 +286,7 @@ fn reports_an_invalid_env_value_by_its_name_with_a_config() {
     let config = files(dir.path(), &[("config.toml", "color-depth = \"256\"\n")]);
     hl_with_config(&config[0])
         .env("HL_COLOR_DEPTH", "16")
-        .arg("Cargo.toml")
+        .arg(fixture("sample.toml"))
         .assert()
         .code(2)
         .stderr(
@@ -308,7 +316,7 @@ fn warns_about_config_mappings_of_the_wrong_type() {
     ] {
         let config = files(dir.path(), &[("config.toml", content)]);
         hl_with_config(&config[0])
-            .arg("Cargo.toml")
+            .arg(fixture("sample.toml"))
             .assert()
             .success()
             .stderr(predicate::str::contains(warning));

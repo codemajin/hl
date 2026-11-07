@@ -6,13 +6,15 @@ use std::fs;
 
 use crate::common::raw_hl;
 #[cfg(unix)]
-use crate::common::{files, strip_ansi, tempdir};
+use crate::common::{files, fixture, strip_ansi, tempdir};
 
 #[cfg(target_os = "linux")]
 #[test]
 fn reports_write_errors_without_blaming_the_input() {
     let full = fs::File::create("/dev/full").unwrap();
-    let output = raw_hl(&["src/main.rs", "Cargo.toml"])
+    let output = raw_hl(&[])
+        .arg(fixture("sample.rs"))
+        .arg(fixture("sample.toml"))
         .stdout(full)
         .output()
         .unwrap();
@@ -106,13 +108,17 @@ fn keeps_the_exit_code_when_stderr_is_a_closed_pipe() {
 fn prints_the_input_when_warnings_cannot_be_written() {
     let dir = tempdir();
     let config = files(dir.path(), &[("config.toml", "foo = 1\n")]);
-    let output = raw_hl(&["--theme", "nope", "--color=always", "Cargo.toml"])
+    let output = raw_hl(&["--theme", "nope", "--color=always"])
+        .arg(fixture("sample.toml"))
         .env("HL_CONFIG", &config[0])
         .stderr(closed_pipe())
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(0));
-    assert_eq!(strip_ansi(&output.stdout), fs::read("Cargo.toml").unwrap());
+    assert_eq!(
+        strip_ansi(&output.stdout),
+        fs::read(fixture("sample.toml")).unwrap()
+    );
 }
 
 /// `cmd` with its stdout closed, as with `hl >&-`.
@@ -136,7 +142,8 @@ fn with_closed_stdout(cmd: &mut std::process::Command) -> &mut std::process::Com
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 #[test]
 fn reports_a_closed_stdout_as_a_write_error() {
-    let normal: &[&str] = &["Cargo.toml"];
+    let sample = fixture("sample.toml");
+    let normal: &[&str] = &[sample.to_str().unwrap()];
     for args in EARLY_EXIT_COMMANDS.into_iter().chain([normal]) {
         let output = with_closed_stdout(&mut early_exit_command(args))
             .output()

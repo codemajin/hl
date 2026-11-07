@@ -11,7 +11,7 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::TempDir;
 
-use crate::common::{colored, files, has_escape, hl, stdout, strip_ansi, tempdir};
+use crate::common::{colored, files, fixture, has_escape, hl, stdout, strip_ansi, tempdir};
 
 /// A config directory for custom syntaxes and themes, with its own cache.
 struct Assets {
@@ -438,7 +438,8 @@ fn bundled_syntaxes_need_no_cache() {
     let assets = Assets::new();
     assets
         .hl()
-        .args(["--color", "always", "Cargo.toml"])
+        .args(["--color", "always"])
+        .arg(fixture("sample.toml"))
         .assert()
         .success()
         .stderr("");

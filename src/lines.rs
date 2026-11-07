@@ -752,6 +752,52 @@ mod tests {
         assert_eq!(chunks, [&b"abcd"[..], b"ef\n", b"gh"]);
     }
 
+    /// A sink that records the largest single write, which is the most
+    /// `write_plain` holds of a line at once.
+    #[derive(Default)]
+    struct LargestWrite {
+        written: Vec<u8>,
+        largest: usize,
+    }
+
+    impl Write for LargestWrite {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.largest = self.largest.max(buf.len());
+            self.written.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A huge line without a newline is read `CHUNK` bytes at a time, not
+    /// all at once, so memory does not grow with the line (issue 024).
+    #[test]
+    fn holds_at_most_a_chunk_of_a_huge_line() {
+        let input = vec![b'x'; 4 * CHUNK + 1];
+        let mut reader = Cursor::new(&input[..]);
+        let mut out = LargestWrite::default();
+        let mut lines = numbered(Numbering::All, None);
+        write_plain(&mut reader, &mut out, &mut lines, Visibility::default()).unwrap();
+        assert_eq!(out.largest, CHUNK);
+        let mut expected = b"     1\t".to_vec();
+        expected.extend_from_slice(&input);
+        assert!(out.written == expected, "output differs");
+
+        let mut reader = Cursor::new(&input[..]);
+        let mut sizes = Vec::new();
+        loop {
+            let mut buf = Vec::new();
+            match read_chunk(&mut reader, &mut buf, CHUNK).unwrap() {
+                0 => break,
+                n => sizes.push(n),
+            }
+        }
+        assert_eq!(sizes, [CHUNK, CHUNK, CHUNK, CHUNK, 1]);
+    }
+
     #[test]
     fn does_not_split_a_crlf_between_chunks() {
         let mut reader = Cursor::new(&b"abc\r\nd\r"[..]);

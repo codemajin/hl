@@ -2,13 +2,16 @@
 
 use std::{
     io::{self, Read},
-    sync::Arc,
+    sync::{Arc, LazyLock},
 };
 
 use proptest::{collection::vec, prelude::*};
 use syntect::parsing::{SyntaxDefinition, SyntaxSet, SyntaxSetBuilder};
 
-use crate::highlight::{Syntax, find_language};
+use crate::{
+    encoding::Endian,
+    highlight::{Syntax, find_language},
+};
 
 /// Returns `data` in reads of the sizes in `sizes`, taken in turn and
 /// repeated, so that the reader under test sees its input split at those
@@ -83,4 +86,57 @@ pub fn custom_syntax(yaml: &str) -> Syntax {
     builder.add(definition);
     let set: Arc<SyntaxSet> = Arc::new(builder.build());
     find_language(&set, &name).unwrap()
+}
+
+/// The bundled syntaxes, as `hl` uses them without custom ones, so that the
+/// user's custom syntaxes stay out. They are loaded once for all the tests,
+/// which is much faster.
+pub fn bundled() -> Arc<SyntaxSet> {
+    static SYNTAXES: LazyLock<Arc<SyntaxSet>> =
+        LazyLock::new(|| Arc::new(crate::assets::bundled_syntaxes()));
+    Arc::clone(&SYNTAXES)
+}
+
+/// Removes SGR escape sequences (`ESC [ ... m`). Panics on one without its
+/// `m`, which `hl` never writes, rather than dropping the rest. Any other
+/// escape is kept, so that a test comparing the result sees it.
+pub fn strip_ansi(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut rest = bytes;
+    while let Some((&b, tail)) = rest.split_first() {
+        if let Some(csi) = rest.strip_prefix(b"\x1b[") {
+            let end = csi
+                .iter()
+                .position(|&c| c == b'm')
+                .unwrap_or_else(|| panic!("unterminated CSI in {bytes:?}"));
+            rest = &csi[end + 1..];
+        } else {
+            out.push(b);
+            rest = tail;
+        }
+    }
+    out
+}
+
+/// Whether `bytes` contain the start of an escape sequence (`ESC [`).
+pub fn has_escape(bytes: &[u8]) -> bool {
+    bytes.windows(2).any(|w| w == b"\x1b[")
+}
+
+/// `text` in UTF-16 with the byte order of `endian`. No BOM is added: start
+/// `text` with U+FEFF for one.
+pub fn utf16(text: &str, endian: Endian) -> Vec<u8> {
+    utf16_units(text.encode_utf16(), endian)
+}
+
+/// The UTF-16 code `units` in the byte order of `endian`, which can hold
+/// lone surrogates that no `&str` can.
+pub fn utf16_units(units: impl IntoIterator<Item = u16>, endian: Endian) -> Vec<u8> {
+    units
+        .into_iter()
+        .flat_map(|u| match endian {
+            Endian::Little => u.to_le_bytes(),
+            Endian::Big => u.to_be_bytes(),
+        })
+        .collect()
 }

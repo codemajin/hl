@@ -4,7 +4,9 @@ use std::{fs, path::PathBuf};
 
 use predicates::prelude::*;
 
-use crate::common::{NOT_FOUND, files, hl, stdout, strip_ansi, tempdir, utf16_with_bom};
+use crate::common::{
+    NOT_FOUND, files, fixture, fixtures_dir, hl, stdout, strip_ansi, tempdir, utf16_with_bom,
+};
 
 #[test]
 fn prints_a_header_before_each_file() {
@@ -150,15 +152,18 @@ fn prints_no_header_for_a_directory() {
 
 #[test]
 fn makes_the_header_bold_only_with_color() {
-    hl().args(["--header", "--color", "always", "Cargo.toml"])
+    // Run in the fixture directory, so that the header shows a relative path.
+    hl().args(["--header", "--color", "always", "sample.toml"])
+        .current_dir(fixtures_dir())
         .assert()
         .success()
         .stdout(predicate::str::starts_with(
-            "\x1b[1m==> Cargo.toml <==\x1b[0m\n",
+            "\x1b[1m==> sample.toml <==\x1b[0m\n",
         ));
-    let mut expected = b"==> Cargo.toml <==\n".to_vec();
-    expected.extend(fs::read("Cargo.toml").unwrap());
-    hl().args(["--header", "--color", "never", "Cargo.toml"])
+    let mut expected = b"==> sample.toml <==\n".to_vec();
+    expected.extend(fs::read(fixture("sample.toml")).unwrap());
+    hl().args(["--header", "--color", "never", "sample.toml"])
+        .current_dir(fixtures_dir())
         .assert()
         .success()
         .stdout(expected);

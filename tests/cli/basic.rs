@@ -4,17 +4,21 @@ use std::fs;
 
 use predicates::prelude::*;
 
-use crate::common::{ESC, NOT_FOUND, colored, files, hl, tempdir};
+use crate::common::{ESC, NOT_FOUND, colored, files, fixture, hl, tempdir};
 
 #[test]
 fn passes_bytes_through_when_not_a_tty() {
-    let content = fs::read("src/main.rs").unwrap();
-    hl().arg("src/main.rs").assert().success().stdout(content);
+    let content = fs::read(fixture("sample.rs")).unwrap();
+    hl().arg(fixture("sample.rs"))
+        .assert()
+        .success()
+        .stdout(content);
 }
 
 #[test]
 fn colors_output_when_forced() {
-    hl().args(["--color", "always", "Cargo.toml"])
+    hl().args(["--color", "always"])
+        .arg(fixture("sample.toml"))
         .assert()
         .success()
         .stdout(predicate::str::contains(ESC));
@@ -22,7 +26,8 @@ fn colors_output_when_forced() {
 
 #[test]
 fn never_colors_when_disabled() {
-    hl().args(["--color", "never", "Cargo.toml"])
+    hl().args(["--color", "never"])
+        .arg(fixture("sample.toml"))
         .assert()
         .success()
         .stdout(predicate::str::contains(ESC).not());
@@ -114,11 +119,13 @@ fn keeps_missing_trailing_newline() {
         .stdout(predicate::str::ends_with("\x1b[0m"));
 }
 
-/// A huge line without a newline is read in chunks, not all at once
-/// (issue 024). Memory use is not measured here.
+/// A line without a newline, longer than the chunks it is read in and than
+/// `--max-line-length`, is numbered and printed whole, with or without
+/// color. That a chunk at a time is held in memory (issue 024) is checked
+/// by the unit tests in `src/lines.rs`.
 #[test]
-fn numbers_a_huge_line_without_newline() {
-    let input = vec![b'x'; 32 * 1024 * 1024];
+fn numbers_a_long_line_without_newline() {
+    let input = vec![b'x'; 256 * 1024 + 1];
     let mut expected = b"     1\t".to_vec();
     expected.extend_from_slice(&input);
     for color in ["never", "always"] {

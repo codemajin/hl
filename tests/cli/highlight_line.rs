@@ -3,7 +3,7 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 
-use crate::common::{colored, files, hl, lines_fixture, stdout, strip_ansi, tempdir};
+use crate::common::{colored, files, fixture, hl, lines_fixture, stdout, strip_ansi, tempdir};
 
 const BACKGROUND: &str = "\x1b[48;";
 
@@ -127,7 +127,8 @@ fn highlights_lines_printed_without_syntax_highlighting() {
 /// in `src/cli.rs` cover; this checks that `-H` uses it too.
 #[test]
 fn rejects_an_invalid_highlighted_line_with_status_2() {
-    hl().args(["--highlight-line", "+2", "Cargo.toml"])
+    hl().args(["--highlight-line", "+2"])
+        .arg(fixture("sample.toml"))
         .assert()
         .code(2)
         .stdout("")

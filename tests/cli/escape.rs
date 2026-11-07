@@ -4,7 +4,7 @@
 use predicates::prelude::*;
 
 use crate::common::{
-    colored, files, has_escape, hl, hl_with_config, strip_ansi, tempdir, utf16_with_bom,
+    colored, files, fixture, has_escape, hl, hl_with_config, strip_ansi, tempdir, utf16_with_bom,
 };
 
 /// The issue's example, with an OSC title, a hyperlink and colors.
@@ -189,7 +189,8 @@ fn shows_control_characters_of_file_names_in_errors() {
 #[test]
 fn shows_control_characters_of_theme_names() {
     hl().env("HL_THEME", "t\x1b[2J")
-        .args(["--color", "always", "Cargo.toml"])
+        .args(["--color", "always"])
+        .arg(fixture("sample.toml"))
         .assert()
         .success()
         .stderr(predicate::str::contains(r"unknown theme 't\x1b[2J'"))

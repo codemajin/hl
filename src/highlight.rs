@@ -379,12 +379,7 @@ pub fn languages(syntaxes: &SyntaxSet) -> Vec<(&str, &[String])> {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        fmt::Write as _,
-        io::Cursor,
-        sync::{LazyLock, mpsc},
-        thread,
-    };
+    use std::{fmt::Write as _, io::Cursor, sync::mpsc, thread};
 
     use super::{
         worker::{BATCH_BYTES, BATCH_LINES, MAX_IN_FLIGHT},
@@ -393,16 +388,8 @@ mod tests {
     use crate::{
         encoding::UTF8_BOM,
         lines::{LineHighlight, LineRange, Numbering},
-        test_support::{LOOPING_SYNTAX, custom_syntax},
+        test_support::{LOOPING_SYNTAX, bundled, custom_syntax, has_escape, strip_ansi},
     };
-
-    /// The bundled syntaxes only, so the user's custom ones stay out. They
-    /// are loaded once for all the tests, which is much faster.
-    fn syntaxes() -> Arc<SyntaxSet> {
-        static SYNTAXES: LazyLock<Arc<SyntaxSet>> =
-            LazyLock::new(|| Arc::new(crate::assets::bundled_syntaxes()));
-        Arc::clone(&SYNTAXES)
-    }
 
     fn highlighter(syntaxes: &Arc<SyntaxSet>, mappings: &[&str]) -> Highlighter {
         let mappings = mappings
@@ -428,7 +415,7 @@ mod tests {
 
     /// The name of the syntax detected for `path` and `first_line`.
     fn detect(mappings: &[&str], path: Option<&str>, first_line: &str) -> String {
-        let syntaxes = syntaxes();
+        let syntaxes = bundled();
         let hl = highlighter(&syntaxes, mappings);
         hl.detect(path.map(Path::new), first_line).name.clone()
     }
@@ -472,7 +459,7 @@ mod tests {
     fn detects_by_shebang_when_the_name_is_not_utf8() {
         use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
 
-        let syntaxes = syntaxes();
+        let syntaxes = bundled();
         let hl = highlighter(&syntaxes, &[]);
         let path = Path::new(OsStr::from_bytes(b"a.\xff"));
         let syntax = hl.detect(Some(path), "#!/bin/sh");
@@ -537,7 +524,7 @@ mod tests {
 
     #[test]
     fn finds_a_language_by_name_or_extension() {
-        let syntaxes = syntaxes();
+        let syntaxes = bundled();
         let name = |lang| find_language(&syntaxes, lang).map(|s| s.name.clone());
         assert_eq!(name("Rust"), Some("Rust".to_string()));
         assert_eq!(name("rust"), Some("Rust".to_string()));
@@ -585,7 +572,7 @@ mod tests {
 
     /// Highlights `input` as plain text.
     fn write(input: &[u8], lines: &mut LineState, limits: Limits, depth: Depth) -> Vec<u8> {
-        let syntaxes = syntaxes();
+        let syntaxes = bundled();
         let mut hl = highlighter(&syntaxes, &[]);
         hl.depth = depth;
         let mut out = Vec::new();
@@ -605,25 +592,6 @@ mod tests {
     fn write_simple(input: &[u8], numbering: Numbering, limits: Limits) -> Vec<u8> {
         let mut lines = LineState::new(numbering, false, None);
         write(input, &mut lines, limits, Depth::TrueColor)
-    }
-
-    fn strip_ansi(bytes: &[u8]) -> Vec<u8> {
-        let mut out = Vec::new();
-        let mut rest = bytes;
-        while let Some((&b, tail)) = rest.split_first() {
-            if b == 0x1b {
-                let end = tail.iter().position(|&c| c == b'm').unwrap();
-                rest = &tail[end + 1..];
-            } else {
-                out.push(b);
-                rest = tail;
-            }
-        }
-        out
-    }
-
-    fn has_escape(bytes: &[u8]) -> bool {
-        bytes.contains(&0x1b)
     }
 
     #[test]
@@ -670,7 +638,7 @@ mod tests {
             end: Some(2),
         };
         let mut lines = LineState::new(Numbering::None, false, Some(range));
-        let syntaxes = syntaxes();
+        let syntaxes = bundled();
         let hl = highlighter(&syntaxes, &[]);
         let mut reader = Cursor::new(&b"a\nb\nc\nd\n"[..]);
         let mut out = Vec::new();
@@ -735,7 +703,7 @@ mod tests {
 
     /// Highlights `input` with line 2 shown with the background.
     fn write_highlighted(input: &[u8], limits: Limits, depth: Depth) -> String {
-        let syntaxes = syntaxes();
+        let syntaxes = bundled();
         let mut hl = highlighter(&syntaxes, &[]);
         hl.depth = depth;
         let highlight = LineHighlight {
@@ -786,7 +754,7 @@ mod tests {
 
     #[test]
     fn highlights_a_long_line_in_one_piece() {
-        let syntaxes = syntaxes();
+        let syntaxes = bundled();
         let sgr = highlighter(&syntaxes, &[]).line_highlight_sgr();
         let out = write_highlighted(b"a\nbbbbbbbbbb\nc\n", max_line(4), Depth::TrueColor);
         let lines: Vec<_> = out.split_inclusive('\n').collect();
@@ -796,7 +764,7 @@ mod tests {
 
     #[test]
     fn tints_the_background_without_a_line_highlight_color() {
-        let syntaxes = syntaxes();
+        let syntaxes = bundled();
         let mut hl = highlighter(&syntaxes, &[]);
         let theme = Arc::make_mut(&mut hl.theme);
         theme.settings.background = Some(Color::BLACK);
@@ -823,7 +791,7 @@ mod tests {
     /// Whether parsing `text` as `language` ends within `HANG_TIMEOUT`. The
     /// parser runs on a thread of its own, left behind if it hangs.
     fn parses_in_time(language: &str, text: &str) -> bool {
-        let syntaxes = syntaxes();
+        let syntaxes = bundled();
         let syntax = Syntax::new(&syntaxes, syntaxes.find_syntax_by_name(language).unwrap());
         let text = text.to_string();
         let (tx, rx) = mpsc::channel();
@@ -864,7 +832,7 @@ mod tests {
 
     #[test]
     fn javascript_still_continues_an_expression_on_the_next_line() {
-        let syntaxes = syntaxes();
+        let syntaxes = bundled();
         let js = syntaxes.find_syntax_by_name("JavaScript").unwrap();
         let scopes = |text: &str| {
             let mut state = syntect::parsing::ParseState::new(js);
@@ -900,7 +868,7 @@ mod tests {
 
     #[test]
     fn scala_still_reads_annotations_in_a_type() {
-        let syntaxes = syntaxes();
+        let syntaxes = bundled();
         let scala = syntaxes.find_syntax_by_name("Scala").unwrap();
         let scopes = |text: &str| {
             let mut state = syntect::parsing::ParseState::new(scala);
@@ -943,7 +911,7 @@ contexts:
         stall_timeout: Duration,
     ) -> (Vec<u8>, Vec<GiveUp>) {
         let syntax = custom_syntax(yaml);
-        let mut hl = highlighter(&syntaxes(), &[]);
+        let mut hl = highlighter(&bundled(), &[]);
         hl.stall_timeout = stall_timeout;
         let mut out = Vec::new();
         let mut reasons = Vec::new();

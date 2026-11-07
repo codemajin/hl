@@ -17,6 +17,8 @@ GitHub Actions runs `cargo fmt --check`, `cargo clippy` (warnings are errors) an
 
 Some tests check how `hl` gives up on a line that never finishes highlighting, with `LOOPING_SYNTAX`, a syntax that makes syntect loop forever. Each input highlighted with it leaves a thread spinning until the test process exits (see [the highlighting pipeline](DESIGN.md#highlighting-pipeline)), which slows down every other test, so that the ones waiting for a deadline can fail on a CI runner with few cores. Use it only to test the stall itself, and test what happens after giving up with `FAILING_SYNTAX`, which fails at once and takes the same path from there. Integration tests (`tests/cli/`) can use it more freely, as each `hl` they start exits on its own.
 
+The integration tests read only the fixtures in `tests/cli/fixtures/` (`sample.toml` and `sample.rs`, through `fixture()` in `tests/cli/common.rs`) or files they write into a temporary directory, never the project's own files such as `Cargo.toml`, so that what they check does not change when those files do. The unit tests share their helpers through `src/test_support.rs`, including the bundled syntaxes that `hl` uses (`bundled()`), so that they highlight with the same syntaxes as `hl` itself.
+
 The role of each source file is listed in [DESIGN.md](DESIGN.md#modules).
 
 ## Dependencies

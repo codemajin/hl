@@ -335,18 +335,19 @@ impl Printer {
 mod tests {
     use std::{
         io::Cursor,
-        sync::{Arc, LazyLock},
         time::{Duration, Instant},
     };
 
-    use syntect::{highlighting::Theme, parsing::SyntaxSet};
+    use syntect::highlighting::Theme;
 
     use super::*;
     use crate::{
         color::Depth,
         highlight::find_language,
         lines::Numbering,
-        test_support::{Chunked, LOOPING_SYNTAX, custom_syntax},
+        test_support::{
+            Chunked, LOOPING_SYNTAX, bundled, custom_syntax, has_escape, strip_ansi, utf16,
+        },
     };
 
     fn plain() -> Printer {
@@ -533,7 +534,7 @@ mod tests {
         let timeout = Duration::from_secs(1);
         let syntax = custom_syntax(LOOPING_SYNTAX);
         let highlighter =
-            Highlighter::new(syntaxes(), Theme::default(), Depth::TrueColor, Vec::new());
+            Highlighter::new(bundled(), Theme::default(), Depth::TrueColor, Vec::new());
         let printer = Printer {
             highlighter: Some(highlighter.with_stall_timeout(timeout)),
             forced: Some(syntax),
@@ -570,19 +571,11 @@ mod tests {
         assert!(has_stalled);
     }
 
-    /// The bundled syntaxes only, so the user's custom ones stay out. They
-    /// are loaded once for all the tests, which is much faster.
-    fn syntaxes() -> Arc<SyntaxSet> {
-        static SYNTAXES: LazyLock<Arc<SyntaxSet>> =
-            LazyLock::new(|| Arc::new(crate::assets::bundled_syntaxes()));
-        Arc::clone(&SYNTAXES)
-    }
-
     /// A printer that colors the output.
     fn colored() -> Printer {
         Printer {
             highlighter: Some(Highlighter::new(
-                syntaxes(),
+                bundled(),
                 Theme::default(),
                 Depth::TrueColor,
                 Vec::new(),
@@ -635,39 +628,6 @@ mod tests {
             )
             .unwrap();
         out
-    }
-
-    /// Removes SGR escape sequences, which must be terminated.
-    fn strip_ansi(bytes: &[u8]) -> Vec<u8> {
-        let mut out = Vec::new();
-        let mut rest = bytes;
-        while let Some((&b, tail)) = rest.split_first() {
-            if let Some(csi) = rest.strip_prefix(b"\x1b[") {
-                let end = csi
-                    .iter()
-                    .position(|&c| c == b'm')
-                    .unwrap_or_else(|| panic!("unterminated CSI in {bytes:?}"));
-                rest = &csi[end + 1..];
-            } else {
-                out.push(b);
-                rest = tail;
-            }
-        }
-        out
-    }
-
-    fn has_escape(bytes: &[u8]) -> bool {
-        bytes.contains(&0x1b)
-    }
-
-    fn utf16(text: &str, endian: Endian) -> Vec<u8> {
-        std::iter::once(0xFEFF)
-            .chain(text.encode_utf16())
-            .flat_map(|u| match endian {
-                Endian::Little => u.to_le_bytes(),
-                Endian::Big => u.to_be_bytes(),
-            })
-            .collect()
     }
 
     /// Text of `len` bytes, in lines of `x`, followed by `tail`.
@@ -766,7 +726,12 @@ mod tests {
         let expected = print(&colored(), RUST, "a.rs", false);
         for endian in [Endian::Little, Endian::Big] {
             let text = std::str::from_utf8(RUST).unwrap();
-            let out = print(&colored(), &utf16(text, endian), "a.rs", false);
+            let out = print(
+                &colored(),
+                &utf16(&format!("\u{FEFF}{text}"), endian),
+                "a.rs",
+                false,
+            );
             assert_eq!(out, expected, "{endian:?}");
         }
     }
@@ -776,24 +741,24 @@ mod tests {
         let expected = print(&colored(), RUST, "a.rs", false);
         for endian in [Endian::Little, Endian::Big] {
             let text = std::str::from_utf8(RUST).unwrap();
-            let bytes = utf16(text, endian);
+            let bytes = utf16(&format!("\u{FEFF}{text}"), endian);
             let out = print_one_byte(&colored(), &bytes, "a.rs", false);
             assert_eq!(out, expected, "{endian:?}");
         }
-        let bytes = utf16("a\x1b[31mb\n", Endian::Little);
+        let bytes = utf16("\u{FEFF}a\x1b[31mb\n", Endian::Little);
         let out = print_one_byte(&stripping(plain()), &bytes, "a.txt", false);
         assert_eq!(out, b"ab\n");
     }
 
     #[test]
     fn converts_utf16_to_strip_it_without_color() {
-        let bytes = utf16("a\x1b[31mb\n", Endian::Little);
+        let bytes = utf16("\u{FEFF}a\x1b[31mb\n", Endian::Little);
         assert_eq!(print(&stripping(plain()), &bytes, "a.txt", false), b"ab\n");
     }
 
     #[test]
     fn copies_utf16_without_color_or_stripping() {
-        let bytes = utf16("a\n", Endian::Big);
+        let bytes = utf16("\u{FEFF}a\n", Endian::Big);
         assert_eq!(print(&plain(), &bytes, "a.txt", false), bytes);
     }
 
@@ -827,7 +792,7 @@ mod tests {
     fn detects_a_shebang_split_across_reads() {
         let script = b"#!/usr/bin/env python3\nprint(1)\n";
         let python = Printer {
-            forced: find_language(&syntaxes(), "py"),
+            forced: find_language(&bundled(), "py"),
             ..colored()
         };
         let expected = print(&python, script, "script", false);
@@ -841,11 +806,11 @@ mod tests {
     #[test]
     fn detects_the_shebang_of_utf16_and_after_removing_escapes() {
         let python = Printer {
-            forced: find_language(&syntaxes(), "py"),
+            forced: find_language(&bundled(), "py"),
             ..colored()
         };
         let expected = print(&python, b"#!/usr/bin/env python3\n", "script", false);
-        let bytes = utf16("#!/usr/bin/env python3\n", Endian::Big);
+        let bytes = utf16("\u{FEFF}#!/usr/bin/env python3\n", Endian::Big);
         assert_eq!(print(&colored(), &bytes, "script", false), expected);
         let escaped = b"#!/usr/bin/env \x1b[1mpython3\n";
         let out = print(&stripping(colored()), escaped, "script", false);
@@ -857,7 +822,7 @@ mod tests {
         let rust = print(&colored(), RUST, "a.rs", false);
         assert_ne!(print(&colored(), RUST, "a.txt", false), rust);
         let forced = Printer {
-            forced: find_language(&syntaxes(), "rs"),
+            forced: find_language(&bundled(), "rs"),
             ..colored()
         };
         assert_eq!(print(&forced, RUST, "a.txt", false), rust);

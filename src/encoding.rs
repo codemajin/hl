@@ -123,21 +123,7 @@ mod tests {
     use proptest::{collection::vec, prelude::*};
 
     use super::*;
-    use crate::test_support::{Chunked, chunk_sizes};
-
-    fn utf16(text: &str, endian: Endian) -> Vec<u8> {
-        units(text.encode_utf16(), endian)
-    }
-
-    fn units(units: impl IntoIterator<Item = u16>, endian: Endian) -> Vec<u8> {
-        units
-            .into_iter()
-            .flat_map(|u| match endian {
-                Endian::Little => u.to_le_bytes(),
-                Endian::Big => u.to_be_bytes(),
-            })
-            .collect()
-    }
+    use crate::test_support::{Chunked, chunk_sizes, utf16, utf16_units};
 
     fn decode(input: impl Read, endian: Endian) -> String {
         let mut out = String::new();
@@ -257,7 +243,7 @@ mod tests {
             sizes in chunk_sizes(),
         ) {
             let endian = if big { Endian::Big } else { Endian::Little };
-            let mut bytes = units(input.iter().copied(), endian);
+            let mut bytes = utf16_units(input.iter().copied(), endian);
             let mut expected = String::from_utf16_lossy(&input);
             if let Some(b) = odd_byte {
                 bytes.push(b);

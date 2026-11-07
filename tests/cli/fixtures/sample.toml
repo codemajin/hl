@@ -1,0 +1,22 @@
+# A sample TOML file that the integration tests read, so that their input
+# does not change with the project's own files.
+
+title = "sample"
+version = "1.2.3"
+enabled = true
+retries = 3
+ratio = 0.75
+created = 2024-05-01T12:30:00Z
+
+[server]
+host = "localhost"
+ports = [8080, 8081]
+timeout = { connect = 5, read = 30 }
+
+[[plugins]]
+name = "first"
+options = ["--fast", "--quiet"]
+
+[[plugins]]
+name = "second"
+literal = 'C:\path\to\file'

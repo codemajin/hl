@@ -89,6 +89,19 @@ pub fn files<C: AsRef<[u8]>>(dir: &Path, files: &[(&str, C)]) -> Vec<PathBuf> {
         .collect()
 }
 
+/// The directory of the fixtures that the tests read, as an absolute path,
+/// so that a test that changes the working directory finds it too.
+pub fn fixtures_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/cli/fixtures")
+}
+
+/// The fixture `name` in `fixtures_dir()`: `sample.toml` or `sample.rs`.
+/// The tests read these rather than the project's own files, whose
+/// content changes.
+pub fn fixture(name: &str) -> PathBuf {
+    fixtures_dir().join(name)
+}
+
 /// The five lines "1" to "5", in a file in `dir`.
 pub fn lines_fixture(dir: &Path) -> PathBuf {
     files(dir, &[("lines.txt", "1\n2\n3\n4\n5\n")]).remove(0)
@@ -141,14 +154,15 @@ pub fn utf16_with_bom(text: &str, big_endian: bool) -> Vec<u8> {
         .collect()
 }
 
-/// Asserts that `cmd` colors Cargo.toml with `expected` escapes only.
+/// Asserts that `cmd` colors `sample.toml` with `expected` escapes only.
 pub fn assert_depth(cmd: &mut Command, expected: &str) {
     let other = if expected == TRUECOLOR {
         ANSI256
     } else {
         TRUECOLOR
     };
-    cmd.args(["--color", "always", "Cargo.toml"])
+    cmd.args(["--color", "always"])
+        .arg(fixture("sample.toml"))
         .assert()
         .success()
         .stdout(predicate::str::contains(expected).and(predicate::str::contains(other).not()));

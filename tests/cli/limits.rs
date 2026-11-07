@@ -8,7 +8,7 @@ use std::{
 
 use predicates::prelude::*;
 
-use crate::common::{colored, files, has_escape, hl, stdout, strip_ansi, tempdir};
+use crate::common::{colored, files, fixture, has_escape, hl, stdout, strip_ansi, tempdir};
 
 /// A JS file with a short line, a `long`-byte line and another short line.
 /// Returns the path, the head that should stay highlighted and the tail
@@ -152,7 +152,7 @@ fn keeps_numbering_and_squeezing_across_the_switch() {
 /// `src/cli.rs`; this checks how clap reports a rejected one.
 #[test]
 fn rejects_an_invalid_size_with_status_2() {
-    hl().args(["--max-size=1.5K", "Cargo.toml"])
+    hl().args(["--max-size=1.5K"]).arg(fixture("sample.toml"))
         .assert()
         .code(2)
         .stdout("")
@@ -173,7 +173,7 @@ fn reports_an_invalid_env_value_by_the_variable_name() {
         ),
     ] {
         hl().env(var, value)
-            .arg("Cargo.toml")
+            .arg(fixture("sample.toml"))
             .assert()
             .code(2)
             .stdout("")
@@ -188,7 +188,8 @@ fn reports_an_invalid_env_value_by_the_variable_name() {
 #[test]
 fn ignores_an_invalid_env_value_overridden_on_the_command_line() {
     hl().env("HL_MAX_SIZE", "abc")
-        .args(["--max-size", "1K", "Cargo.toml"])
+        .args(["--max-size", "1K"])
+        .arg(fixture("sample.toml"))
         .assert()
         .success()
         .stderr("");
@@ -197,7 +198,8 @@ fn ignores_an_invalid_env_value_overridden_on_the_command_line() {
 #[test]
 fn reports_an_invalid_option_before_an_invalid_env_value() {
     hl().env("HL_MAX_SIZE", "abc")
-        .args(["--max-line-length=x", "Cargo.toml"])
+        .args(["--max-line-length=x"])
+        .arg(fixture("sample.toml"))
         .assert()
         .code(2)
         .stderr(predicate::str::contains(

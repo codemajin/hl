@@ -1,16 +1,16 @@
 //! The pager.
 
-use std::{fs, path::Path};
+use std::fs;
 
 use predicates::prelude::*;
 
-use crate::common::{hl, tempdir};
+use crate::common::{fixture, hl, tempdir};
 
 #[test]
 fn never_starts_a_pager_without_a_terminal() {
     let dir = tempdir();
     let marker = dir.path().join("paged");
-    let input = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+    let input = fixture("sample.toml");
     let content = fs::read(&input).unwrap();
     for opts in [&["-p"][..], &["--paging=always"], &["--paging=auto"]] {
         // The marker is relative to the working directory, so that PAGER
@@ -32,10 +32,10 @@ fn never_starts_a_pager_without_a_terminal() {
 /// is checked by the unit tests in cli.rs.
 #[test]
 fn accepts_p_together_with_paging() {
-    let content = fs::read("Cargo.toml").unwrap();
+    let content = fs::read(fixture("sample.toml")).unwrap();
     for opts in [["-p", "--paging=never"], ["--paging=never", "-p"]] {
         hl().args(opts)
-            .arg("Cargo.toml")
+            .arg(fixture("sample.toml"))
             .assert()
             .success()
             .stdout(content.clone());
@@ -44,7 +44,8 @@ fn accepts_p_together_with_paging() {
 
 #[test]
 fn rejects_unknown_paging_mode() {
-    hl().args(["--paging=sometimes", "Cargo.toml"])
+    hl().args(["--paging=sometimes"])
+        .arg(fixture("sample.toml"))
         .assert()
         .code(2)
         .stderr(predicate::str::contains("invalid value 'sometimes'"));

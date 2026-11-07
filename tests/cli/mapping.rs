@@ -5,7 +5,7 @@
 
 use predicates::prelude::*;
 
-use crate::common::{colored, files, hl, hl_with_config, tempdir};
+use crate::common::{colored, files, fixture, hl, hl_with_config, tempdir};
 
 const INI_TEXT: &str = "[section]\nkey = value\n";
 
@@ -68,7 +68,8 @@ fn does_not_map_stdin() {
 #[test]
 fn rejects_a_malformed_mapping() {
     for spec in ["nocolon", ":INI", "*.conf:", "[:INI"] {
-        hl().args(["--map-syntax", spec, "Cargo.toml"])
+        hl().args(["--map-syntax", spec])
+            .arg(fixture("sample.toml"))
             .assert()
             .code(2)
             .stderr(predicate::str::contains("invalid value"))

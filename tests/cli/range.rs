@@ -2,7 +2,7 @@
 
 use predicates::prelude::*;
 
-use crate::common::{colored, files, hl, lines_fixture, tempdir};
+use crate::common::{colored, files, fixture, hl, lines_fixture, tempdir};
 
 #[test]
 fn prints_a_line_range() {
@@ -29,7 +29,8 @@ fn prints_a_line_range() {
 /// `src/cli.rs`; this checks how clap reports a rejected one.
 #[test]
 fn rejects_an_invalid_line_range_with_status_2() {
-    hl().args(["--line-range", "5:3", "Cargo.toml"])
+    hl().args(["--line-range", "5:3"])
+        .arg(fixture("sample.toml"))
         .assert()
         .code(2)
         .stdout("")

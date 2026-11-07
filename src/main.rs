@@ -421,18 +421,8 @@ fn list_languages(dirs: &Dirs, out: &mut dyn Write) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::LazyLock;
-
     use super::*;
-    use crate::color::Depth;
-
-    /// two-face's syntaxes, so that the user's custom ones stay out. They
-    /// are loaded once for all the tests, which is much faster.
-    fn syntaxes() -> Arc<SyntaxSet> {
-        static SYNTAXES: LazyLock<Arc<SyntaxSet>> =
-            LazyLock::new(|| Arc::new(two_face::syntax::extra_newlines()));
-        Arc::clone(&SYNTAXES)
-    }
+    use crate::{color::Depth, test_support::bundled};
 
     /// `argv` with a fixed color depth, so that the terminal of the
     /// developer does not matter.
@@ -443,12 +433,12 @@ mod tests {
 
     fn printer(argv: &[&str], color: bool) -> Result<Printer> {
         let parsed = args(argv);
-        let syntaxes = parsed.needs_syntaxes(color).then(syntaxes);
+        let syntaxes = parsed.needs_syntaxes(color).then(bundled);
         build_printer(&parsed, color, syntaxes, Theme::default)
     }
 
     fn highlighter() -> Highlighter {
-        Highlighter::new(syntaxes(), Theme::default(), Depth::Ansi256, Vec::new())
+        Highlighter::new(bundled(), Theme::default(), Depth::Ansi256, Vec::new())
     }
 
     #[test]
@@ -478,7 +468,7 @@ mod tests {
         let known = UserMapping::parse("*.y:Rust", Origin::CommandLine).unwrap();
         let mut warnings = Vec::new();
         let resolved =
-            resolve_mappings(&syntaxes(), [&unknown, &known], |w| warnings.push(w)).unwrap();
+            resolve_mappings(&bundled(), [&unknown, &known], |w| warnings.push(w)).unwrap();
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].1.name, "Rust");
         assert_eq!(
@@ -497,7 +487,7 @@ mod tests {
         let origin = Origin::ConfigFile(PathBuf::from("config.toml"));
         let mapping = UserMapping::parse("*.y:Rust", origin).unwrap();
         let mut warnings = Vec::new();
-        let resolved = resolve_mappings(&syntaxes(), [&mapping], |w| warnings.push(w)).unwrap();
+        let resolved = resolve_mappings(&bundled(), [&mapping], |w| warnings.push(w)).unwrap();
         assert_eq!(resolved.len(), 1);
         assert_eq!(warnings, []);
     }
