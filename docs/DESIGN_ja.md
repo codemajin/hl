@@ -33,16 +33,15 @@ flowchart TD
 | `src/cli.rs` | コマンドライン引数の定義（clap）と、設定ファイルの適用（オプションのデフォルト値、フラグ、`map-syntax`）。`--map-syntax` と `map-syntax` の項目は `UserMapping` に解析する。中身は、`src/highlight.rs` に渡すパターン（`SyntaxMapping`）、書かれたとおりの言語と項目、出どころ（`Origin`。コマンドラインか、あるパスの設定ファイルか）。ほかのモジュールは生のフィールドではなく、関連するオプションをまとめるメソッド（`numbering()`、`visibility()`、`limits()` など）で引数を読む。設定ファイルの不正な項目は無視し、stderr ではなく `report` コールバックに渡す。`HL_*` 変数は clap ではなく、main が渡す `getenv` 関数から受け取り、コマンドラインの次に優先するデフォルト値にする。不正なコマンドラインや変数は、プロセスを終えずに `clap::Error` として返す。入力の代わりに何かを表示するコマンド（`--list-themes`、`--man` など）は 1 つの clap のグループにまとめてあり、指定できるのは 1 つまで |
 | `src/color.rs` | 端末の色深度の判定、256 色へのフォールバック、色・太字・リセットのエスケープシーケンス |
 | `src/config.rs` | 設定ファイルの読み込み（`HL_CONFIG` が指すファイル、なければ設定ディレクトリのもの）と、設定・キャッシュディレクトリ（`Dirs`。`XDG_CONFIG_HOME`/`XDG_CACHE_HOME`、Windows では `APPDATA`/`LOCALAPPDATA`、`HOME` から求める。`HL_CONFIG` のファイルも持つ）。読めない設定ファイルは stderr ではなく `report` コールバックに渡す |
-| `src/console.rs` | Windows のコンソールでエスケープシーケンスの処理を有効にする（Windows Terminal 以外の cmd.exe や PowerShell でも色が出るようにする） |
 | `src/diag.rs` | 標準エラー出力への警告・エラーメッセージ。標準エラー出力にはすべてここを通して書くので、`hl: ` の書式は 1 か所で決まる。エラーは原因まで含めて表示する（`パス: 理由`）。`Warning` は、ほかのモジュールが警告を `src/main.rs` に渡すための型。`note` と `warn` を呼ぶのは `src/main.rs` だけ |
 | `src/encoding.rs` | UTF-8/UTF-16 の BOM 判定と UTF-16 のデコード |
 | `src/escape.rs` | 入力からエスケープシーケンス（CSI、OSC などの文字列、UTF-8 で表した C1 制御文字）と、端末を操作する C0 制御文字（BEL、BS、SO など）を取り除くリーダー。読み込みの境目で分かれたシーケンスも取り除く |
 | `src/highlight.rs` | 言語判定、`--map-syntax` のパターンとの照合（`SyntaxMapping`。ファイル名か、`detect` が入力ごとに 1 回求める絶対パスと照合する。対応付けの出どころは知らない）、サイズの上限、ハイライト出力（syntect。専用のスレッドで、時間の上限付き）。言語は `Syntax` で表す（構文と、その構文セットの `Arc` の組）。警告は出さず、ハイライトをあきらめた理由は呼び出し側に渡す |
 | `src/highlight/worker.rs` | 入力 1 つ分のハイライト用スレッド（`Worker`）と、パイプライン（`Pipeline`）。パイプラインは行をまとめてスレッドに渡し、返ってきた結果を出力し、時間内に終わる行がなければハイライトをあきらめる |
 | `src/lines.rs` | 行番号、空行の圧縮、`cat -v`/`-E`/`-T` の表記 |
-| `src/pager.rs` | `$PAGER` からのページャのコマンドの組み立て（シェルと同じ規則、Windows では Windows の規則で分ける）、起動、終了待ち。既定の `less` がないことはほかの失敗と分けて返し、`src/main.rs` が代わりに標準出力に表示できるようにする |
+| `src/pager.rs` | ページャのコマンドの組み立て。材料は `src/main.rs` が `PagerEnv` に読み込んだ `$PAGER` と `$LESS`、それに `--paging`（`PagingWhen`。`auto` のときは引数なしの `less` に `-F` を足す）。`$PAGER` はシェルと同じ規則で分け、Windows では Windows の規則で分ける。ページャの起動と終了待ちもここで行う。既定の `less` がないことはほかの失敗と分けて返し、`src/main.rs` が代わりに標準出力に表示できるようにする |
 | `src/print.rs` | 各入力の順次出力（ハイライトありかなしか）、ヘッダ、文字コードの扱い。警告は出さず、入力の問題（読めない、ハイライトをあきらめた）はコールバックに渡す。`print_all` は `PrintOutcome`（入力の失敗があったか、出力を中断させた書き込みエラー）を返す |
-| `src/stdout.rs` | 起動時に標準出力が閉じられていたかの判定（Unix では std が `/dev/null` で開き直す前に確かめ、Windows では標準出力のハンドルがあるかを確かめる） |
+| `src/stdout.rs` | 起動時に標準出力が閉じられていたかの判定（Unix では std が `/dev/null` で開き直す前に確かめ、Windows では標準出力のハンドルがあるかを確かめる）と、Windows のコンソールでのエスケープシーケンスの処理の有効化（Windows Terminal 以外の cmd.exe や PowerShell でも色が出るようにする）。`unsafe` なコードがあるのはこのモジュールだけ（[開発メモ](DEV_ja.md)を参照） |
 | `src/test_support.rs` | 単体テスト専用の補助。入力を指定したサイズずつ返すリーダー、そのサイズを作る proptest の strategy、syntect を無限ループさせる構文（`LOOPING_SYNTAX`）、YAML から構文を作る関数（`custom_syntax`） |
 | `build.rs` | two-face の JavaScript 構文と Scala 構文の修正と、構文の同梱 |
 
@@ -61,6 +60,7 @@ flowchart LR
     assets --> config
     assets --> diag
     config --> diag
+    pager --> cli
     pager --> diag
     print --> highlight
     print --> lines
@@ -74,7 +74,7 @@ flowchart LR
     lines --> color
 ```
 
-循環はありません。`color`、`diag`、`encoding`、`escape`、`console`、`stdout` は `hl` の他のモジュールに依存しません。`highlight` と `lines` は `diag` に依存しません。stderr に書くのは `main` だけで、ほかのモジュールが `diag` から使うのは `Warning` と、メッセージを整える関数（`describe`、`escape_controls`、`display_safe`）だけです。
+循環はありません。`color`、`diag`、`encoding`、`escape`、`stdout` は `hl` の他のモジュールに依存しません。`highlight` と `lines` は `diag` に依存しません。stderr に書くのは `main` だけで、ほかのモジュールが `diag` から使うのは `Warning` と、メッセージを整える関数（`describe`、`escape_controls`、`display_safe`）だけです。
 
 ## 入力の出力
 

@@ -2,7 +2,7 @@
 //! bundled ones, and the cache that keeps merged syntaxes fast to load.
 
 use std::{
-    fmt::Write as _,
+    fmt::{self, Write as _},
     fs,
     hash::{DefaultHasher, Hash, Hasher},
     io,
@@ -61,6 +61,7 @@ pub fn syntaxes(dirs: &Dirs, mut report: impl FnMut(Warning)) -> SyntaxSet {
 }
 
 /// What `build_cache` did.
+#[derive(Debug)]
 pub enum CacheReport {
     /// There are no custom syntaxes in `dir`, so any old cache was removed.
     Empty { dir: PathBuf },
@@ -244,6 +245,15 @@ pub struct Themes {
     bundled: LazyThemeSet,
     /// `(name, path)` pairs, sorted by name.
     custom: Vec<(String, PathBuf)>,
+}
+
+/// Leaves out the bundled themes, which are large and have no `Debug`.
+impl fmt::Debug for Themes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Themes")
+            .field("custom", &self.custom)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Why `Themes::get` found no theme to use.
@@ -584,7 +594,7 @@ contexts:
             config_file: None,
             cache: None,
         };
-        let err = build_cache(&dirs, |w| panic!("{w:?}")).err().unwrap();
+        let err = build_cache(&dirs, |w| panic!("{w:?}")).unwrap_err();
         assert_eq!(
             err.to_string(),
             format!("no cache directory (set {CACHE_VAR})")

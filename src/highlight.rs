@@ -56,6 +56,14 @@ impl Syntax {
     }
 }
 
+impl fmt::Debug for Syntax {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Syntax")
+            .field("name", &self.name)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Deref for Syntax {
     type Target = SyntaxReference;
 
@@ -158,6 +166,19 @@ pub struct Highlighter {
     stall_timeout: Duration,
     /// Whether highlighting got stuck on an input.
     stalled: AtomicBool,
+}
+
+/// Leaves out the syntax set and the theme's styles, which are large.
+impl fmt::Debug for Highlighter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Highlighter")
+            .field("theme", &self.theme.name)
+            .field("depth", &self.depth)
+            .field("mappings", &self.mappings)
+            .field("stall_timeout", &self.stall_timeout)
+            .field("stalled", &self.stalled)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Highlighter {

@@ -298,18 +298,16 @@ fn copy_through(
 ) -> io::Result<()> {
     let mut last = None;
     loop {
-        let available = match reader.fill_buf() {
-            Ok(available) => available,
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(e),
-        };
-        let Some(&byte) = available.last() else {
+        // The outer `?` is for reading, the inner one for writing.
+        let len = with_filled_buf(reader, |available| -> io::Result<usize> {
+            out.write_all(available)?;
+            last = available.last().copied().or(last);
+            Ok(available.len())
+        })??;
+        if len == 0 {
             break;
-        };
-        out.write_all(available)?;
-        let len = available.len();
+        }
         reader.consume(len);
-        last = Some(byte);
     }
     if let Some(byte) = last {
         lines.passed_through(byte == b'\n');
@@ -325,20 +323,19 @@ fn read_chunk(reader: &mut impl BufRead, buf: &mut Vec<u8>, limit: usize) -> io:
     debug_assert!(limit > 0, "a zero limit reads nothing");
     let mut read = 0;
     while read < limit {
-        let available = match reader.fill_buf() {
-            Ok(available) => available,
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(e),
-        };
-        if available.is_empty() {
+        let (n, newline) = with_filled_buf(reader, |available| {
+            let room = &available[..available.len().min(limit - read)];
+            let (n, newline) = match room.iter().position(|&b| b == b'\n') {
+                Some(i) => (i + 1, true),
+                None => (room.len(), false),
+            };
+            buf.extend_from_slice(&room[..n]);
+            (n, newline)
+        })?;
+        if n == 0 {
+            // The end of the input.
             return Ok(read);
         }
-        let room = &available[..available.len().min(limit - read)];
-        let (n, newline) = match room.iter().position(|&b| b == b'\n') {
-            Some(i) => (i + 1, true),
-            None => (room.len(), false),
-        };
-        buf.extend_from_slice(&room[..n]);
         reader.consume(n);
         read += n;
         if newline {
@@ -346,13 +343,7 @@ fn read_chunk(reader: &mut impl BufRead, buf: &mut Vec<u8>, limit: usize) -> io:
         }
     }
     if buf.ends_with(b"\r") {
-        let next = loop {
-            match reader.fill_buf() {
-                Ok(available) => break available.first().copied(),
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                Err(e) => return Err(e),
-            }
-        };
+        let next = with_filled_buf(reader, |available| available.first().copied())?;
         if next == Some(b'\n') {
             buf.push(b'\n');
             reader.consume(1);
@@ -360,6 +351,25 @@ fn read_chunk(reader: &mut impl BufRead, buf: &mut Vec<u8>, limit: usize) -> io:
         }
     }
     Ok(read)
+}
+
+/// Calls `f` with the buffer of `reader`, filled by `fill_buf`, which is
+/// tried again when a signal interrupts the read, as `read_until` does. An
+/// empty buffer is the end of the input.
+///
+/// It takes `f` rather than returning the buffer, because the borrow
+/// checker (without Polonius) does not let a loop return a borrow that the
+/// next round borrows again. Calling `fill_buf` once more after the loop
+/// would read again at the end of the input, so that a terminal would need
+/// a second ^D.
+fn with_filled_buf<T>(reader: &mut impl BufRead, f: impl FnOnce(&[u8]) -> T) -> io::Result<T> {
+    loop {
+        match reader.fill_buf() {
+            Ok(available) => return Ok(f(available)),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 /// Writes one line using `cat -v` / `-E` / `-T` notation.

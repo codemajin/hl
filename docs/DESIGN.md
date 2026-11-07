@@ -33,16 +33,15 @@ Most of the work is done once per run before the first input: the syntaxes and t
 | `src/cli.rs` | Command-line argument definitions (clap) and the config file applied to them (option defaults, flags, `map-syntax`). `--map-syntax` and `map-syntax` entries are parsed into a `UserMapping`: the pattern for `src/highlight.rs` (`SyntaxMapping`), the language and the entry as written, and where it comes from (`Origin`: the command line or the config file at a path). The rest of the code reads the arguments through methods that combine related options (`numbering()`, `visibility()`, `limits()`, ...), not through the raw fields. A bad entry in the config file is ignored and goes to a `report` callback, not to stderr. The `HL_*` variables come from a `getenv` function main passes, not from clap, and become option defaults below the command line. An invalid command line or variable is returned as a `clap::Error` instead of ending the process. The commands that print something other than the inputs (`--list-themes`, `--man`, ...) form one clap group, so at most one of them is given |
 | `src/color.rs` | Terminal color depth detection, the 256-color fallback, and the escape sequences for colors, bold and reset |
 | `src/config.rs` | Config file loading (the file named by `HL_CONFIG`, else the one in the config directory) and the config/cache directories (`Dirs`, from `XDG_CONFIG_HOME`/`XDG_CACHE_HOME`, `APPDATA`/`LOCALAPPDATA` on Windows, and `HOME`; it holds the `HL_CONFIG` file too). A config file that cannot be read goes to a `report` callback, not to stderr |
-| `src/console.rs` | Turning on escape sequence processing in the Windows console, so that colors work in cmd.exe and PowerShell outside Windows Terminal |
 | `src/diag.rs` | Warning and error messages on stderr. Everything written to stderr goes through it, so the `hl: ` format is set in one place; an error is shown with its causes (`path: reason`). `Warning` is how the other modules hand a warning to `src/main.rs`, the only caller of `note` and `warn` |
 | `src/encoding.rs` | UTF-8/UTF-16 BOM detection and UTF-16 decoding |
 | `src/escape.rs` | Removing the escape sequences of the input (CSI, OSC and the other strings, C1 controls in UTF-8) and the C0 controls that act on the terminal (BEL, BS, SO, ...) as a reader, also when a sequence is split across reads |
 | `src/highlight.rs` | Language detection, the `--map-syntax` patterns (`SyntaxMapping`, matched against the file name, or the absolute path that `detect` finds once per input; it does not know where the mapping comes from), size limits, and highlighted output (syntect, on a thread of its own with a time limit). A language is a `Syntax`: a syntax with the `Arc` of its syntax set. Writes no warnings: the reason highlighting was given up goes to the caller |
 | `src/highlight/worker.rs` | The highlighting thread of one input (`Worker`) and the pipeline that hands it lines in batches, prints what comes back and gives up when no line finishes in time (`Pipeline`) |
 | `src/lines.rs` | Line numbering, blank-line squeezing, and `cat -v`/`-E`/`-T` notation |
-| `src/pager.rs` | Building the pager command from `$PAGER` (split like the shell, or by Windows rules on Windows), starting the pager and waiting for it to exit. A missing default `less` is reported apart from other failures, so that `src/main.rs` can print to stdout instead |
+| `src/pager.rs` | Building the pager command from `$PAGER` and `$LESS`, which `src/main.rs` reads into a `PagerEnv`, and from `--paging` (`PagingWhen`: with `auto`, a bare `less` also gets `-F`). `$PAGER` is split like the shell, or by Windows rules on Windows. Also starts the pager and waits for it to exit. A missing default `less` is reported apart from other failures, so that `src/main.rs` can print to stdout instead |
 | `src/print.rs` | Printing each input in turn, highlighted or plain, with headers and encoding handling. Writes no warnings: problems with an input (unreadable, highlighting given up) go to a callback, and `print_all` returns a `PrintOutcome` (whether an input failed, the write error that ended the output) |
-| `src/stdout.rs` | Telling whether stdout was closed at startup, before std reopens it on `/dev/null` (Unix), or whether there is a stdout handle at all (Windows) |
+| `src/stdout.rs` | Telling whether stdout was closed at startup, before std reopens it on `/dev/null` (Unix), or whether there is a stdout handle at all (Windows), and turning on escape sequence processing in the Windows console, so that colors work in cmd.exe and PowerShell outside Windows Terminal. The only module with `unsafe` code (see [the development notes](DEV.md)) |
 | `src/test_support.rs` | Helpers for the unit tests only: a reader that returns its input in chunks of the given sizes, a proptest strategy for those sizes, a syntax that makes syntect loop forever (`LOOPING_SYNTAX`), and a syntax built from YAML (`custom_syntax`) |
 | `build.rs` | Fixes the JavaScript and Scala syntaxes of two-face and bundles the syntaxes |
 
@@ -61,6 +60,7 @@ flowchart LR
     assets --> config
     assets --> diag
     config --> diag
+    pager --> cli
     pager --> diag
     print --> highlight
     print --> lines
@@ -74,7 +74,7 @@ flowchart LR
     lines --> color
 ```
 
-There are no cycles. `color`, `diag`, `encoding`, `escape`, `console` and `stdout` depend on no other module of `hl`, and `highlight` and `lines` do not depend on `diag`. Only `main` writes to stderr: the other modules use `diag` only for `Warning` and the functions that format a message (`describe`, `escape_controls`, `display_safe`).
+There are no cycles. `color`, `diag`, `encoding`, `escape` and `stdout` depend on no other module of `hl`, and `highlight` and `lines` do not depend on `diag`. Only `main` writes to stderr: the other modules use `diag` only for `Warning` and the functions that format a message (`describe`, `escape_controls`, `display_safe`).
 
 ## Printing an input
 

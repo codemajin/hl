@@ -2,7 +2,6 @@ mod assets;
 mod cli;
 mod color;
 mod config;
-mod console;
 mod diag;
 mod encoding;
 mod escape;
@@ -30,7 +29,7 @@ use config::{Config, Dirs};
 use diag::{Warning, describe, describe_error, escape_controls};
 use highlight::{GiveUp, Highlighter, Limits, Syntax, SyntaxMapping, find_language};
 use lines::{LineHighlight, LineState};
-use pager::{Pager, SpawnError};
+use pager::{Pager, PagerEnv, SpawnError};
 use print::{Headers, Input, PrintOutcome, Printer, Problem, TrackedWriter, is_stdin, print_all};
 use syntect::{highlighting::Theme, parsing::SyntaxSet};
 
@@ -73,7 +72,16 @@ fn run(args: &Args, dirs: &Dirs, stdout: &io::Result<()>) -> Result<ExitCode> {
         .then(|| Arc::new(assets::syntaxes(dirs, show_warning)));
     let printer = build_printer(args, color, syntaxes, || load_theme(&args.theme, dirs))?;
     let lines = build_line_state(args, printer.highlighter.as_ref());
-    print_inputs(args, &printer, lines, color, tty, stdout)
+    print_inputs(args, &printer, lines, OutputMode { color, tty }, stdout)
+}
+
+/// Where and how the inputs are printed.
+#[derive(Debug, Clone, Copy)]
+struct OutputMode {
+    /// Whether the output is colored.
+    color: bool,
+    /// Whether stdout is a terminal.
+    tty: bool,
 }
 
 /// Runs the command that prints something other than the inputs
@@ -242,17 +250,13 @@ fn print_inputs(
     args: &Args,
     printer: &Printer,
     lines: LineState,
-    color: bool,
-    tty: bool,
+    OutputMode { color, tty }: OutputMode,
     stdout: &io::Result<()>,
 ) -> Result<ExitCode> {
     check_write(stdout)?;
-    let pager_env = env::var("PAGER").ok();
-    // An empty `LESS` gives `less` no options, so it counts as unset.
-    let less_set = env::var_os("LESS").is_some_and(|v| !v.is_empty());
-    let mut pager = start_pager(args.paging(), tty, pager_env.as_deref(), less_set)?;
+    let mut pager = start_pager(args.paging(), tty, &pager_env())?;
     if color && pager.is_none() {
-        console::enable_vt();
+        stdout::enable_vt();
     }
     let mut out = TrackedWriter::new(BufWriter::new(match pager.as_mut() {
         Some(p) => Box::new(p.stdin()) as Box<dyn Write>,
@@ -288,18 +292,22 @@ fn print_inputs(
     })
 }
 
-/// Starts the pager when `when` asks for one and there is a terminal.
-/// `pager` is the value of `$PAGER`, and `less_set` whether `$LESS` is set.
-fn start_pager(
-    when: PagingWhen,
-    tty: bool,
-    pager: Option<&str>,
-    less_set: bool,
-) -> Result<Option<Pager>> {
+/// `$PAGER` and `$LESS`.
+fn pager_env() -> PagerEnv {
+    PagerEnv {
+        pager: env::var("PAGER").ok(),
+        // An empty `LESS` gives `less` no options, so it counts as unset.
+        less_set: env::var_os("LESS").is_some_and(|v| !v.is_empty()),
+    }
+}
+
+/// Starts the pager that `env` chooses, when `when` asks for one and
+/// `tty` tells that stdout is a terminal.
+fn start_pager(when: PagingWhen, tty: bool, env: &PagerEnv) -> Result<Option<Pager>> {
     if !when.should_page(tty) {
         return Ok(None);
     }
-    pager_or_stdout(Pager::spawn(pager, less_set, when == PagingWhen::Auto))
+    pager_or_stdout(Pager::spawn(env, when))
 }
 
 /// The pager that `spawned` started, or `None` with a warning when the
@@ -446,7 +454,7 @@ mod tests {
     #[test]
     fn rejects_an_unknown_language() {
         for color in [true, false] {
-            let err = printer(&["--language=nope"], color).err().unwrap();
+            let err = printer(&["--language=nope"], color).unwrap_err();
             assert_eq!(
                 err.to_string(),
                 "unknown language 'nope' (see --list-languages)"
@@ -456,7 +464,7 @@ mod tests {
 
     #[test]
     fn rejects_an_unknown_language_in_a_mapping() {
-        let err = printer(&["--map-syntax=*.foo:nope"], false).err().unwrap();
+        let err = printer(&["--map-syntax=*.foo:nope"], false).unwrap_err();
         assert_eq!(
             err.to_string(),
             "unknown language 'nope' in map-syntax '*.foo:nope' (see --list-languages)"
@@ -546,7 +554,13 @@ mod tests {
         assert!(!build_line_state(&args, None).is_passthrough());
     }
 
-    const MISSING: Option<&str> = Some("hl-no-such-pager");
+    /// A `$PAGER` that is not installed.
+    fn missing() -> PagerEnv {
+        PagerEnv {
+            pager: Some("hl-no-such-pager".into()),
+            less_set: false,
+        }
+    }
 
     #[test]
     fn starts_no_pager_unless_asked_and_on_a_terminal() {
@@ -556,7 +570,7 @@ mod tests {
             (PagingWhen::Always, false),
             (PagingWhen::Auto, false),
         ] {
-            let pager = start_pager(when, tty, MISSING, false).unwrap();
+            let pager = start_pager(when, tty, &missing()).unwrap();
             assert!(pager.is_none(), "{when:?}, tty {tty}");
         }
     }
@@ -580,7 +594,7 @@ mod tests {
     #[test]
     fn reports_a_pager_that_fails_to_start() {
         for when in [PagingWhen::Always, PagingWhen::Auto] {
-            let err = start_pager(when, true, MISSING, false).err().unwrap();
+            let err = start_pager(when, true, &missing()).unwrap_err();
             let msg = err.to_string();
             assert!(
                 msg.starts_with("failed to start pager 'hl-no-such-pager': "),

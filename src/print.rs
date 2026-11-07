@@ -189,6 +189,7 @@ pub fn is_stdin(path: &Path) -> bool {
 }
 
 /// What every input is printed with.
+#[derive(Debug)]
 pub struct Printer {
     /// `None` when the output is not colored.
     pub highlighter: Option<Highlighter>,

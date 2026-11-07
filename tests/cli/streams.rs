@@ -117,6 +117,7 @@ fn prints_the_input_when_warnings_cannot_be_written() {
 
 /// `cmd` with its stdout closed, as with `hl >&-`.
 #[cfg(unix)]
+#[expect(unsafe_code, reason = "`pre_exec` runs code in the forked child")]
 fn with_closed_stdout(cmd: &mut std::process::Command) -> &mut std::process::Command {
     use std::os::{
         fd::{FromRawFd, OwnedFd},

@@ -927,9 +927,7 @@ mod tests {
     fn help_shows_the_variables_and_the_config_defaults() {
         let config = config(r#"max-size = "1K""#);
         // An invalid variable does not stop the help.
-        let err = parse(Some(&config), &[("HL_MAX_SIZE", "abc")], &["--help"])
-            .err()
-            .unwrap();
+        let err = parse(Some(&config), &[("HL_MAX_SIZE", "abc")], &["--help"]).unwrap_err();
         assert_eq!(err.kind(), ErrorKind::DisplayHelp);
         let help = err.to_string();
         assert!(help.contains("[env: HL_MAX_SIZE"), "{help}");

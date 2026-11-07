@@ -81,6 +81,7 @@ fn lookup(
 }
 
 /// Default option values read from the config file.
+#[derive(Debug)]
 pub struct Config {
     pub path: PathBuf,
     /// `(key, value)` pairs as written; their keys and types are checked
@@ -329,7 +330,7 @@ mod tests {
     #[test]
     fn rejects_invalid_toml() {
         for text in ["color = ", "[unclosed", "a = 1\na = 2\n"] {
-            let msg = Config::parse("c.toml".into(), text).err().unwrap();
+            let msg = Config::parse("c.toml".into(), text).unwrap_err();
             assert!(
                 msg.starts_with("invalid TOML, ignoring the file: "),
                 "{msg}"
