@@ -52,9 +52,10 @@ jobs:
           name: notes
           path: notes.md
 
-  # The same tests and lints as ci.yml, run again here because the release
-  # doesn't wait for that workflow. Like the builds, they don't use a cache:
-  # one restored from another branch could end up in the release.
+  # The same tests, lints and doc check as ci.yml, run again here because the
+  # release doesn't wait for that workflow. Like the builds, they don't use a
+  # cache: one restored from another branch could end up in the release.
+  # Coverage is checked in ci.yml only, as it doesn't change the binaries.
   test:
     name: test (${{ matrix.os }})
     needs: check
@@ -76,19 +77,22 @@ jobs:
       - run: cargo test --locked
 
   clippy:
-    name: clippy
+    name: clippy and doc
     needs: check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Keep in sync with the clippy job in ci.yml.
+      # Keep in sync with the clippy and coverage jobs in ci.yml.
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.99"
           components: clippy
       - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo doc --no-deps --document-private-items --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
 
   # Generated once on Linux: the x86_64-apple-darwin binary is cross-compiled
   # and can't run on its build machine, and the output is the same everywhere.

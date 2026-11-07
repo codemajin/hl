@@ -1,0 +1,36 @@
+name: Property tests
+
+# The property tests try 256 cases each on every push; this runs them once a
+# week with many more, to find what the usual runs miss. It can also be
+# started by hand from the Actions tab.
+on:
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  PROPTEST_CASES: 4096
+
+# Actions are pinned to a commit SHA, with the version in a comment, as in
+# ci.yml. A failing case isn't saved anywhere from the runner: copy the
+# minimal input from the log into a test or `proptest-regressions/`.
+jobs:
+  proptest:
+    name: proptest (4096 cases)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+      - run: cargo test --locked
