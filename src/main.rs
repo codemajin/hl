@@ -15,6 +15,7 @@ mod test_support;
 
 use std::{
     env,
+    ffi::OsString,
     fs::File,
     io::{self, BufWriter, IsTerminal, Write},
     path::{Path, PathBuf},
@@ -72,7 +73,15 @@ fn run(args: &Args, dirs: &Dirs, stdout: &io::Result<()>) -> Result<ExitCode> {
         .then(|| Arc::new(assets::syntaxes(dirs, show_warning)));
     let printer = build_printer(args, color, syntaxes, || load_theme(&args.theme, dirs))?;
     let lines = build_line_state(args, printer.highlighter.as_ref());
-    print_inputs(args, &printer, lines, OutputMode { color, tty }, stdout)
+    let pager = pager_env(|name| env::var_os(name));
+    print_inputs(
+        args,
+        &printer,
+        lines,
+        OutputMode { color, tty },
+        &pager,
+        stdout,
+    )
 }
 
 /// Where and how the inputs are printed.
@@ -244,17 +253,18 @@ fn build_line_state(args: &Args, highlighter: Option<&Highlighter>) -> LineState
     }
 }
 
-/// Prints the inputs to the pager or stdout, and returns the exit code:
-/// failure when an input could not be read.
+/// Prints the inputs to the pager that `pager_env` chooses or to stdout, and
+/// returns the exit code: failure when an input could not be read.
 fn print_inputs(
     args: &Args,
     printer: &Printer,
     lines: LineState,
     OutputMode { color, tty }: OutputMode,
+    pager_env: &PagerEnv,
     stdout: &io::Result<()>,
 ) -> Result<ExitCode> {
     check_write(stdout)?;
-    let mut pager = start_pager(args.paging(), tty, &pager_env())?;
+    let mut pager = start_pager(args.paging(), tty, pager_env)?;
     if color && pager.is_none() {
         stdout::enable_vt();
     }
@@ -292,12 +302,13 @@ fn print_inputs(
     })
 }
 
-/// `$PAGER` and `$LESS`.
-fn pager_env() -> PagerEnv {
+/// `$PAGER` and `$LESS`, as `getenv` returns them. A `PAGER` that is not
+/// valid Unicode counts as unset.
+fn pager_env(getenv: impl Fn(&str) -> Option<OsString>) -> PagerEnv {
     PagerEnv {
-        pager: env::var("PAGER").ok(),
+        pager: getenv("PAGER").and_then(|v| v.into_string().ok()),
         // An empty `LESS` gives `less` no options, so it counts as unset.
-        less_set: env::var_os("LESS").is_some_and(|v| !v.is_empty()),
+        less_set: getenv("LESS").is_some_and(|v| !v.is_empty()),
     }
 }
 
@@ -423,6 +434,15 @@ fn list_languages(dirs: &Dirs, out: &mut dyn Write) -> io::Result<()> {
 mod tests {
     use super::*;
     use crate::{color::Depth, test_support::bundled};
+
+    /// The `getenv` of an environment that holds only `vars`.
+    fn getenv<'a>(vars: &'a [(&str, &str)]) -> impl Fn(&str) -> Option<OsString> + 'a {
+        |name| {
+            vars.iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, v)| OsString::from(v))
+        }
+    }
 
     /// `argv` with a fixed color depth, so that the terminal of the
     /// developer does not matter.
@@ -592,5 +612,53 @@ mod tests {
             );
             assert!(!msg.contains("os error"), "{msg}");
         }
+    }
+
+    #[test]
+    fn an_empty_less_counts_as_unset() {
+        for (less, set) in [(None, false), (Some(""), false), (Some("-R"), true)] {
+            let vars: Vec<_> = less.map(|v| ("LESS", v)).into_iter().collect();
+            assert_eq!(pager_env(getenv(&vars)).less_set, set, "LESS={less:?}");
+        }
+    }
+
+    #[test]
+    fn reads_the_pager_from_pager() {
+        assert_eq!(pager_env(getenv(&[])).pager, None);
+        let env = pager_env(getenv(&[("PAGER", "less -S")]));
+        assert_eq!(env.pager.as_deref(), Some("less -S"));
+    }
+
+    #[test]
+    fn a_closed_pipe_is_not_a_write_error() {
+        check_write(&Ok(())).unwrap();
+        check_write(&Err(io::ErrorKind::BrokenPipe.into())).unwrap();
+        let err = check_write(&Err(io::ErrorKind::PermissionDenied.into())).unwrap_err();
+        assert!(err.to_string().starts_with("write error: "), "{err}");
+    }
+
+    /// A pager that quits before reading everything, as `less` does when the
+    /// user presses `q`, is a normal way to stop reading.
+    #[cfg(unix)]
+    #[test]
+    fn a_pager_that_quits_early_is_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("big.txt");
+        // Far more than a pipe holds, so that writing fails.
+        std::fs::write(&input, "line\n".repeat(200_000)).unwrap();
+        let input = input.to_str().unwrap();
+        let printer = printer(&["--paging=always", input], false).unwrap();
+        let args = args(&["--paging=always", input]);
+        let lines = build_line_state(&args, None);
+        let quits = PagerEnv {
+            pager: Some("sh -c 'exit 0'".into()),
+            less_set: false,
+        };
+        let mode = OutputMode {
+            color: false,
+            tty: true,
+        };
+        let code = print_inputs(&args, &printer, lines, mode, &quits, &Ok(())).unwrap();
+        assert_eq!(code, ExitCode::SUCCESS);
     }
 }

@@ -416,4 +416,17 @@ mod tests {
         let args = ["-c".into(), "exit 1".into()];
         Pager::start("sh", &args).unwrap().finish().unwrap();
     }
+
+    /// Writing to a pager that has quit fails with `BrokenPipe`, which
+    /// `main` takes as the user having stopped reading.
+    #[cfg(unix)]
+    #[test]
+    fn writing_to_a_pager_that_quit_is_a_broken_pipe() {
+        let args = ["-c".into(), "exit 0".into()];
+        let mut pager = Pager::start("sh", &args).unwrap();
+        // Far more than a pipe holds, so that the write waits for the exit.
+        let err = pager.stdin().write_all(&vec![b'x'; 1 << 20]).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
+        pager.finish().unwrap();
+    }
 }

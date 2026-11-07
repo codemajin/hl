@@ -675,4 +675,40 @@ contexts:
         assert!(names.contains(&DEFAULT_THEME));
         assert_eq!(broken, []);
     }
+
+    #[test]
+    fn fingerprint_follows_the_modification_time() {
+        let dir = tempdir();
+        let a = write(dir.path(), "a.sublime-syntax", "a");
+        let files = vec![a.clone()];
+        let first = fingerprint(&files);
+
+        // The same size, and only the time differs.
+        fs::write(&a, "b").unwrap();
+        let modified = fs::metadata(&a).unwrap().modified().unwrap();
+        let file = fs::File::options().write(true).open(&a).unwrap();
+        file.set_modified(modified + std::time::Duration::from_secs(10))
+            .unwrap();
+        drop(file);
+        assert_eq!(fs::metadata(&a).unwrap().len(), 1);
+        assert_ne!(first, fingerprint(&files));
+    }
+
+    /// A theme that cannot be read, here because it was removed after the
+    /// themes were listed, is reported without the OS error code.
+    #[test]
+    fn unreadable_custom_theme_has_no_os_error_code() {
+        let dir = tempdir();
+        let themes = themes_with(&dir, &["Red"]);
+        let red = dir.path().join("Red.tmTheme");
+        fs::remove_file(&red).unwrap();
+        let Err(ThemeFallback::Broken { path, error }) = themes.get("Red") else {
+            panic!("the theme must be broken");
+        };
+        assert_eq!(path, red);
+        assert!(!error.contains("os error"), "{error}");
+        assert_eq!(load_theme(&red).unwrap_err(), error);
+        #[cfg(unix)]
+        assert_eq!(error, "No such file or directory");
+    }
 }

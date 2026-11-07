@@ -50,3 +50,87 @@ fn rejects_unknown_paging_mode() {
         .code(2)
         .stderr(predicate::str::contains("invalid value 'sometimes'"));
 }
+
+/// Runs `hl --paging=always input` on a pseudo-terminal made by `script`
+/// (util-linux), with `pager` as `PAGER` and `dir` as the working directory,
+/// and returns its exit status and what reached the terminal. `None` when
+/// there is no `script`, after saying that `test` is skipped.
+#[cfg(target_os = "linux")]
+fn on_a_terminal(
+    test: &str,
+    dir: &std::path::Path,
+    pager: &str,
+    input: &std::path::Path,
+) -> Option<(std::process::ExitStatus, String)> {
+    use std::io::{ErrorKind, Write};
+
+    // The paths go through variables, so that no quoting is needed.
+    let result = crate::common::isolated("script")
+        .args([
+            "-qec",
+            r#""$HL_BIN" --paging=always "$HL_INPUT""#,
+            "/dev/null",
+        ])
+        .env("HL_BIN", env!("CARGO_BIN_EXE_hl"))
+        .env("HL_INPUT", input)
+        .env("SHELL", "/bin/sh")
+        .env("PAGER", pager)
+        .current_dir(dir)
+        .output();
+    match result {
+        Ok(out) => Some((
+            out.status,
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+        )),
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            // Written to stderr directly, as `eprintln!` would be captured.
+            let _ = writeln!(
+                std::io::stderr(),
+                "skipping {test}: `script` (util-linux) not found"
+            );
+            None
+        }
+        Err(e) => panic!("cannot run script: {e}"),
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn pages_the_output_on_a_terminal() {
+    let dir = tempdir();
+    let input = fixture("sample.toml");
+    let Some((status, terminal)) = on_a_terminal(
+        "pages_the_output_on_a_terminal",
+        dir.path(),
+        "sh -c 'cat > paged'",
+        &input,
+    ) else {
+        return;
+    };
+    assert!(status.success(), "{status}: {terminal}");
+    assert!(!terminal.contains("hl:"), "{terminal}");
+    let paged = fs::read(dir.path().join("paged")).unwrap();
+    assert_eq!(crate::common::strip_ansi(&paged), fs::read(&input).unwrap());
+}
+
+/// A pager that quits before reading everything, as `less` does when the
+/// user presses `q`.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_pager_that_quits_early_is_not_an_error() {
+    let dir = tempdir();
+    // Far more than a pipe holds, so that writing to the pager fails.
+    let input = crate::common::files(dir.path(), &[("big.txt", "line\n".repeat(200_000))]);
+    let Some((status, terminal)) = on_a_terminal(
+        "a_pager_that_quits_early_is_not_an_error",
+        dir.path(),
+        "sh -c 'head -c 10 > paged'",
+        &input[0],
+    ) else {
+        return;
+    };
+    assert!(status.success(), "{status}: {terminal}");
+    assert!(!terminal.contains("hl:"), "{terminal}");
+    // The pager did start, and read only what it asked for.
+    assert_eq!(fs::read(dir.path().join("paged")).unwrap().len(), 10);
+}

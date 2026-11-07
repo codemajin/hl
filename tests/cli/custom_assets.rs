@@ -69,6 +69,20 @@ impl Assets {
         self.path("cache/hl/syntaxes.bin")
     }
 
+    /// The path under the temporary directory made of `parts`, as `hl` shows
+    /// it in a message: joined one at a time, so with backslashes on Windows.
+    fn shown(&self, parts: &[&str]) -> String {
+        let path = parts
+            .iter()
+            .fold(self.dir().to_path_buf(), |p, part| p.join(part));
+        path.display().to_string()
+    }
+
+    /// The cache as `hl` shows it.
+    fn shown_cache(&self) -> String {
+        self.shown(&["cache", "hl", "syntaxes.bin"])
+    }
+
     /// `hl` with these assets, on a terminal that shows truecolor, so that
     /// the theme colors are printed as they are.
     fn hl(&self) -> Command {
@@ -511,4 +525,110 @@ fn skips_custom_themes_that_cannot_be_loaded() {
             ),
         )
         .stdout(expected);
+}
+
+#[test]
+fn build_cache_reports_the_syntaxes_it_skipped() {
+    let assets = Assets::new();
+    assets
+        .syntax("HlTest", HLTEST_SYNTAX)
+        .syntax("Broken", "not: [a syntax");
+    assets
+        .hl()
+        .arg("--build-cache")
+        .assert()
+        .success()
+        .stdout(format!(
+            "cached 1 of 2 custom syntaxes in {}\n",
+            assets.shown_cache()
+        ))
+        .stderr(predicate::str::contains(
+            "Broken.sublime-syntax: cannot load syntax, skipping it: ",
+        ));
+    assert!(assets.cache().is_file());
+}
+
+#[test]
+fn warns_when_the_syntax_directory_is_a_file() {
+    let assets = Assets::new();
+    files(assets.dir(), &[("config/hl/syntaxes", "not a directory")]);
+    let dir = assets.shown(&["config", "hl", "syntaxes"]);
+    let expected = colored(Assets::new().hl().arg(fixture("sample.toml")));
+    assets
+        .hl()
+        .args(["--color", "always"])
+        .arg(fixture("sample.toml"))
+        .assert()
+        .success()
+        .stderr(predicate::str::starts_with(format!("hl: {dir}: ")))
+        .stdout(expected);
+}
+
+#[test]
+fn build_cache_fails_when_the_cache_directory_is_a_file() {
+    let assets = Assets::new();
+    assets.syntax("HlTest", HLTEST_SYNTAX);
+    files(assets.dir(), &[("cache/hl", "not a directory")]);
+    assets
+        .hl()
+        .arg("--build-cache")
+        .assert()
+        .code(1)
+        .stdout("")
+        .stderr(
+            predicate::str::starts_with(format!("hl: {}: ", assets.shown_cache()))
+                .and(predicate::str::contains("os error").not()),
+        );
+}
+
+/// The cache, made a directory so that it can be neither replaced nor
+/// removed.
+fn cache_as_a_directory(assets: &Assets) {
+    files(assets.dir(), &[("cache/hl/syntaxes.bin/keep", "")]);
+}
+
+/// The names of the files in the cache directory.
+fn cache_dir_entries(assets: &Assets) -> Vec<String> {
+    let mut names: Vec<_> = fs::read_dir(assets.path("cache/hl"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn build_cache_leaves_no_temporary_file() {
+    let assets = Assets::new();
+    assets.syntax("HlTest", HLTEST_SYNTAX);
+    cache_as_a_directory(&assets);
+    assets
+        .hl()
+        .arg("--build-cache")
+        .assert()
+        .code(1)
+        .stdout("")
+        .stderr(predicate::str::starts_with(format!(
+            "hl: {}: ",
+            assets.shown_cache()
+        )));
+    // The syntaxes were written to `syntaxes.bin.tmp.<pid>`, which could not
+    // be renamed and is removed.
+    assert_eq!(cache_dir_entries(&assets), ["syntaxes.bin"]);
+}
+
+#[test]
+fn clear_cache_fails_when_the_cache_is_a_directory() {
+    let assets = Assets::new();
+    cache_as_a_directory(&assets);
+    let prefix = format!("hl: {}: ", assets.shown_cache());
+    let assert = assets.hl().arg("--clear-cache").assert().code(1).stdout("");
+    if cfg!(target_os = "linux") {
+        assert.stderr(format!("{prefix}Is a directory\n"));
+    } else {
+        // macOS and Windows have messages of their own.
+        assert.stderr(
+            predicate::str::starts_with(prefix).and(predicate::str::contains("os error").not()),
+        );
+    }
 }

@@ -1,6 +1,7 @@
 //! Helpers shared by the integration tests.
 
 use std::{
+    ffi::OsStr,
     fs,
     path::{Path, PathBuf},
 };
@@ -31,9 +32,16 @@ fn nonexistent(name: &str) -> PathBuf {
 /// `hl` with `args`, run without `assert_cmd` to control its standard
 /// streams. Like `hl()`, it does not see the developer's environment.
 pub fn raw_hl(args: &[&str]) -> std::process::Command {
-    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_hl"));
-    cmd.args(args)
-        .env_remove("HL_THEME")
+    let mut cmd = isolated(env!("CARGO_BIN_EXE_hl"));
+    cmd.args(args);
+    cmd
+}
+
+/// `program` without the variables that `hl` reads from the developer's
+/// environment, for a program that starts `hl` itself, such as `script`.
+pub fn isolated(program: impl AsRef<OsStr>) -> std::process::Command {
+    let mut cmd = std::process::Command::new(program);
+    cmd.env_remove("HL_THEME")
         .env_remove("HL_MAX_SIZE")
         .env_remove("HL_MAX_LINE_LENGTH")
         .env_remove("HL_COLOR_DEPTH")

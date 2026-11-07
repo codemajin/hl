@@ -152,7 +152,7 @@ flowchart TD
 
 ## 設計上の決まり
 
-- **環境変数を読むのは起動時だけ。** `config::Dirs::from_env`（ディレクトリと `HL_CONFIG`）、`cli::parse_with` に渡すコマンドラインと `HL_*` 変数（`env::args_os` と、`getenv` として渡す `env::var_os`）、`color::detect_from_env`、`main.rs` の `PAGER` と `LESS` は、どれも出力を始める前に `main.rs` で読みます。それ以外のコードは値を引数で受け取るので、テストでは好きな環境を与えられ、開発者自身の環境がテストに影響しません（テスト用の `getenv` を渡した `cli::parse_with`、`Dirs::from_getenv`）。`HL_*` 変数を clap に読ませないのは、clap が引数を組み立てるときにプロセスの環境変数を読んでしまい、テストから別の値を与えられないためです。変数を持った `Command` は `--help` の表示にだけ使います。
+- **環境変数を読むのは起動時だけ。** `config::Dirs::from_env`（ディレクトリと `HL_CONFIG`）、`cli::parse_with` に渡すコマンドラインと `HL_*` 変数（`env::args_os` と、`getenv` として渡す `env::var_os`）、`color::detect_from_env`、`PAGER` と `LESS`（`getenv` として `env::var_os` を渡す `pager_env`）は、どれも出力を始める前に `main.rs` で読みます。それ以外のコードは値を引数で受け取るので、テストでは好きな環境を与えられ、開発者自身の環境がテストに影響しません（テスト用の `getenv` を渡した `cli::parse_with` と `pager_env`、`Dirs::from_getenv`）。`HL_*` 変数を clap に読ませないのは、clap が引数を組み立てるときにプロセスの環境変数を読んでしまい、テストから別の値を与えられないためです。変数を持った `Command` は `--help` の表示にだけ使います。
 - **色を付けない出力は `cat` の出力と同じ。** 色を付けず、エスケープシーケンスも残すときは、バイト列をそのままコピーします。不正な UTF-8 も含めて、置き換えるバイトはありません（入力を `String::from_utf8_lossy` に通すのは、先頭行から構文を判定するときだけです）。`alias cat=hl` を安全に使えるのはこのためです。
 - **モジュールは問題を出力せず、返す。** `highlight` と `print` は理由をコールバックに渡すか `PrintOutcome` で返します。`cli`、`config`、`assets` は `diag::Warning` をコールバックに渡すか、テーマを使えない理由を返します。警告にするかエラーにするかは `main.rs` が決め、stderr に書くのも `main.rs` だけです。たとえば見つからない言語は、`--map-syntax` ならエラー、設定ファイルなら警告です（`cli::Origin`）。
 - **引数はメソッドを通して読む。** `cli::Args` の生のフィールドは読まず、`numbering()`、`visibility()`、`limits()`、`use_color()`、`strip_escapes()` など、関連するオプションをまとめたメソッドを使います。「`-b` は `-n` より優先」「`-v` を指定すると色を付けない」といった決まりを 1 か所に書くためです。
