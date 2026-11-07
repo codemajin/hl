@@ -421,9 +421,10 @@ fn write_nonprinting(b: u8, out: &mut impl Write) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::io::{BufReader, Cursor};
 
     use super::*;
+    use crate::test_support::Chunked;
 
     fn plain(input: &[u8], lines: &mut LineState, vis: Visibility) -> Vec<u8> {
         let mut out = Vec::new();
@@ -635,6 +636,130 @@ mod tests {
             out.extend(plain(input, &mut lines, Visibility::default()));
         }
         assert_eq!(out, b"ab\n<bg>c\x1b[0m\n");
+    }
+
+    /// Read errors in each way `write_plain` reads: copied as is, a line at
+    /// a time (`-n`), with `-E`, and in chunks of 4 bytes, which ends a chunk
+    /// on the `\r` of `abc\r\n` and so looks ahead for the `\n`.
+    #[test]
+    fn retries_an_interrupted_read_and_passes_other_errors_on() {
+        const INPUT: &[u8] = b"abc\r\nd\n";
+        let ends = Visibility {
+            ends: true,
+            ..Visibility::default()
+        };
+        let modes = [
+            ("passthrough", Numbering::None, Visibility::default(), CHUNK),
+            ("-n", Numbering::All, Visibility::default(), CHUNK),
+            ("-E", Numbering::None, ends, CHUNK),
+            ("-E in chunks of 4", Numbering::None, ends, 4),
+        ];
+        for (name, numbering, vis, limit) in modes {
+            let run = |reader: Chunked| {
+                let mut out = Vec::new();
+                let mut lines = numbered(numbering, None);
+                // One byte per read, so each `fill_buf` is one read of `Chunked`.
+                let mut reader = BufReader::new(reader);
+                write_plain_chunked(&mut reader, &mut out, &mut lines, vis, limit).map(|()| out)
+            };
+            let expected = run(Chunked::one_byte(INPUT)).unwrap();
+            // The last read is the one at the end of the input.
+            for call in 0..=INPUT.len() {
+                let interrupted =
+                    Chunked::one_byte(INPUT).fail_at(call, io::ErrorKind::Interrupted);
+                assert_eq!(
+                    run(interrupted).unwrap(),
+                    expected,
+                    "{name}: interrupted read {call}"
+                );
+                let failed = Chunked::one_byte(INPUT).fail_at(call, io::ErrorKind::Other);
+                let error = run(failed).expect_err(&format!("{name}: failed read {call}"));
+                assert_eq!(error.kind(), io::ErrorKind::Other, "{name}: read {call}");
+            }
+        }
+    }
+
+    /// What `write_nonprinting` writes for each byte, as `cat -v` does
+    /// (which leaves tab and newline alone before it gets here).
+    #[rustfmt::skip]
+    const NONPRINTING: [&str; 256] = [
+        // 0x00-0x0f
+        "^@", "^A", "^B", "^C", "^D", "^E", "^F", "^G",
+        "^H", "^I", "^J", "^K", "^L", "^M", "^N", "^O",
+        // 0x10-0x1f
+        "^P", "^Q", "^R", "^S", "^T", "^U", "^V", "^W",
+        "^X", "^Y", "^Z", "^[", "^\\", "^]", "^^", "^_",
+        // 0x20-0x2f
+        " ", "!", "\"", "#", "$", "%", "&", "'",
+        "(", ")", "*", "+", ",", "-", ".", "/",
+        // 0x30-0x3f
+        "0", "1", "2", "3", "4", "5", "6", "7",
+        "8", "9", ":", ";", "<", "=", ">", "?",
+        // 0x40-0x4f
+        "@", "A", "B", "C", "D", "E", "F", "G",
+        "H", "I", "J", "K", "L", "M", "N", "O",
+        // 0x50-0x5f
+        "P", "Q", "R", "S", "T", "U", "V", "W",
+        "X", "Y", "Z", "[", "\\", "]", "^", "_",
+        // 0x60-0x6f
+        "`", "a", "b", "c", "d", "e", "f", "g",
+        "h", "i", "j", "k", "l", "m", "n", "o",
+        // 0x70-0x7f
+        "p", "q", "r", "s", "t", "u", "v", "w",
+        "x", "y", "z", "{", "|", "}", "~", "^?",
+        // 0x80-0x8f
+        "M-^@", "M-^A", "M-^B", "M-^C", "M-^D", "M-^E", "M-^F", "M-^G",
+        "M-^H", "M-^I", "M-^J", "M-^K", "M-^L", "M-^M", "M-^N", "M-^O",
+        // 0x90-0x9f
+        "M-^P", "M-^Q", "M-^R", "M-^S", "M-^T", "M-^U", "M-^V", "M-^W",
+        "M-^X", "M-^Y", "M-^Z", "M-^[", "M-^\\", "M-^]", "M-^^", "M-^_",
+        // 0xa0-0xaf
+        "M- ", "M-!", "M-\"", "M-#", "M-$", "M-%", "M-&", "M-'",
+        "M-(", "M-)", "M-*", "M-+", "M-,", "M--", "M-.", "M-/",
+        // 0xb0-0xbf
+        "M-0", "M-1", "M-2", "M-3", "M-4", "M-5", "M-6", "M-7",
+        "M-8", "M-9", "M-:", "M-;", "M-<", "M-=", "M->", "M-?",
+        // 0xc0-0xcf
+        "M-@", "M-A", "M-B", "M-C", "M-D", "M-E", "M-F", "M-G",
+        "M-H", "M-I", "M-J", "M-K", "M-L", "M-M", "M-N", "M-O",
+        // 0xd0-0xdf
+        "M-P", "M-Q", "M-R", "M-S", "M-T", "M-U", "M-V", "M-W",
+        "M-X", "M-Y", "M-Z", "M-[", "M-\\", "M-]", "M-^", "M-_",
+        // 0xe0-0xef
+        "M-`", "M-a", "M-b", "M-c", "M-d", "M-e", "M-f", "M-g",
+        "M-h", "M-i", "M-j", "M-k", "M-l", "M-m", "M-n", "M-o",
+        // 0xf0-0xff
+        "M-p", "M-q", "M-r", "M-s", "M-t", "M-u", "M-v", "M-w",
+        "M-x", "M-y", "M-z", "M-{", "M-|", "M-}", "M-~", "M-^?",
+    ];
+
+    #[test]
+    fn writes_every_byte_in_cat_v_notation() {
+        for (b, expected) in (0..=u8::MAX).zip(NONPRINTING) {
+            let mut out = Vec::new();
+            write_nonprinting(b, &mut out).unwrap();
+            assert_eq!(out, expected.as_bytes(), "byte {b:#04x}");
+        }
+    }
+
+    /// `-E` shows a CR as `^M` only right before the newline.
+    #[test]
+    fn shows_a_cr_only_before_the_newline() {
+        let ends = Visibility {
+            ends: true,
+            ..Visibility::default()
+        };
+        let ends_and_tabs = Visibility { tabs: true, ..ends };
+        for (line, vis, expected) in [
+            (&b"a\r"[..], ends, &b"a\r"[..]),
+            (b"a\r\r\n", ends, b"a\r^M$\n"),
+            (b"a\rb\n", ends, b"a\rb$\n"),
+            (b"\t\r\n", ends_and_tabs, b"^I^M$\n"),
+        ] {
+            let mut out = Vec::new();
+            write_visible(line, vis, &mut out).unwrap();
+            assert_eq!(out, expected, "line {line:?}");
+        }
     }
 
     #[test]

@@ -391,8 +391,14 @@ mod tests {
     /// The name of an input that opens as `Unreadable`.
     const DIRECTORY: &str = "dir";
 
+    /// The name of an input whose first read gives `BROKEN_TEXT` and whose
+    /// second read fails with `io::ErrorKind::Other`.
+    const BROKEN: &str = "broken";
+    const BROKEN_TEXT: &[u8] = b"one\n";
+
     /// Runs `print_all` with `inputs` opened from `files`, a missing name
-    /// failing to open and `DIRECTORY` failing to be read.
+    /// failing to open, `DIRECTORY` failing to be read and `BROKEN` failing
+    /// partway.
     fn run(
         inputs: &[PathBuf],
         files: &[(&str, &'static str)],
@@ -408,6 +414,15 @@ mod tests {
                     too_large: false,
                 });
             }
+            if path == Path::new(BROKEN) {
+                let source = Chunked::new(BROKEN_TEXT, vec![BROKEN_TEXT.len()])
+                    .fail_at(1, io::ErrorKind::Other);
+                return Ok(Input {
+                    source: Box::new(source),
+                    path: Some(Path::new(BROKEN)),
+                    too_large: false,
+                });
+            }
             files
                 .iter()
                 .find(|(name, _)| path == Path::new(name))
@@ -419,6 +434,8 @@ mod tests {
             Problem::Unreadable(e) => {
                 let expected = if path == Path::new(DIRECTORY) {
                     io::ErrorKind::IsADirectory
+                } else if path == Path::new(BROKEN) {
+                    io::ErrorKind::Other
                 } else {
                     io::ErrorKind::NotFound
                 };
@@ -452,6 +469,33 @@ mod tests {
         assert!(run.input_failed);
         assert_eq!(run.unreadable, paths(&["missing"]));
         assert_eq!(run.out, "     1\tone\n     2\ttwo\n");
+    }
+
+    /// What was printed of an input before it failed stays, and the next
+    /// input is printed after it.
+    #[test]
+    fn input_that_fails_partway_is_reported() {
+        let lines = LineState::new(Numbering::All, false, None);
+        let run = run(&paths(&[BROKEN, "b"]), &[("b", "two\n")], lines, None);
+        assert!(run.input_failed);
+        assert_eq!(run.unreadable, paths(&[BROKEN]));
+        assert_eq!(run.out, "     1\tone\n     2\ttwo\n");
+    }
+
+    /// Without headers, `-s` squeezes the blank lines at the end of one
+    /// input and the start of the next together, like `cat -s`.
+    #[test]
+    fn squeezes_blank_lines_across_inputs() {
+        let files = [("a", "a\n\n"), ("b", "\nb\n")];
+        for (numbering, expected) in [
+            (Numbering::None, "a\n\nb\n"),
+            (Numbering::NonBlank, "     1\ta\n\n     2\tb\n"),
+        ] {
+            let lines = LineState::new(numbering, true, None);
+            let run = run(&paths(&["a", "b"]), &files, lines, None);
+            assert!(!run.input_failed);
+            assert_eq!(run.out, expected, "{numbering:?}");
+        }
     }
 
     #[test]

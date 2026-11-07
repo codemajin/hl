@@ -381,6 +381,8 @@ pub fn languages(syntaxes: &SyntaxSet) -> Vec<(&str, &[String])> {
 mod tests {
     use std::{fmt::Write as _, io::Cursor, sync::mpsc, thread};
 
+    use syntect::parsing::{SyntaxDefinition, SyntaxSetBuilder};
+
     use super::{
         worker::{BATCH_BYTES, BATCH_LINES, MAX_IN_FLIGHT},
         *,
@@ -620,6 +622,22 @@ mod tests {
         assert_eq!(strip_ansi(&out), "\u{FEFF}a\n".as_bytes());
     }
 
+    /// Only a BOM at the start of the input is kept out of syntect: one at
+    /// the start of a later line is text, highlighted with the rest.
+    #[test]
+    fn highlights_a_bom_at_the_start_of_a_later_line() {
+        let input = "a\n\u{FEFF}b\n".as_bytes();
+        let out = write_simple(input, Numbering::None, NO_LIMITS);
+        assert_eq!(strip_ansi(&out), input);
+        let second = &out[out.iter().position(|&b| b == b'\n').unwrap() + 1..];
+        assert!(second.starts_with(b"\x1b["), "{out:?}");
+        let bom = second
+            .windows(UTF8_BOM.len())
+            .position(|w| w == UTF8_BOM)
+            .unwrap();
+        assert!(has_escape(&second[..bom]), "{out:?}");
+    }
+
     #[test]
     fn prints_only_the_line_range() {
         let range = LineRange {
@@ -667,6 +685,16 @@ mod tests {
         let out = write_simple(b"abcd\nxy\n", Numbering::None, max_line(4));
         assert!(out.starts_with(b"\x1b["), "{out:?}");
         assert!(out.ends_with(b"xy\x1b[0m\n"), "{out:?}");
+    }
+
+    /// A last line without a newline is held to the limit the same way.
+    #[test]
+    fn applies_the_length_limit_to_a_last_line_without_newline() {
+        let out = write_simple(b"abcd", Numbering::None, max_line(4));
+        assert!(has_escape(&out), "{out:?}");
+        assert_eq!(strip_ansi(&out), b"abcd");
+        let out = write_simple(b"abcde", Numbering::None, max_line(4));
+        assert_eq!(out, b"abcde");
     }
 
     #[test]
@@ -1075,5 +1103,38 @@ contexts:
         let out = write_simple(&input, Numbering::None, NO_LIMITS);
         assert!(out.ends_with(b"a\x1b[0m\n\xff\nz\n"), "{out:?}");
         assert_eq!(strip_ansi(&out), input);
+    }
+
+    /// `--list-languages` sorts the names ignoring case, so `beta` comes
+    /// between `Alpha` and `Delta`, and leaves out the hidden syntaxes.
+    #[test]
+    fn lists_languages_sorted_ignoring_case_without_hidden_ones() {
+        let mut builder = SyntaxSetBuilder::new();
+        for (name, hidden) in [
+            ("beta", false),
+            ("Gamma", true),
+            ("Delta", false),
+            ("Alpha", false),
+        ] {
+            let yaml = format!(
+                "%YAML 1.2\n---\nname: {name}\nscope: source.{scope}\nfile_extensions: [{scope}]\n\
+                 hidden: {hidden}\ncontexts:\n  main: []\n",
+                scope = name.to_lowercase(),
+            );
+            builder.add(SyntaxDefinition::load_from_str(&yaml, true, None).unwrap());
+        }
+        let set = builder.build();
+        let listed: Vec<_> = languages(&set)
+            .into_iter()
+            .map(|(name, extensions)| (name, extensions.to_vec()))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("Alpha", vec!["alpha".to_string()]),
+                ("beta", vec!["beta".to_string()]),
+                ("Delta", vec!["delta".to_string()]),
+            ]
+        );
     }
 }

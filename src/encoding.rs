@@ -218,6 +218,42 @@ mod tests {
         }
     }
 
+    /// A read error, whenever it comes, loses nothing: reading again goes
+    /// on with the odd byte or the high surrogate left from the reads
+    /// before it.
+    #[test]
+    fn continues_after_a_read_error() {
+        let mut bytes = utf16("a😀b", Endian::Little);
+        bytes.push(b'c');
+        let expected = "a😀b\u{FFFD}";
+        // The last read is the one at the end of the input.
+        for call in 0..=bytes.len() {
+            for kind in [io::ErrorKind::Interrupted, io::ErrorKind::Other] {
+                let input = Chunked::one_byte(&bytes).fail_at(call, kind);
+                let mut decoder = Utf16Decoder::new(input, Endian::Little);
+                let mut out = Vec::new();
+                let mut errors = 0;
+                let mut buf = [0; 64];
+                loop {
+                    match decoder.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => out.extend_from_slice(&buf[..n]),
+                        Err(e) => {
+                            assert_eq!(e.kind(), kind, "read {call}");
+                            errors += 1;
+                        }
+                    }
+                }
+                assert_eq!(errors, 1, "{kind:?} at read {call}");
+                assert_eq!(
+                    String::from_utf8(out).unwrap(),
+                    expected,
+                    "{kind:?} at read {call}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn decodes_nothing_from_empty_input() {
         assert_eq!(decode(&b""[..], Endian::Little), "");

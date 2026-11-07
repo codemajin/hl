@@ -42,7 +42,7 @@ flowchart TD
 | `src/pager.rs` | ページャのコマンドの組み立て。材料は `src/main.rs` が `PagerEnv` に読み込んだ `$PAGER` と `$LESS`、それに `--paging`（`PagingWhen`。`auto` のときは引数なしの `less` に `-F` を足す）。`$PAGER` はシェルと同じ規則で分け、Windows では Windows の規則で分ける。ページャの起動と終了待ちもここで行う。既定の `less` がないことはほかの失敗と分けて返し、`src/main.rs` が代わりに標準出力に表示できるようにする |
 | `src/print.rs` | 各入力の順次出力（ハイライトありかなしか）、ヘッダ、文字コードの扱い。警告は出さず、入力の問題（読めない、ハイライトをあきらめた）はコールバックに渡す。`print_all` は `PrintOutcome`（入力の失敗があったか、出力を中断させた書き込みエラー）を返す |
 | `src/stdout.rs` | 起動時に標準出力が閉じられていたかの判定（Unix では std が `/dev/null` で開き直す前に確かめ、Windows では標準出力のハンドルがあるかを確かめる）と、Windows のコンソールでのエスケープシーケンスの処理の有効化（Windows Terminal 以外の cmd.exe や PowerShell でも色が出るようにする）。`unsafe` なコードがあるのはこのモジュールだけ（[開発メモ](DEV_ja.md)を参照） |
-| `src/test_support.rs` | 単体テスト専用の補助。入力を指定したサイズずつ返すリーダー、そのサイズを作る proptest の strategy、syntect を無限ループさせる構文（`LOOPING_SYNTAX`）、YAML から構文を作る関数（`custom_syntax`）、一度だけ読み込む同梱の構文セット（`bundled`）、SGR シーケンスを取り除く関数（`strip_ansi`。閉じていないシーケンスがあれば panic する）、`has_escape`、BOM を付けない UTF-16 への変換（`utf16`、`utf16_units`） |
+| `src/test_support.rs` | 単体テスト専用の補助。入力を指定したサイズずつ返し、指定した回の読み込みで `Interrupted` などのエラーを返すこともできるリーダー（`Chunked`）、そのサイズを作る proptest の strategy、syntect を無限ループさせる構文（`LOOPING_SYNTAX`）、YAML から構文を作る関数（`custom_syntax`）、一度だけ読み込む同梱の構文セット（`bundled`）、SGR シーケンスを取り除く関数（`strip_ansi`。閉じていないシーケンスがあれば panic する）、`has_escape`、BOM を付けない UTF-16 への変換（`utf16`、`utf16_units`） |
 | `build.rs` | two-face の JavaScript 構文と Scala 構文の修正と、構文の同梱 |
 
 ## モジュールの依存関係

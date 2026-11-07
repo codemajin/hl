@@ -16,10 +16,15 @@ use crate::{
 /// Returns `data` in reads of the sizes in `sizes`, taken in turn and
 /// repeated, so that the reader under test sees its input split at those
 /// places. A size of 1 splits every sequence and character across reads.
+/// With `fail_at`, chosen reads return an error instead.
 pub struct Chunked<'a> {
     data: &'a [u8],
     sizes: Vec<usize>,
     next: usize,
+    /// Calls to `read` so far, failed ones included.
+    calls: usize,
+    /// The calls to `read` that fail, and with what.
+    errors: Vec<(usize, io::ErrorKind)>,
 }
 
 impl<'a> Chunked<'a> {
@@ -31,7 +36,18 @@ impl<'a> Chunked<'a> {
             data,
             sizes,
             next: 0,
+            calls: 0,
+            errors: Vec::new(),
         }
+    }
+
+    /// Makes call `call` to `read` (counted from 0, failed ones included)
+    /// return an error of `kind`. That call reads nothing and does not use
+    /// up a chunk size, so the input is split at the same places as without
+    /// it. Can be given more than once.
+    pub fn fail_at(mut self, call: usize, kind: io::ErrorKind) -> Self {
+        self.errors.push((call, kind));
+        self
     }
 
     /// One byte per read.
@@ -42,6 +58,11 @@ impl<'a> Chunked<'a> {
 
 impl Read for Chunked<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let call = self.calls;
+        self.calls += 1;
+        if let Some(&(_, kind)) = self.errors.iter().find(|&&(c, _)| c == call) {
+            return Err(kind.into());
+        }
         let size = self.sizes[self.next % self.sizes.len()].max(1);
         self.next += 1;
         let n = self.data.len().min(size).min(buf.len());
