@@ -1,12 +1,24 @@
 //! Messages on stderr. Everything `hl` writes there goes through `note`,
-//! so its format is decided here.
+//! so its format is decided here. Only `main` calls `note` and `warn`: the
+//! other modules hand their problems to it, as a `Warning` for example.
 
 use std::{
     borrow::Cow,
     fmt::{self, Write},
     io::{self, Write as _},
-    path::Path,
+    path::{Path, PathBuf},
 };
+
+/// A problem that does not stop `hl`, found by a module that leaves showing
+/// it to `main`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Warning {
+    /// A problem with the file at `path`, shown as `hl: PATH: message`
+    /// (see `warn`).
+    File { path: PathBuf, message: String },
+    /// A message about no file in particular, shown as `hl: message`.
+    Note(String),
+}
 
 /// Prints `hl: msg` on stderr. A failed write is ignored: there is nowhere
 /// left to report it, and it must change neither the output nor the exit

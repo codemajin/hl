@@ -21,7 +21,7 @@ use two_face::theme::LazyThemeSet;
 
 use crate::{
     config::{CACHE_VAR, Dirs},
-    diag::{describe, note, warn},
+    diag::{Warning, describe},
 };
 
 /// The theme used when none is chosen, or when the one chosen cannot be used.
@@ -42,9 +42,10 @@ pub fn bundled_syntaxes() -> SyntaxSet {
 
 /// The bundled syntaxes plus the custom ones. Custom syntaxes come from the
 /// cache when it matches the files, and are merged on the spot otherwise,
-/// which is much slower.
-pub fn syntaxes(dirs: &Dirs) -> SyntaxSet {
-    let files = syntax_files(dirs);
+/// which is much slower and passes a reminder to `report`, along with the
+/// files that cannot be read.
+pub fn syntaxes(dirs: &Dirs, mut report: impl FnMut(Warning)) -> SyntaxSet {
+    let files = syntax_files(dirs, &mut report);
     if files.is_empty() {
         return bundled_syntaxes();
     }
@@ -52,8 +53,10 @@ pub fn syntaxes(dirs: &Dirs) -> SyntaxSet {
     if let Some(syntaxes) = cache_path(dirs).and_then(|path| read_cache(&path, &fingerprint)) {
         return syntaxes;
     }
-    let (syntaxes, _) = merge(&files);
-    note("custom syntaxes are not cached, run 'hl --build-cache' to speed up startup");
+    let (syntaxes, _) = merge(&files, &mut report);
+    report(Warning::Note(
+        "custom syntaxes are not cached, run 'hl --build-cache' to speed up startup".to_string(),
+    ));
     syntaxes
 }
 
@@ -69,17 +72,18 @@ pub enum CacheReport {
     },
 }
 
-/// Merges the custom syntaxes and writes them to the cache.
-pub fn build_cache(dirs: &Dirs) -> Result<CacheReport> {
+/// Merges the custom syntaxes and writes them to the cache. The files that
+/// cannot be read go to `report`.
+pub fn build_cache(dirs: &Dirs, mut report: impl FnMut(Warning)) -> Result<CacheReport> {
     let path = cache_path(dirs).ok_or_else(|| anyhow!("no cache directory (set {CACHE_VAR})"))?;
-    let files = syntax_files(dirs);
+    let files = syntax_files(dirs, &mut report);
     if files.is_empty() {
         remove_cache(&path)?;
         let dir = syntax_dir(dirs).unwrap_or_default();
         return Ok(CacheReport::Empty { dir });
     }
     let fingerprint = fingerprint(&files);
-    let (syntaxes, added) = merge(&files);
+    let (syntaxes, added) = merge(&files, &mut report);
     write_cache(&path, &fingerprint, syntaxes).with_context(|| path.display().to_string())?;
     Ok(CacheReport::Cached {
         added,
@@ -109,18 +113,21 @@ fn cache_path(dirs: &Dirs) -> Option<PathBuf> {
     Some(dirs.cache.as_ref()?.join(CACHE_FILE))
 }
 
-fn syntax_files(dirs: &Dirs) -> Vec<PathBuf> {
-    syntax_dir(dirs).map_or_else(Vec::new, |dir| files_in(&dir, SYNTAX_EXTENSION))
+fn syntax_files(dirs: &Dirs, report: &mut impl FnMut(Warning)) -> Vec<PathBuf> {
+    syntax_dir(dirs).map_or_else(Vec::new, |dir| files_in(&dir, SYNTAX_EXTENSION, report))
 }
 
 /// The files in `dir` with the given extension, sorted. A missing directory
-/// has no files; any other problem reading it warns.
-fn files_in(dir: &Path, extension: &str) -> Vec<PathBuf> {
+/// has no files; any other problem reading it goes to `report`.
+fn files_in(dir: &Path, extension: &str, report: &mut impl FnMut(Warning)) -> Vec<PathBuf> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Vec::new(),
         Err(e) => {
-            warn(dir, &describe(&e));
+            report(Warning::File {
+                path: dir.to_path_buf(),
+                message: describe(&e),
+            });
             return Vec::new();
         }
     };
@@ -158,8 +165,9 @@ fn fingerprint(files: &[PathBuf]) -> String {
 }
 
 /// The bundled syntaxes with the custom ones added, and how many were
-/// added. A custom syntax that cannot be loaded warns and is skipped.
-fn merge(files: &[PathBuf]) -> (SyntaxSet, usize) {
+/// added. A custom syntax that cannot be loaded is skipped and goes to
+/// `report`.
+fn merge(files: &[PathBuf], report: &mut impl FnMut(Warning)) -> (SyntaxSet, usize) {
     let mut builder = bundled_syntaxes().into_builder();
     let mut added = 0;
     for file in files {
@@ -168,7 +176,10 @@ fn merge(files: &[PathBuf]) -> (SyntaxSet, usize) {
                 builder.add(syntax);
                 added += 1;
             }
-            Err(e) => warn(file, &format!("cannot load syntax, skipping it: {e}")),
+            Err(e) => report(Warning::File {
+                path: file.clone(),
+                message: format!("cannot load syntax, skipping it: {e}"),
+            }),
         }
     }
     (builder.build(), added)
@@ -250,9 +261,11 @@ enum Found<'a> {
 }
 
 impl Themes {
-    /// The bundled themes and the custom ones in `theme_dir`.
-    pub fn load(theme_dir: Option<&Path>) -> Self {
-        let files = theme_dir.map_or_else(Vec::new, |dir| files_in(dir, THEME_EXTENSION));
+    /// The bundled themes and the custom ones in `theme_dir`. A problem
+    /// reading the directory goes to `report`.
+    pub fn load(theme_dir: Option<&Path>, mut report: impl FnMut(Warning)) -> Self {
+        let files =
+            theme_dir.map_or_else(Vec::new, |dir| files_in(dir, THEME_EXTENSION, &mut report));
         let custom = files
             .into_iter()
             .filter_map(|path| {
@@ -266,20 +279,26 @@ impl Themes {
         }
     }
 
-    /// The names of all themes, as listed by `--list-themes`. Custom themes
-    /// that cannot be loaded warn and are left out.
-    pub fn names(&self) -> Vec<&str> {
-        let mut names: Vec<_> = self
-            .all_names()
-            .filter(|name| match self.exact(name) {
-                Some(Found::Custom(path)) => load_theme(path)
-                    .inspect_err(|e| warn_bad_theme(path, e))
-                    .is_ok(),
-                _ => true,
-            })
-            .collect();
+    /// The names of all themes that can be used, sorted, as listed by
+    /// `--list-themes`, and the custom themes left out because they cannot
+    /// be loaded, as `(path, error)` pairs in the order of their names.
+    pub fn names(&self) -> (Vec<&str>, Vec<(PathBuf, String)>) {
+        let mut names = Vec::new();
+        let mut broken = Vec::new();
+        for name in self.all_names() {
+            let error = match self.exact(name) {
+                Some(Found::Custom(path)) => {
+                    load_theme(path).err().map(|e| (path.to_path_buf(), e))
+                }
+                _ => None,
+            };
+            match error {
+                Some(bad) => broken.push(bad),
+                None => names.push(name),
+            }
+        }
         names.sort_unstable();
-        names
+        (names, broken)
     }
 
     /// The theme called `name`, or why there is none to use. The caller
@@ -343,11 +362,6 @@ fn load_theme(path: &Path) -> Result<Theme, String> {
     })
 }
 
-/// Warns that the custom theme at `path` is skipped because of `err`.
-pub fn warn_bad_theme(path: &Path, err: &str) {
-    warn(path, &format!("cannot load theme, skipping it: {err}"));
-}
-
 #[cfg(test)]
 mod tests {
     use tempfile::TempDir;
@@ -386,6 +400,14 @@ contexts:
         path
     }
 
+    /// Runs `f` with a `report` that keeps the warnings, and returns them
+    /// with what `f` returned.
+    fn collect<T>(f: impl FnOnce(&mut dyn FnMut(Warning)) -> T) -> (T, Vec<Warning>) {
+        let mut warnings = Vec::new();
+        let value = f(&mut |w| warnings.push(w));
+        (value, warnings)
+    }
+
     /// `Dirs` with the config and cache directories under `root`.
     fn dirs_in(root: &Path) -> Dirs {
         Dirs {
@@ -402,15 +424,33 @@ contexts:
         write(dir.path(), "c.sublime-syntax", "");
         write(dir.path(), "tmTheme", "");
         fs::create_dir(dir.path().join("x.tmTheme")).unwrap();
-        assert_eq!(files_in(dir.path(), THEME_EXTENSION), [a, b]);
+        let (files, warnings) =
+            collect(|mut report| files_in(dir.path(), THEME_EXTENSION, &mut report));
+        assert_eq!(files, [a, b]);
+        assert_eq!(warnings, []);
     }
 
     #[test]
     fn missing_directory_has_no_files() {
         let dir = tempdir();
-        assert_eq!(
-            files_in(&dir.path().join("missing"), THEME_EXTENSION),
-            Vec::<PathBuf>::new()
+        let missing = dir.path().join("missing");
+        let (files, warnings) =
+            collect(|mut report| files_in(&missing, THEME_EXTENSION, &mut report));
+        assert_eq!(files, Vec::<PathBuf>::new());
+        assert_eq!(warnings, []);
+    }
+
+    /// A directory that cannot be read has no files either, but warns.
+    /// The message comes from the OS, so only the path is checked.
+    #[test]
+    fn unreadable_directory_warns() {
+        let dir = tempdir();
+        let file = write(dir.path(), "themes", "not a directory");
+        let (files, warnings) = collect(|mut report| files_in(&file, THEME_EXTENSION, &mut report));
+        assert_eq!(files, Vec::<PathBuf>::new());
+        assert!(
+            matches!(&warnings[..], [Warning::File { path, .. }] if *path == file),
+            "{warnings:?}"
         );
     }
 
@@ -460,7 +500,48 @@ contexts:
             HLTEST_SYNTAX,
         );
         write(root.path(), "cache/syntaxes.bin", "not a cache");
-        assert!(syntaxes(&dirs).find_syntax_by_name("HlTest").is_some());
+        let (merged, warnings) = collect(|report| syntaxes(&dirs, report));
+        assert!(merged.find_syntax_by_name("HlTest").is_some());
+        assert_eq!(
+            warnings,
+            [Warning::Note(
+                "custom syntaxes are not cached, run 'hl --build-cache' to speed up startup"
+                    .to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn broken_custom_syntax_is_skipped_with_a_warning() {
+        let root = tempdir();
+        let dirs = dirs_in(root.path());
+        write(
+            root.path(),
+            "config/syntaxes/HlTest.sublime-syntax",
+            HLTEST_SYNTAX,
+        );
+        let broken = write(
+            root.path(),
+            "config/syntaxes/Broken.sublime-syntax",
+            "not: [a syntax",
+        );
+        let (report, warnings) = collect(|report| build_cache(&dirs, report));
+        assert!(matches!(
+            report,
+            Ok(CacheReport::Cached {
+                added: 1,
+                total: 2,
+                ..
+            })
+        ));
+        assert!(
+            matches!(
+                &warnings[..],
+                [Warning::File { path, message }]
+                    if *path == broken && message.starts_with("cannot load syntax, skipping it: ")
+            ),
+            "{warnings:?}"
+        );
     }
 
     #[test]
@@ -472,17 +553,24 @@ contexts:
             "config/syntaxes/HlTest.sublime-syntax",
             HLTEST_SYNTAX,
         );
+        let (report, warnings) = collect(|report| build_cache(&dirs, report));
         let Ok(CacheReport::Cached {
             added: 1,
             total: 1,
             path,
-        }) = build_cache(&dirs)
+        }) = report
         else {
             panic!("the syntax must be cached");
         };
-        let files = syntax_files(&dirs);
+        assert_eq!(warnings, []);
+        let (files, _) = collect(|mut report| syntax_files(&dirs, &mut report));
         let cached = read_cache(&path, &fingerprint(&files)).unwrap();
         assert!(cached.find_syntax_by_name("HlTest").is_some());
+
+        // The cache is used, with no reminder to build it.
+        let (loaded, warnings) = collect(|report| syntaxes(&dirs, report));
+        assert!(loaded.find_syntax_by_name("HlTest").is_some());
+        assert_eq!(warnings, []);
 
         clear_cache(&dirs).unwrap();
         assert!(!path.exists());
@@ -494,7 +582,7 @@ contexts:
             config: None,
             cache: None,
         };
-        let err = build_cache(&dirs).err().unwrap();
+        let err = build_cache(&dirs, |w| panic!("{w:?}")).err().unwrap();
         assert_eq!(
             err.to_string(),
             format!("no cache directory (set {CACHE_VAR})")
@@ -507,7 +595,7 @@ contexts:
         for name in names {
             write(dir.path(), &format!("{name}.tmTheme"), RED_THEME);
         }
-        Themes::load(Some(dir.path()))
+        Themes::load(Some(dir.path()), |w| panic!("{w:?}"))
     }
 
     /// The path of the custom theme that `name` finds, if it finds one.
@@ -546,25 +634,33 @@ contexts:
         let themes = themes_with(&dir, &["Nord"]);
         assert!(custom_path(&themes, "Nord").is_some());
         assert!(custom_path(&themes, "nord").is_some());
-        assert_eq!(themes.names().iter().filter(|&&n| n == "Nord").count(), 1);
+        let (names, broken) = themes.names();
+        assert_eq!(names.iter().filter(|&&n| n == "Nord").count(), 1);
+        assert_eq!(broken, []);
     }
 
     #[test]
     fn broken_custom_theme_is_reported() {
         let dir = tempdir();
-        write(dir.path(), "Broken.tmTheme", "not a theme\n");
-        let themes = Themes::load(Some(dir.path()));
-        assert!(matches!(
-            themes.get("Broken"),
-            Err(ThemeFallback::Broken { path, .. }) if path == dir.path().join("Broken.tmTheme")
-        ));
-        assert!(!themes.names().contains(&"Broken"));
+        let broken = write(dir.path(), "Broken.tmTheme", "not a theme\n");
+        let themes = themes_with(&dir, &["Red"]);
+        let Err(ThemeFallback::Broken { path, error }) = themes.get("Broken") else {
+            panic!("the theme must be broken");
+        };
+        assert_eq!(path, broken);
+
+        let (names, left_out) = themes.names();
+        assert!(names.contains(&"Red"));
+        assert!(!names.contains(&"Broken"));
+        assert_eq!(left_out, [(broken, error)]);
     }
 
     #[test]
     fn loads_only_bundled_themes_without_a_directory() {
-        let themes = Themes::load(None);
+        let themes = Themes::load(None, |w| panic!("{w:?}"));
         assert_eq!(themes.custom.len(), 0);
-        assert!(themes.names().contains(&DEFAULT_THEME));
+        let (names, broken) = themes.names();
+        assert!(names.contains(&DEFAULT_THEME));
+        assert_eq!(broken, []);
     }
 }

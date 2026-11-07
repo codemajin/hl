@@ -7,7 +7,7 @@ use std::{
 
 use toml::{Table, Value};
 
-use crate::diag::{describe, warn};
+use crate::diag::{Warning, describe};
 
 /// The directories `hl` reads its files from, resolved once at startup and
 /// handed to the code that needs them.
@@ -86,25 +86,31 @@ pub struct Config {
 impl Config {
     /// Reads the config file from `HL_CONFIG`, else from the config
     /// directory in `dirs`. A missing file at the default location is not
-    /// an error; any other problem warns and yields no values, so a broken
-    /// config never stops `hl` from printing.
-    pub fn load(dirs: &Dirs) -> Option<Self> {
-        Self::read(path(env::var_os("HL_CONFIG"), dirs.config.as_deref())?)
+    /// an error; any other problem goes to `report` and yields no values, so
+    /// a broken config never stops `hl` from printing.
+    pub fn load(dirs: &Dirs, report: impl FnMut(Warning)) -> Option<Self> {
+        Self::read(
+            path(env::var_os("HL_CONFIG"), dirs.config.as_deref())?,
+            report,
+        )
     }
 
     /// Reads the file at `path`; `explicit` tells whether the user named it,
-    /// in which case a missing file warns.
-    fn read((path, explicit): (PathBuf, bool)) -> Option<Self> {
+    /// in which case a missing file goes to `report` too.
+    fn read((path, explicit): (PathBuf, bool), mut report: impl FnMut(Warning)) -> Option<Self> {
         let text = match fs::read_to_string(&path) {
             Ok(text) => text,
             Err(e) if e.kind() == io::ErrorKind::NotFound && !explicit => return None,
             Err(e) => {
-                warn(&path, &describe(&e));
+                report(Warning::File {
+                    path,
+                    message: describe(&e),
+                });
                 return None;
             }
         };
         Self::parse(path.clone(), &text)
-            .inspect_err(|msg| warn(&path, msg))
+            .map_err(|message| report(Warning::File { path, message }))
             .ok()
     }
 
@@ -119,8 +125,12 @@ impl Config {
         })
     }
 
-    pub fn warn(&self, msg: &str) {
-        warn(&self.path, msg);
+    /// The warning about this file that says `message`.
+    pub fn warning(&self, message: String) -> Warning {
+        Warning::File {
+            path: self.path.clone(),
+            message,
+        }
     }
 }
 
@@ -305,16 +315,53 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("config.toml");
 
-        assert!(Config::read((file.clone(), false)).is_none());
-        // Warns, but still yields nothing.
-        assert!(Config::read((file.clone(), true)).is_none());
+        let read = |explicit| {
+            let mut warnings = Vec::new();
+            let config = Config::read((file.clone(), explicit), |w| warnings.push(w));
+            (config, warnings)
+        };
+
+        let (config, warnings) = read(false);
+        assert!(config.is_none());
+        assert_eq!(warnings, []);
+
+        // A missing file named by the user warns, but still yields nothing.
+        let (config, warnings) = read(true);
+        assert!(config.is_none());
+        assert!(
+            matches!(&warnings[..], [Warning::File { path, .. }] if *path == file),
+            "{warnings:?}"
+        );
 
         fs::write(&file, "color = \"never\"\n").unwrap();
-        let config = Config::read((file.clone(), false)).unwrap();
+        let (config, warnings) = read(false);
+        let config = config.unwrap();
         assert_eq!(config.path, file);
         assert_eq!(config.entries.len(), 1);
+        assert_eq!(warnings, []);
 
         fs::write(&file, "color = \n").unwrap();
-        assert!(Config::read((file, false)).is_none());
+        let (config, warnings) = read(false);
+        assert!(config.is_none());
+        assert!(
+            matches!(
+                &warnings[..],
+                [Warning::File { path, message }]
+                    if *path == file && message.starts_with("invalid TOML, ignoring the file: ")
+            ),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn warning_names_the_file() {
+        let config = Config::parse("c.toml".into(), "").unwrap();
+        assert_eq!(
+            config.warning("bad".to_string()),
+            Warning::File {
+                path: "c.toml".into(),
+                message: "bad".to_string()
+            }
+        );
     }
 }

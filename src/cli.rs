@@ -19,7 +19,7 @@ use crate::{
     assets::DEFAULT_THEME,
     color::Depth,
     config::Config,
-    diag::escape_controls,
+    diag::{Warning, escape_controls},
     highlight::{Limits, Origin, SyntaxMapping},
     lines::{LineRange, Numbering, Visibility},
 };
@@ -314,9 +314,11 @@ struct ConfigExtras {
 /// An invalid value is a usage error (exit status 2). When it comes from an
 /// environment variable, the error names the variable instead of the
 /// option, which the user did not write.
-pub fn parse_with(config: Option<&Config>) -> Args {
+///
+/// The entries of the config file that are ignored go to `report`.
+pub fn parse_with(config: Option<&Config>, mut report: impl FnMut(Warning)) -> Args {
     let (cmd, extras) = match config {
-        Some(config) => apply_config(Args::command(), config),
+        Some(config) => apply_config(Args::command(), config, &mut report),
         None => (Args::command(), ConfigExtras::default()),
     };
     let mut matches = cmd
@@ -404,27 +406,32 @@ fn env_message(name: &OsStr, value: &OsStr, err: &clap::Error) -> String {
 }
 
 /// Sets the config values as the defaults of `cmd` and returns the flags
-/// and mappings of the config. A bad entry warns and is ignored.
-fn apply_config(mut cmd: Command, config: &Config) -> (Command, ConfigExtras) {
+/// and mappings of the config. A bad entry is ignored and goes to `report`.
+fn apply_config(
+    mut cmd: Command,
+    config: &Config,
+    report: &mut impl FnMut(Warning),
+) -> (Command, ConfigExtras) {
     // Checks each value on its own, without the environment, so that a bad
     // value is reported as coming from the config file.
     let probe = without_env(Args::command());
     let mut extras = ConfigExtras::default();
+    let mut warn = |message: String| report(config.warning(message));
     for (key, value) in &config.entries {
         match (classify(key), value) {
             (Some(Key::Flag(flag)), Value::Boolean(true)) => extras.flags.push(flag),
             (Some(Key::Flag(_)), Value::Boolean(false)) => {}
             (Some(Key::Flag(_)), _) => {
-                config.warn(&format!("'{key}' must be true or false, ignoring it"));
+                warn(format!("'{key}' must be true or false, ignoring it"));
             }
             (Some(Key::Option), Value::String(s)) => {
-                cmd = set_default(cmd, &probe, config, key, s);
+                cmd = set_default(cmd, &probe, key, s, &mut warn);
             }
             (Some(Key::Option), Value::Integer(n)) => {
-                cmd = set_default(cmd, &probe, config, key, &n.to_string());
+                cmd = set_default(cmd, &probe, key, &n.to_string(), &mut warn);
             }
             (Some(Key::Option), _) => {
-                config.warn(&format!(
+                warn(format!(
                     "'{key}' must be a string or an integer, ignoring it"
                 ));
             }
@@ -432,24 +439,30 @@ fn apply_config(mut cmd: Command, config: &Config) -> (Command, ConfigExtras) {
                 let items = items.iter().filter_map(Value::as_str);
                 extras
                     .mappings
-                    .extend(items.filter_map(|item| parse_mapping(config, item)));
+                    .extend(items.filter_map(|item| parse_mapping(config, item, &mut warn)));
             }
             (Some(Key::MapSyntax), _) => {
-                config.warn(&format!("'{key}' must be an array of strings, ignoring it"));
+                warn(format!("'{key}' must be an array of strings, ignoring it"));
             }
-            (None, _) => config.warn(&format!("unknown key '{key}', ignoring it")),
+            (None, _) => warn(format!("unknown key '{key}', ignoring it")),
         }
     }
     (cmd, extras)
 }
 
 /// `cmd` with `value` as the default of the option named by the config key
-/// `key`, or `cmd` as is with a warning if `probe`, the command without the
-/// environment, rejects the value.
-fn set_default(cmd: Command, probe: &Command, config: &Config, key: &str, value: &str) -> Command {
+/// `key`, or `cmd` as is with a warning passed to `warn` if `probe`, the
+/// command without the environment, rejects the value.
+fn set_default(
+    cmd: Command,
+    probe: &Command,
+    key: &str,
+    value: &str,
+    warn: &mut impl FnMut(String),
+) -> Command {
     let option = format!("--{key}={value}");
     if probe.clone().try_get_matches_from(["hl", &option]).is_err() {
-        config.warn(&format!("invalid value '{value}' for '{key}', ignoring it"));
+        warn(format!("invalid value '{value}' for '{key}', ignoring it"));
         return cmd;
     }
     cmd.mut_arg(arg_id(key), |arg| arg.default_value(value.to_owned()))
@@ -460,12 +473,17 @@ fn parse_cli_mapping(s: &str) -> Result<SyntaxMapping, String> {
     SyntaxMapping::parse(s, Origin::CommandLine)
 }
 
-/// A `map-syntax` entry of the config file, or `None` with a warning.
-fn parse_mapping(config: &Config, item: &str) -> Option<SyntaxMapping> {
+/// A `map-syntax` entry of the config file, or `None` with a warning passed
+/// to `warn`.
+fn parse_mapping(
+    config: &Config,
+    item: &str,
+    warn: &mut impl FnMut(String),
+) -> Option<SyntaxMapping> {
     match SyntaxMapping::parse(item, Origin::ConfigFile(config.path.clone())) {
         Ok(mapping) => Some(mapping),
         Err(e) => {
-            config.warn(&format!(
+            warn(format!(
                 "invalid {MAP_SYNTAX_KEY} entry '{item}': {e}, ignoring it"
             ));
             None
@@ -667,14 +685,30 @@ mod tests {
     }
 
     /// Parses `argv` with `config` applied, as `parse_with` does, but
-    /// without the environment.
-    fn args_with(config: &Config, argv: &[&str]) -> Args {
-        let (cmd, extras) = apply_config(Args::command(), config);
+    /// without the environment, and returns the messages of the warnings
+    /// about the config too.
+    fn parse_config(config: &Config, argv: &[&str]) -> (Args, Vec<String>) {
+        let mut warnings = Vec::new();
+        let (cmd, extras) = apply_config(Args::command(), config, &mut |w| warnings.push(w));
         let matches = without_env(cmd)
             .try_get_matches_from(["hl"].iter().chain(argv))
             .unwrap();
         let mut parsed = Args::from_arg_matches(&matches).unwrap();
         parsed.apply_extras(extras);
+        let messages = warnings
+            .into_iter()
+            .map(|w| match w {
+                Warning::File { path, message } if path == config.path => message,
+                w => panic!("not a warning about the config file: {w:?}"),
+            })
+            .collect();
+        (parsed, messages)
+    }
+
+    /// `parse_config` for a config without bad entries.
+    fn args_with(config: &Config, argv: &[&str]) -> Args {
+        let (parsed, warnings) = parse_config(config, argv);
+        assert_eq!(warnings, Vec::<String>::new());
         parsed
     }
 
@@ -817,10 +851,20 @@ mod tests {
             header = "yes"
             "#,
         );
-        let args = args_with(&config, &[]);
+        let (args, warnings) = parse_config(&config, &[]);
         assert_eq!(args.color, ColorWhen::Auto);
         assert_eq!(args.paging(), PagingWhen::Never);
         assert!(!args.header);
+        // The entries are read sorted by key.
+        assert_eq!(
+            warnings,
+            [
+                "invalid value 'sometimes' for 'color', ignoring it",
+                "'header' must be true or false, ignoring it",
+                "unknown key 'pager', ignoring it",
+                "invalid value '1' for 'paging', ignoring it",
+            ]
+        );
     }
 
     #[test]
@@ -891,7 +935,14 @@ mod tests {
     #[test]
     fn config_mappings_come_first() {
         let config = config(r#"map-syntax = ["*.conf:INI", "bad"]"#);
-        let args = args_with(&config, &["--map-syntax", "*.conf:TOML"]);
+        let (args, warnings) = parse_config(&config, &["--map-syntax", "*.conf:TOML"]);
+        assert_eq!(
+            warnings,
+            [
+                "invalid map-syntax entry 'bad': 'bad' is not PATTERN:LANG (e.g. '*.conf:INI'), \
+              ignoring it"
+            ]
+        );
         let mappings: Vec<_> = args
             .mappings()
             .map(|m| (m.spec.as_str(), m.origin().clone()))

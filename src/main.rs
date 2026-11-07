@@ -27,7 +27,7 @@ use anyhow::{Result, anyhow, bail};
 use assets::{CacheReport, DEFAULT_THEME, ThemeFallback};
 use cli::{Args, PagingWhen};
 use config::{Config, Dirs};
-use diag::{describe, describe_error, escape_controls};
+use diag::{Warning, describe, describe_error, escape_controls};
 use highlight::{GiveUp, Highlighter, Limits, Origin, Syntax, SyntaxMapping, find_language};
 use lines::{LineHighlight, LineState};
 use pager::{Pager, SpawnError};
@@ -36,7 +36,8 @@ use syntect::{highlighting::Theme, parsing::SyntaxSet};
 
 fn main() -> ExitCode {
     let dirs = Dirs::from_env();
-    let args = cli::parse_with(Config::load(&dirs).as_ref());
+    let config = Config::load(&dirs, show_warning);
+    let args = cli::parse_with(config.as_ref(), show_warning);
     match run(&args, &dirs, &stdout::check()) {
         Ok(code) => code,
         // A closed pipe (`hl ... | head`) is a normal way to stop reading.
@@ -63,7 +64,7 @@ fn run(args: &Args, dirs: &Dirs, stdout: &io::Result<()>) -> Result<ExitCode> {
     let color = args.use_color(tty);
     let syntaxes = args
         .needs_syntaxes(color)
-        .then(|| Arc::new(assets::syntaxes(dirs)));
+        .then(|| Arc::new(assets::syntaxes(dirs, show_warning)));
     let printer = build_printer(args, color, syntaxes, || load_theme(&args.theme, dirs))?;
     let lines = build_line_state(args, printer.highlighter.as_ref());
     print_inputs(args, &printer, lines, color, tty, stdout)
@@ -77,7 +78,7 @@ fn run_info_command(args: &Args, dirs: &Dirs, stdout: &io::Result<()>) -> Result
     } else if args.man {
         print_and_exit(stdout, |out| cli::print_man(out))?
     } else if args.build_cache {
-        let report = assets::build_cache(dirs)?;
+        let report = assets::build_cache(dirs, show_warning)?;
         print_and_exit(stdout, |out| print_cache_report(&report, out))?
     } else if args.clear_cache {
         assets::clear_cache(dirs)?;
@@ -111,7 +112,7 @@ fn build_printer(
                         .ok_or_else(|| anyhow!("unknown language '{lang}' (see --list-languages)"))
                 })
                 .transpose()?;
-            let mappings = resolve_mappings(syntaxes, args.mappings())?;
+            let mappings = resolve_mappings(syntaxes, args.mappings(), show_warning)?;
             (forced, mappings)
         }
         None => (None, Vec::new()),
@@ -134,11 +135,12 @@ fn build_printer(
 }
 
 /// Looks up the language of each syntax mapping. An unknown language is an
-/// error on the command line, but only a warning in the config file, which
-/// never stops `hl` from printing.
+/// error on the command line, but only a warning in the config file, passed
+/// to `report`, which never stops `hl` from printing.
 fn resolve_mappings<'m>(
     syntaxes: &Arc<SyntaxSet>,
     mappings: impl IntoIterator<Item = &'m SyntaxMapping>,
+    mut report: impl FnMut(Warning),
 ) -> Result<Vec<(SyntaxMapping, Syntax)>> {
     let mut resolved = Vec::new();
     for mapping in mappings {
@@ -148,7 +150,10 @@ fn resolve_mappings<'m>(
                 mapping.language, mapping.spec
             );
             match mapping.origin() {
-                Origin::ConfigFile(path) => diag::warn(path, &format!("{msg}, ignoring it")),
+                Origin::ConfigFile(path) => report(Warning::File {
+                    path: path.clone(),
+                    message: format!("{msg}, ignoring it"),
+                }),
                 Origin::CommandLine => bail!("{msg} (see --list-languages)"),
             }
             continue;
@@ -174,9 +179,22 @@ fn warn_theme_fallback(name: &str, fallback: &ThemeFallback) {
             escape_controls(name)
         )),
         ThemeFallback::Broken { path, error } => {
-            assets::warn_bad_theme(path, error);
+            warn_bad_theme(path, error);
             diag::note(format_args!("falling back to {DEFAULT_THEME}"));
         }
+    }
+}
+
+/// Warns that the custom theme at `path` is skipped because of `error`.
+fn warn_bad_theme(path: &Path, error: &str) {
+    diag::warn(path, &format!("cannot load theme, skipping it: {error}"));
+}
+
+/// Shows a problem that another module found and went on after.
+fn show_warning(warning: Warning) {
+    match warning {
+        Warning::File { path, message } => diag::warn(&path, &message),
+        Warning::Note(message) => diag::note(escape_controls(&message)),
     }
 }
 
@@ -362,19 +380,23 @@ fn print_cache_report(report: &CacheReport, out: &mut dyn Write) -> io::Result<(
 }
 
 fn load_themes(dirs: &Dirs) -> assets::Themes {
-    assets::Themes::load(assets::theme_dir(dirs).as_deref())
+    assets::Themes::load(assets::theme_dir(dirs).as_deref(), show_warning)
 }
 
 fn list_themes(dirs: &Dirs, out: &mut dyn Write) -> io::Result<()> {
     let themes = load_themes(dirs);
-    for name in themes.names() {
+    let (names, broken) = themes.names();
+    for (path, error) in &broken {
+        warn_bad_theme(path, error);
+    }
+    for name in names {
         writeln!(out, "{name}")?;
     }
     Ok(())
 }
 
 fn list_languages(dirs: &Dirs, out: &mut dyn Write) -> io::Result<()> {
-    let syntaxes = assets::syntaxes(dirs);
+    let syntaxes = assets::syntaxes(dirs, show_warning);
     for (name, extensions) in highlight::languages(&syntaxes) {
         writeln!(out, "{name}: {}", extensions.join(", "))?;
     }
@@ -438,10 +460,31 @@ mod tests {
         let origin = Origin::ConfigFile(PathBuf::from("config.toml"));
         let unknown = SyntaxMapping::parse("*.x:no-such-language", origin).unwrap();
         let known = SyntaxMapping::parse("*.y:Rust", Origin::CommandLine).unwrap();
-        let resolved = resolve_mappings(&syntaxes(), [&unknown, &known]).unwrap();
+        let mut warnings = Vec::new();
+        let resolved =
+            resolve_mappings(&syntaxes(), [&unknown, &known], |w| warnings.push(w)).unwrap();
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].0.spec, "*.y:Rust");
         assert_eq!(resolved[0].1.name, "Rust");
+        assert_eq!(
+            warnings,
+            [Warning::File {
+                path: PathBuf::from("config.toml"),
+                message: "unknown language 'no-such-language' in map-syntax \
+                          '*.x:no-such-language', ignoring it"
+                    .to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn known_languages_in_mappings_warn_nothing() {
+        let origin = Origin::ConfigFile(PathBuf::from("config.toml"));
+        let mapping = SyntaxMapping::parse("*.y:Rust", origin).unwrap();
+        let mut warnings = Vec::new();
+        let resolved = resolve_mappings(&syntaxes(), [&mapping], |w| warnings.push(w)).unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(warnings, []);
     }
 
     #[test]

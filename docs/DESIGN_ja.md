@@ -28,13 +28,13 @@ flowchart TD
 
 | ファイル | 役割 |
 | --- | --- |
-| `src/main.rs` | エントリポイント。入力を表示しないコマンド（`--list-themes` など）の実行、引数と設定からの Printer と行の状態の組み立て、ページャか標準出力かの選択、エラー処理と終了コード。途中で見つかった問題の扱いもここで決める（`--map-syntax` の未知の言語はエラー、設定ファイルの未知の言語は警告、未知のテーマや壊れたテーマは警告してデフォルトに戻す、`src/print.rs` から届いた入力の問題は警告）。環境変数（`PAGER`、`LESS`、色深度）を読むのはここだけ。設定・キャッシュディレクトリもここで 1 回だけ求め（`config::Dirs::from_env`）、設定ファイルと `src/assets.rs` に渡す |
-| `src/assets.rs` | デフォルトのテーマ、同梱の構文、設定ディレクトリのカスタム構文・テーマの読み込みと同梱分とのマージ、構文キャッシュ（`--build-cache`/`--clear-cache`）。ディレクトリは引数で受け取り、環境変数は読まない |
-| `src/cli.rs` | コマンドライン引数の定義（clap）と、設定ファイルの適用（オプションのデフォルト値、フラグ、`map-syntax`）。ほかのモジュールは生のフィールドではなく、関連するオプションをまとめるメソッド（`numbering()`、`visibility()`、`limits()` など）で引数を読む |
+| `src/main.rs` | エントリポイント。入力を表示しないコマンド（`--list-themes` など）の実行、引数と設定からの Printer と行の状態の組み立て、ページャか標準出力かの選択、エラー処理と終了コード。途中で見つかった問題の扱いもここで決める（`--map-syntax` の未知の言語はエラー、設定ファイルの未知の言語は警告、未知のテーマや壊れたテーマは警告してデフォルトに戻す、`src/print.rs` から届いた入力の問題は警告）。stderr に書くモジュールはここだけで、ほかのモジュールが見つけた警告は値として届く（`report` コールバックに渡される `diag::Warning`、`ThemeFallback`、`Themes::names` が返す壊れたテーマ）。環境変数（`PAGER`、`LESS`、色深度）を読むのはここだけ。設定・キャッシュディレクトリもここで 1 回だけ求め（`config::Dirs::from_env`）、設定ファイルと `src/assets.rs` に渡す |
+| `src/assets.rs` | デフォルトのテーマ、同梱の構文、設定ディレクトリのカスタム構文・テーマの読み込みと同梱分とのマージ、構文キャッシュ（`--build-cache`/`--clear-cache`）。ディレクトリは引数で受け取り、環境変数は読まない。警告は書かない。読めないファイルは `diag::Warning` として `report` コールバックに渡し、使えないテーマは `Themes::get`（`ThemeFallback`）と `Themes::names` が返す |
+| `src/cli.rs` | コマンドライン引数の定義（clap）と、設定ファイルの適用（オプションのデフォルト値、フラグ、`map-syntax`）。ほかのモジュールは生のフィールドではなく、関連するオプションをまとめるメソッド（`numbering()`、`visibility()`、`limits()` など）で引数を読む。設定ファイルの不正な項目は無視し、stderr ではなく `report` コールバックに渡す |
 | `src/color.rs` | 端末の色深度の判定、256 色へのフォールバック、色・太字・リセットのエスケープシーケンス |
-| `src/config.rs` | 設定ファイルの読み込み（`HL_CONFIG` か設定ディレクトリ）と、設定・キャッシュディレクトリ（`Dirs`。`XDG_CONFIG_HOME`/`XDG_CACHE_HOME`、Windows では `APPDATA`/`LOCALAPPDATA`、`HOME` から求める） |
+| `src/config.rs` | 設定ファイルの読み込み（`HL_CONFIG` か設定ディレクトリ）と、設定・キャッシュディレクトリ（`Dirs`。`XDG_CONFIG_HOME`/`XDG_CACHE_HOME`、Windows では `APPDATA`/`LOCALAPPDATA`、`HOME` から求める）。読めない設定ファイルは stderr ではなく `report` コールバックに渡す |
 | `src/console.rs` | Windows のコンソールでエスケープシーケンスの処理を有効にする（Windows Terminal 以外の cmd.exe や PowerShell でも色が出るようにする） |
-| `src/diag.rs` | 標準エラー出力への警告・エラーメッセージ。標準エラー出力にはすべてここを通して書くので、`hl: ` の書式は 1 か所で決まる。エラーは原因まで含めて表示する（`パス: 理由`） |
+| `src/diag.rs` | 標準エラー出力への警告・エラーメッセージ。標準エラー出力にはすべてここを通して書くので、`hl: ` の書式は 1 か所で決まる。エラーは原因まで含めて表示する（`パス: 理由`）。`Warning` は、ほかのモジュールが警告を `src/main.rs` に渡すための型。`note` と `warn` を呼ぶのは `src/main.rs` だけ |
 | `src/encoding.rs` | UTF-8/UTF-16 の BOM 判定と UTF-16 のデコード |
 | `src/escape.rs` | 入力からエスケープシーケンス（CSI、OSC などの文字列、UTF-8 で表した C1 制御文字）と、端末を操作する C0 制御文字（BEL、BS、SO など）を取り除くリーダー。読み込みの境目で分かれたシーケンスも取り除く |
 | `src/highlight.rs` | 言語判定、`--map-syntax` の対応付け、サイズの上限、ハイライト出力（syntect。専用のスレッドで、時間の上限付き）。言語は `Syntax` で表す（構文と、その構文セットの `Arc` の組）。警告は出さず、ハイライトをあきらめた理由は呼び出し側に渡す |
@@ -74,7 +74,7 @@ flowchart LR
     lines --> color
 ```
 
-循環はありません。`color`、`diag`、`encoding`、`escape`、`console`、`stdout` は `hl` の他のモジュールに依存しません。`highlight` と `lines` は `diag` に依存せず、stderr には何も書きません。
+循環はありません。`color`、`diag`、`encoding`、`escape`、`console`、`stdout` は `hl` の他のモジュールに依存しません。`highlight` と `lines` は `diag` に依存しません。stderr に書くのは `main` だけで、ほかのモジュールが `diag` から使うのは `Warning` と、メッセージを整える関数（`describe`、`escape_controls`、`display_safe`）だけです。
 
 ## 入力の出力
 
@@ -120,7 +120,7 @@ sequenceDiagram
 
 ## 問題の扱い、メッセージ、終了ステータス
 
-stderr への出力はすべて `src/diag.rs` を通します。`hl: ` の接頭辞と制御文字のエスケープ（`diag::escape_controls`、`diag::display_safe`、それにパスとメッセージの両方をエスケープする `diag::warn`。メッセージには設定ファイルのキーや値が入ることがあるため）を 1 か所で行い、stderr への書き込みの失敗は無視します。出力を担うモジュールは、自分ではメッセージを書きません。何が起きたかを返し、それをどう扱うかは `src/main.rs` が決めます。
+stderr への出力はすべて `src/diag.rs` を通します。`hl: ` の接頭辞と制御文字のエスケープ（`diag::escape_controls`、`diag::display_safe`、それにパスとメッセージの両方をエスケープする `diag::warn`。メッセージには設定ファイルのキーや値が入ることがあるため）を 1 か所で行い、stderr への書き込みの失敗は無視します。`diag::note` と `diag::warn` を呼ぶのは `src/main.rs` だけです。ほかのモジュールは自分ではメッセージを書かず、何が起きたかを返すかコールバックに渡し、それをどう扱うかは `src/main.rs` が決めます。`print_all` は `print::Problem` を `report` コールバックに渡します。`cli::parse_with`、`Config::load`、`assets::syntaxes`、`assets::build_cache`、`Themes::load`、`main::resolve_mappings` は `diag::Warning`（パスとメッセージ、またはパスのない注意書き）を `report` コールバックに渡し、`main::show_warning` がそれを表示します。こうするとメッセージの順序はそのままで、単体テストでメッセージの内容を確かめられます。
 
 ```mermaid
 flowchart TD
@@ -138,8 +138,13 @@ flowchart TD
     note --> one
     usage["不正なコマンドライン<br/>または HL_* 変数"] --> clap["clap のエラー"]
     clap --> two["終了ステータス 2"]
-    config["設定ファイルの不正な項目、<br/>見つからないテーマ"] --> fallback["警告して代わりの値を使う"]
-    fallback --> zero2["終了ステータス 0"]
+    found["設定ファイルの不正な項目、<br/>読めないカスタム構文・テーマ"] --> warning["cli, config, assets: diag::Warning<br/>（report コールバックへ）"]
+    warning --> show["main: show_warning"]
+    show --> warn
+    show --> zero2["終了ステータス 0"]
+    theme["見つからないテーマ、<br/>壊れたテーマ"] --> fallback["assets: ThemeFallback"]
+    fallback --> default["main: 警告して<br/>デフォルトのテーマを使う"]
+    default --> zero2
 ```
 
 `print::TrackedWriter` は書き込みに失敗したかどうかを覚えておき、`print_all` の中で起きたエラーが書き込みのエラーか入力の読み込みのエラーかを区別できるようにします。書き込みのエラーのあとは残りの入力を読んでも意味がありませんが、読み込みのエラーのあとは次の入力を出力します。
@@ -148,7 +153,7 @@ flowchart TD
 
 - **環境変数を読むのは起動時だけ。** `config::Dirs::from_env`、`config::Config::load`（`HL_CONFIG`）、`cli` の `HL_*` 変数（clap 経由）、`color::detect_from_env`、`main.rs` の `PAGER` と `LESS` は、どれも出力を始める前に `main.rs` から呼ばれます。それ以外のコードは値を引数で受け取るので、テストでは好きな環境を与えられ、開発者自身の環境がテストに影響しません（`cli::parse_without_env`、`Dirs::from_getenv`）。
 - **色を付けない出力は `cat` の出力と同じ。** 色を付けず、エスケープシーケンスも残すときは、バイト列をそのままコピーします。不正な UTF-8 も含めて、置き換えるバイトはありません（入力を `String::from_utf8_lossy` に通すのは、先頭行から構文を判定するときだけです）。`alias cat=hl` を安全に使えるのはこのためです。
-- **モジュールは問題を出力せず、返す。** `highlight` と `print` は理由をコールバックに渡すか `PrintOutcome` で返し、警告にするかエラーにするかは `main.rs` が決めます。たとえば見つからない言語は、`--map-syntax` ならエラー、設定ファイルなら警告です（`highlight::Origin`）。
+- **モジュールは問題を出力せず、返す。** `highlight` と `print` は理由をコールバックに渡すか `PrintOutcome` で返します。`cli`、`config`、`assets` は `diag::Warning` をコールバックに渡すか、テーマを使えない理由を返します。警告にするかエラーにするかは `main.rs` が決め、stderr に書くのも `main.rs` だけです。たとえば見つからない言語は、`--map-syntax` ならエラー、設定ファイルなら警告です（`highlight::Origin`）。
 - **引数はメソッドを通して読む。** `cli::Args` の生のフィールドは読まず、`numbering()`、`visibility()`、`limits()`、`use_color()`、`strip_escapes()` など、関連するオプションをまとめたメソッドを使います。「`-b` は `-n` より優先」「`-v` を指定すると色を付けない」といった決まりを 1 か所に書くためです。
 - **必要なものだけ読み込む。** 構文を読み込むのは、色を付けるときか言語を指定したときだけ（`Args::needs_syntaxes`）、テーマはハイライトするときだけです。パイプへの出力など、色を付けず言語も指定しない実行では、どちらも読み込みません。
 - **同梱の構文はビルド時に修正する。** `build.rs` が two-face の JavaScript 構文と Scala 構文を修正し、`assets::bundled_syntaxes` が埋め込む構文のセットを書き出します。two-face の更新で修正が当たらなくなったら、`build.rs` は構文の名前を出してビルドを失敗させます。無限ループする構文に気づかないまま出荷しないためです（[DEV_ja.md](DEV_ja.md#依存関係) を参照）。
