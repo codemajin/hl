@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-07
+
 ### Added
 
 - Windows (x86_64) support: CI runs the tests on Windows, and each release has a zip for `x86_64-pc-windows-msvc`. The README describes installing it with PowerShell.
@@ -91,6 +93,7 @@ First release.
 - Custom syntaxes and themes from `~/.config/hl`, with `--build-cache` and `--clear-cache`.
 - Prebuilt binaries for Linux and macOS (x86_64 and aarch64) on GitHub Releases.
 
-[Unreleased]: https://github.com/codemajin/hl/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/codemajin/hl/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/codemajin/hl/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/codemajin/hl/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/codemajin/hl/releases/tag/v0.1.0

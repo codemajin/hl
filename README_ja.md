@@ -34,12 +34,13 @@
 Linux 版は静的リンクなので、ディストリビューションを問わず動きます。ダウンロードして検証し、`~/.local/bin` にインストールする例です。
 
 ```sh
-VERSION=v0.2.0                      # インストールするリリース
+VERSION=v0.3.0                      # インストールするリリース
 TARGET=x86_64-unknown-linux-musl    # 上の表から自分のプラットフォームを選ぶ
 NAME=hl-$VERSION-$TARGET
 curl -fLO "https://github.com/codemajin/hl/releases/download/$VERSION/$NAME.tar.gz"
 curl -fLO "https://github.com/codemajin/hl/releases/download/$VERSION/$NAME.tar.gz.sha256"
 shasum -a 256 -c "$NAME.tar.gz.sha256"
+gh attestation verify "$NAME.tar.gz" --repo codemajin/hl --signer-workflow codemajin/hl/.github/workflows/release.yml
 tar xzf "$NAME.tar.gz"
 install -d ~/.local/bin
 install "$NAME/hl" ~/.local/bin/hl
@@ -47,13 +48,7 @@ install "$NAME/hl" ~/.local/bin/hl
 
 `~/.local/bin` に PATH が通っていることを確認してください。更新するときは、新しいバージョンで同じコマンドを実行します。
 
-`.sha256` で分かるのは、ダウンロードが壊れていないかどうかまでです。改ざんは見つけられません。チェックサムはアーカイブと同じ場所に置いてあるので、片方を差し替えられる人はもう片方も差し替えられるからです。アーカイブがこのリポジトリのリリース用ワークフローでビルドされたことを確かめるには、展開する前に、[GitHub CLI](https://cli.github.com/)（2.49 以降）でビルドの来歴の構成証明（attestation）を検証します。
-
-```sh
-gh attestation verify "$NAME.tar.gz" --repo codemajin/hl --signer-workflow codemajin/hl/.github/workflows/release.yml
-```
-
-アーカイブがこのワークフローで署名されていなければ失敗します。構成証明は v0.2.0 の次のリリースから付いています。v0.2.0 以前にはチェックサムしかありません。
+`.sha256` で分かるのは、ダウンロードが壊れていないかどうかまでです。改ざんは見つけられません。チェックサムはアーカイブと同じ場所に置いてあるので、片方を差し替えられる人はもう片方も差し替えられるからです。`gh attestation verify`（[GitHub CLI](https://cli.github.com/) 2.49 以降）は、アーカイブに付いているビルドの来歴の構成証明（attestation）を検証します。このリポジトリのリリース用ワークフローでビルドされたものでなければ失敗します。構成証明は v0.3.0 から付いています。v0.2.0 以前にはチェックサムしかないので、その行は飛ばしてください。
 
 macOS では、Web ブラウザでダウンロードしたファイルに隔離属性が付き、Gatekeeper に実行を止められます。そのときは `xattr -d com.apple.quarantine ~/.local/bin/hl` で属性を外してください。`curl` でダウンロードした場合は付きません。
 
@@ -63,10 +58,10 @@ macOS では、Web ブラウザでダウンロードしたファイルに隔離�
 rm ~/.local/bin/hl
 ```
 
-Windows 版は tar.gz ではなく zip（`hl.exe` 入り）で、v0.2.0 の次のリリースから用意しています。PowerShell でダウンロードして検証し（チェックサムと、上と同じく GitHub CLI で構成証明を確かめます）、`%LOCALAPPDATA%\Programs\hl` にインストールする例です。
+Windows 版は tar.gz ではなく zip（`hl.exe` 入り）で、v0.3.0 から用意しています。PowerShell でダウンロードして検証し（チェックサムと、上と同じく GitHub CLI で構成証明を確かめます）、`%LOCALAPPDATA%\Programs\hl` にインストールする例です。
 
 ```powershell
-$Version = "vX.Y.Z"                 # インストールするリリース
+$Version = "v0.3.0"                 # インストールするリリース
 $Name = "hl-$Version-x86_64-pc-windows-msvc"
 $Base = "https://github.com/codemajin/hl/releases/download/$Version"
 Invoke-WebRequest "$Base/$Name.zip" -OutFile "$Name.zip"
