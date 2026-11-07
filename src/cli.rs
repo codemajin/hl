@@ -19,7 +19,7 @@ use crate::{
     color::Depth,
     config::Config,
     diag::{Warning, escape_controls},
-    highlight::{Limits, Origin, SyntaxMapping},
+    highlight::{Limits, SyntaxMapping},
     lines::{LineRange, Numbering, Visibility},
 };
 
@@ -151,11 +151,11 @@ pub struct Args {
     /// pattern containing '/' matches the full path. Can be repeated; the
     /// last matching mapping wins.
     #[arg(long, value_name = "PATTERN:LANG", value_parser = parse_cli_mapping)]
-    map_syntax: Vec<SyntaxMapping>,
+    map_syntax: Vec<UserMapping>,
 
     /// Mappings from the config file, checked before those of --map-syntax.
     #[arg(skip)]
-    config_mappings: Vec<SyntaxMapping>,
+    config_mappings: Vec<UserMapping>,
 
     /// Color theme.
     #[arg(long, env = "HL_THEME", default_value = DEFAULT_THEME)]
@@ -306,7 +306,7 @@ fn classify(key: &str) -> Option<Key> {
 struct ConfigExtras {
     /// Flags set to `true`.
     flags: Vec<ConfigFlag>,
-    mappings: Vec<SyntaxMapping>,
+    mappings: Vec<UserMapping>,
 }
 
 /// Parses `argv` (the program name first), with `config` supplying the
@@ -472,9 +472,49 @@ fn set_default(
     cmd.mut_arg(arg_id(key), |arg| arg.default_value(value.to_owned()))
 }
 
+/// Where a syntax mapping comes from, which decides whether an unknown
+/// language in it is an error or a warning.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Origin {
+    /// `--map-syntax`.
+    CommandLine,
+    /// The `map-syntax` key of the config file at this path.
+    ConfigFile(PathBuf),
+}
+
+/// A `PATTERN:LANG` pair from `--map-syntax` or the config file: the
+/// pattern for highlighting, and what the messages about it need.
+#[derive(Debug, Clone)]
+pub struct UserMapping {
+    pub matcher: SyntaxMapping,
+    /// The language as written; it is only looked up once the syntaxes are
+    /// loaded.
+    pub language: String,
+    /// The mapping as written, for messages.
+    pub spec: String,
+    pub origin: Origin,
+}
+
+impl UserMapping {
+    /// Parses `PATTERN:LANG`, splitting at the last colon, so that the
+    /// pattern can contain colons.
+    pub fn parse(s: &str, origin: Origin) -> Result<Self, String> {
+        let (pattern, language) = s
+            .rsplit_once(':')
+            .filter(|(p, l)| !p.is_empty() && !l.is_empty())
+            .ok_or_else(|| format!("'{s}' is not PATTERN:LANG (e.g. '*.conf:INI')"))?;
+        Ok(Self {
+            matcher: SyntaxMapping::new(pattern)?,
+            language: language.to_string(),
+            spec: s.to_string(),
+            origin,
+        })
+    }
+}
+
 /// A `--map-syntax` value.
-fn parse_cli_mapping(s: &str) -> Result<SyntaxMapping, String> {
-    SyntaxMapping::parse(s, Origin::CommandLine)
+fn parse_cli_mapping(s: &str) -> Result<UserMapping, String> {
+    UserMapping::parse(s, Origin::CommandLine)
 }
 
 /// A `map-syntax` entry of the config file, or `None` with a warning passed
@@ -483,8 +523,8 @@ fn parse_mapping(
     config: &Config,
     item: &str,
     warn: &mut impl FnMut(String),
-) -> Option<SyntaxMapping> {
-    match SyntaxMapping::parse(item, Origin::ConfigFile(config.path.clone())) {
+) -> Option<UserMapping> {
+    match UserMapping::parse(item, Origin::ConfigFile(config.path.clone())) {
         Ok(mapping) => Some(mapping),
         Err(e) => {
             warn(format!(
@@ -551,7 +591,7 @@ impl Args {
 
     /// The syntax mappings from the config file, then the command line, so
     /// that the last matching one wins.
-    pub fn mappings(&self) -> impl Iterator<Item = &SyntaxMapping> {
+    pub fn mappings(&self) -> impl Iterator<Item = &UserMapping> {
         self.config_mappings.iter().chain(&self.map_syntax)
     }
 
@@ -1126,7 +1166,7 @@ mod tests {
         );
         let mappings: Vec<_> = args
             .mappings()
-            .map(|m| (m.spec.as_str(), m.origin().clone()))
+            .map(|m| (m.spec.as_str(), m.origin.clone()))
             .collect();
         assert_eq!(
             mappings,
@@ -1135,6 +1175,28 @@ mod tests {
                 ("*.conf:TOML", Origin::CommandLine),
             ]
         );
+    }
+
+    #[test]
+    fn parses_a_mapping_at_the_last_colon() {
+        let mapping = UserMapping::parse("*.conf:INI", Origin::CommandLine).unwrap();
+        assert_eq!(mapping.spec, "*.conf:INI");
+        assert_eq!(mapping.language, "INI");
+        assert_eq!(mapping.origin, Origin::CommandLine);
+        let origin = Origin::ConfigFile(PathBuf::from("config.toml"));
+        let mapping = UserMapping::parse("a:b:INI", origin.clone()).unwrap();
+        assert_eq!(mapping.spec, "a:b:INI");
+        assert_eq!(mapping.language, "INI");
+        assert_eq!(mapping.origin, origin);
+    }
+
+    #[test]
+    fn rejects_malformed_mappings() {
+        for spec in ["*.conf", ":INI", "*.conf:"] {
+            let err = UserMapping::parse(spec, Origin::CommandLine).unwrap_err();
+            assert!(err.contains("is not PATTERN:LANG"), "{spec}: {err}");
+        }
+        assert!(UserMapping::parse("[:INI", Origin::CommandLine).is_err());
     }
 
     #[test]

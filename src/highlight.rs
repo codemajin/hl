@@ -4,7 +4,7 @@ use std::{
     fmt,
     io::{self, BufRead, Read, Write},
     ops::Deref,
-    path::{self, Path, PathBuf},
+    path::{self, Path},
     ptr,
     sync::{
         Arc,
@@ -91,37 +91,21 @@ impl Limits {
     }
 }
 
-/// Where a syntax mapping comes from, which decides whether an unknown
-/// language in it is an error or a warning.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Origin {
-    /// `--map-syntax`.
-    CommandLine,
-    /// The `map-syntax` key of the config file at this path.
-    ConfigFile(PathBuf),
-}
-
-/// A `PATTERN:LANG` pair from `--map-syntax` or the config file.
+/// The glob pattern of a user mapping, which tells the inputs it applies to.
+/// Its language is resolved by the caller, and paired with it in
+/// `Highlighter::new`.
 #[derive(Debug, Clone)]
 pub struct SyntaxMapping {
     glob: GlobMatcher,
     /// Whether the pattern contains a path separator (`/`, or also `\` on
     /// Windows) and so applies to the whole path rather than the file name.
     by_path: bool,
-    /// The mapping as written, for messages.
-    pub spec: String,
-    pub language: String,
-    origin: Origin,
 }
 
 impl SyntaxMapping {
-    /// Parses `PATTERN:LANG`, splitting at the last colon. The language is
-    /// only checked once the syntaxes are loaded.
-    pub fn parse(s: &str, origin: Origin) -> Result<Self, String> {
-        let (pattern, language) = s
-            .rsplit_once(':')
-            .filter(|(p, l)| !p.is_empty() && !l.is_empty())
-            .ok_or_else(|| format!("'{s}' is not PATTERN:LANG (e.g. '*.conf:INI')"))?;
+    /// Compiles the glob `pattern`, or returns why it is invalid. `*` does
+    /// not match a separator; `**` does.
+    pub fn new(pattern: &str) -> Result<Self, String> {
         let glob = GlobBuilder::new(pattern)
             .literal_separator(true)
             .build()
@@ -130,19 +114,15 @@ impl SyntaxMapping {
         Ok(Self {
             glob,
             by_path: pattern.contains(path::is_separator),
-            spec: s.to_string(),
-            language: language.to_string(),
-            origin,
         })
     }
 
-    pub fn origin(&self) -> &Origin {
-        &self.origin
-    }
-
-    fn matches(&self, path: &Path) -> bool {
+    /// Whether the input at `path` matches: its file name, or `absolute`,
+    /// the absolute form of `path`, for a pattern with a separator. Without
+    /// `absolute` (it could not be found) only a file name can match.
+    fn matches(&self, path: &Path, absolute: Option<&Path>) -> bool {
         if self.by_path {
-            path::absolute(path).is_ok_and(|p| self.glob.is_match(p))
+            absolute.is_some_and(|p| self.glob.is_match(p))
         } else {
             path.file_name().is_some_and(|n| self.glob.is_match(n))
         }
@@ -230,7 +210,14 @@ impl Highlighter {
     /// (extension, then full name) and finally the first line (shebang,
     /// modelines). Falls back to plain text.
     pub fn detect(&self, path: Option<&Path>, first_line: &str) -> Syntax {
-        let mapped = path.and_then(|p| self.mappings.iter().rev().find(|(m, _)| m.matches(p)));
+        let mapped = path.and_then(|p| {
+            let absolute = path::absolute(p).ok();
+            let absolute = absolute.as_deref();
+            self.mappings
+                .iter()
+                .rev()
+                .find(|(m, _)| m.matches(p, absolute))
+        });
         if let Some((_, syntax)) = mapped {
             return syntax.clone();
         }
@@ -400,9 +387,9 @@ mod tests {
         let mappings = mappings
             .iter()
             .map(|m| {
-                let mapping = SyntaxMapping::parse(m, Origin::CommandLine).unwrap();
-                let syntax = find_language(syntaxes, &mapping.language).unwrap();
-                (mapping, syntax)
+                let (pattern, language) = m.rsplit_once(':').unwrap();
+                let mapping = SyntaxMapping::new(pattern).unwrap();
+                (mapping, find_language(syntaxes, language).unwrap())
             })
             .collect();
         Highlighter::new(
@@ -538,25 +525,25 @@ mod tests {
         assert_eq!(name(""), None);
     }
 
+    /// `matches` reads nothing but the paths it is given: the current
+    /// directory does not matter.
     #[test]
-    fn parses_a_mapping_at_the_last_colon() {
-        let mapping = SyntaxMapping::parse("*.conf:INI", Origin::CommandLine).unwrap();
-        assert_eq!(mapping.spec, "*.conf:INI");
-        assert_eq!(mapping.language, "INI");
-        assert_eq!(mapping.origin(), &Origin::CommandLine);
-        let origin = Origin::ConfigFile(PathBuf::from("config.toml"));
-        let mapping = SyntaxMapping::parse("a:b:INI", origin.clone()).unwrap();
-        assert_eq!(mapping.language, "INI");
-        assert_eq!(mapping.origin(), &origin);
+    fn matches_only_the_given_paths() {
+        let path = Path::new("conf/app.cfg");
+        let absolute = Some(Path::new("proj/conf/app.cfg"));
+        let by_path = SyntaxMapping::new("proj/conf/*.cfg").unwrap();
+        assert!(by_path.matches(path, absolute));
+        assert!(!by_path.matches(path, None));
+        assert!(!by_path.matches(path, Some(Path::new("other/conf/app.cfg"))));
+        let by_name = SyntaxMapping::new("*.cfg").unwrap();
+        assert!(by_name.matches(path, None));
+        assert!(by_name.matches(path, absolute));
+        assert!(!by_name.matches(Path::new("conf/app.ini"), None));
     }
 
     #[test]
-    fn rejects_malformed_mappings() {
-        for spec in ["*.conf", ":INI", "*.conf:"] {
-            let err = SyntaxMapping::parse(spec, Origin::CommandLine).unwrap_err();
-            assert!(err.contains("is not PATTERN:LANG"), "{spec}: {err}");
-        }
-        assert!(SyntaxMapping::parse("[:INI", Origin::CommandLine).is_err());
+    fn rejects_an_invalid_glob() {
+        assert!(SyntaxMapping::new("[").is_err());
     }
 
     #[test]

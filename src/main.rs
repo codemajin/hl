@@ -25,10 +25,10 @@ use std::{
 
 use anyhow::{Result, anyhow, bail};
 use assets::{CacheReport, DEFAULT_THEME, ThemeFallback};
-use cli::{Args, PagingWhen};
+use cli::{Args, Origin, PagingWhen, UserMapping};
 use config::{Config, Dirs};
 use diag::{Warning, describe, describe_error, escape_controls};
-use highlight::{GiveUp, Highlighter, Limits, Origin, Syntax, SyntaxMapping, find_language};
+use highlight::{GiveUp, Highlighter, Limits, Syntax, SyntaxMapping, find_language};
 use lines::{LineHighlight, LineState};
 use pager::{Pager, SpawnError};
 use print::{Headers, Input, PrintOutcome, Printer, Problem, TrackedWriter, is_stdin, print_all};
@@ -141,12 +141,13 @@ fn build_printer(
     })
 }
 
-/// Looks up the language of each syntax mapping. An unknown language is an
-/// error on the command line, but only a warning in the config file, passed
-/// to `report`, which never stops `hl` from printing.
+/// Looks up the language of each syntax mapping, and pairs it with the
+/// pattern for the highlighter. An unknown language is an error on the
+/// command line, but only a warning in the config file, passed to `report`,
+/// which never stops `hl` from printing.
 fn resolve_mappings<'m>(
     syntaxes: &Arc<SyntaxSet>,
-    mappings: impl IntoIterator<Item = &'m SyntaxMapping>,
+    mappings: impl IntoIterator<Item = &'m UserMapping>,
     mut report: impl FnMut(Warning),
 ) -> Result<Vec<(SyntaxMapping, Syntax)>> {
     let mut resolved = Vec::new();
@@ -156,7 +157,7 @@ fn resolve_mappings<'m>(
                 "unknown language '{}' in map-syntax '{}'",
                 mapping.language, mapping.spec
             );
-            match mapping.origin() {
+            match &mapping.origin {
                 Origin::ConfigFile(path) => report(Warning::File {
                     path: path.clone(),
                     message: format!("{msg}, ignoring it"),
@@ -165,7 +166,7 @@ fn resolve_mappings<'m>(
             }
             continue;
         };
-        resolved.push((mapping.clone(), syntax));
+        resolved.push((mapping.matcher.clone(), syntax));
     }
     Ok(resolved)
 }
@@ -465,13 +466,12 @@ mod tests {
     #[test]
     fn unknown_language_in_the_config_is_skipped() {
         let origin = Origin::ConfigFile(PathBuf::from("config.toml"));
-        let unknown = SyntaxMapping::parse("*.x:no-such-language", origin).unwrap();
-        let known = SyntaxMapping::parse("*.y:Rust", Origin::CommandLine).unwrap();
+        let unknown = UserMapping::parse("*.x:no-such-language", origin).unwrap();
+        let known = UserMapping::parse("*.y:Rust", Origin::CommandLine).unwrap();
         let mut warnings = Vec::new();
         let resolved =
             resolve_mappings(&syntaxes(), [&unknown, &known], |w| warnings.push(w)).unwrap();
         assert_eq!(resolved.len(), 1);
-        assert_eq!(resolved[0].0.spec, "*.y:Rust");
         assert_eq!(resolved[0].1.name, "Rust");
         assert_eq!(
             warnings,
@@ -487,7 +487,7 @@ mod tests {
     #[test]
     fn known_languages_in_mappings_warn_nothing() {
         let origin = Origin::ConfigFile(PathBuf::from("config.toml"));
-        let mapping = SyntaxMapping::parse("*.y:Rust", origin).unwrap();
+        let mapping = UserMapping::parse("*.y:Rust", origin).unwrap();
         let mut warnings = Vec::new();
         let resolved = resolve_mappings(&syntaxes(), [&mapping], |w| warnings.push(w)).unwrap();
         assert_eq!(resolved.len(), 1);
