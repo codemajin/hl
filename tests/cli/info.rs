@@ -12,6 +12,16 @@ fn lists_themes() {
         .stdout(predicate::str::contains("base16-ocean.dark"));
 }
 
+/// The commands that print something and exit are taken one at a time.
+#[test]
+fn rejects_two_info_commands() {
+    hl().args(["--list-themes", "--list-languages"])
+        .assert()
+        .code(2)
+        .stdout("")
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
 #[test]
 fn prints_completions() {
     for shell in ["bash", "zsh", "fish"] {

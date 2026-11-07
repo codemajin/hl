@@ -412,6 +412,7 @@ contexts:
     fn dirs_in(root: &Path) -> Dirs {
         Dirs {
             config: Some(root.join("config")),
+            config_file: None,
             cache: Some(root.join("cache")),
         }
     }
@@ -580,6 +581,7 @@ contexts:
     fn build_cache_needs_a_cache_directory() {
         let dirs = Dirs {
             config: None,
+            config_file: None,
             cache: None,
         };
         let err = build_cache(&dirs, |w| panic!("{w:?}")).err().unwrap();

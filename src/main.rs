@@ -37,7 +37,13 @@ use syntect::{highlighting::Theme, parsing::SyntaxSet};
 fn main() -> ExitCode {
     let dirs = Dirs::from_env();
     let config = Config::load(&dirs, show_warning);
-    let args = cli::parse_with(config.as_ref(), show_warning);
+    let args = cli::parse_with(
+        config.as_ref(),
+        env::args_os(),
+        |name| env::var_os(name),
+        show_warning,
+    )
+    .unwrap_or_else(|e| e.exit());
     match run(&args, &dirs, &stdout::check()) {
         Ok(code) => code,
         // A closed pipe (`hl ... | head`) is a normal way to stop reading.
@@ -71,7 +77,8 @@ fn run(args: &Args, dirs: &Dirs, stdout: &io::Result<()>) -> Result<ExitCode> {
 }
 
 /// Runs the command that prints something other than the inputs
-/// (`--completions`, `--list-themes`, ...), if one is given.
+/// (`--completions`, `--list-themes`, ...), if one is given. The parser
+/// takes at most one of them.
 fn run_info_command(args: &Args, dirs: &Dirs, stdout: &io::Result<()>) -> Result<Option<ExitCode>> {
     let code = if let Some(shell) = args.completions {
         print_and_exit(stdout, |out| cli::print_completions(shell, out))?
@@ -421,8 +428,8 @@ mod tests {
     /// `argv` with a fixed color depth, so that the terminal of the
     /// developer does not matter.
     fn args(argv: &[&str]) -> Args {
-        let argv: Vec<&str> = ["--color-depth=256"].iter().chain(argv).copied().collect();
-        cli::parse_without_env(&argv)
+        let argv = ["hl", "--color-depth=256"].iter().chain(argv);
+        cli::parse_with(None, argv, |_| None, |w| panic!("{w:?}")).unwrap()
     }
 
     fn printer(argv: &[&str], color: bool) -> Result<Printer> {

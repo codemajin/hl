@@ -39,6 +39,8 @@ This document describes what `hl` does: its options, environment variables, conf
 | `--completions <SHELL>` | Print the completion script for `bash`, `zsh`, `fish`, `elvish` or `powershell` (see [Shell completions and man page](../README.md#shell-completions-and-man-page)) |
 | `--man` | Print the man page in roff format |
 
+`--list-themes`, `--list-languages`, `--build-cache`, `--clear-cache`, `--completions` and `--man` print something other than the inputs and exit, so only one of them can be given at a time. Two or more are a usage error (exit status 2), such as `error: the argument '--list-themes' cannot be used with '--list-languages'`, and nothing is printed to stdout.
+
 With no file, or when the file is `-`, `hl` reads from standard input.
 
 How `--paging` and `-p` choose where the output goes:
@@ -72,7 +74,7 @@ With `--paging=never`, the default, the output always goes to stdout.
 | `APPDATA`, `LOCALAPPDATA` | Windows only: the config directory is `%APPDATA%\hl` and the cache directory `%LOCALAPPDATA%\hl` when `XDG_CONFIG_HOME` / `XDG_CACHE_HOME` is not set (see [Configuration file](#configuration-file)) |
 | `LESS` | Options for `less`. When set, hl adds no flags to a bare `less` in `$PAGER` |
 
-An invalid value in `HL_MAX_SIZE`, `HL_MAX_LINE_LENGTH` or `HL_COLOR_DEPTH` is an error, as on the command line: `hl` prints a message naming the variable, such as `error: invalid value 'abc' for HL_MAX_SIZE: ...`, and exits with status 2 without printing anything. This differs from the configuration file, whose invalid values get a warning and are skipped. An option given on the command line replaces the variable, so its value is then not checked. An unknown theme in `HL_THEME` only gets a warning, and the default theme is used, as with `--theme`.
+An invalid value in `HL_MAX_SIZE`, `HL_MAX_LINE_LENGTH` or `HL_COLOR_DEPTH` is an error, as on the command line: `hl` prints a message naming the variable, such as `error: invalid value 'abc' for HL_MAX_SIZE: ...`, and exits with status 2 without printing anything. This differs from the configuration file, whose invalid values get a warning and are skipped. An option given on the command line replaces the variable, so its value is then not checked. When more than one variable is invalid, only the first in the order of the table is reported (`HL_MAX_SIZE` before `HL_COLOR_DEPTH`). An unknown theme in `HL_THEME` only gets a warning, and the default theme is used, as with `--theme`.
 
 ## Configuration file
 
@@ -186,4 +188,4 @@ In both kinds of output without highlighting, the escape sequences are removed w
 - If the output is closed early, as in `hl file | head`, `hl` exits successfully without an error.
 - If the output can't be written, as when stdout is closed (`hl file >&-`; on Windows, when `hl` is started without a stdout handle) or the disk is full, `hl` prints `hl: write error: <reason>` to stderr and exits with status 1, as `cat` does. This also applies to `--list-themes`, `--man` and the other commands that print something and exit.
 - If stderr can't be written, as when it is a pipe closed by the reader, the messages are dropped; the output and the exit status stay the same.
-- The exit status is 0 on success, also when `hl` warns and goes on with a fallback (an unknown theme, an invalid entry in the configuration file, a line that takes too long to highlight); 1 when something fails while running (a file that can't be opened or read, an unknown language given to `-l` or `--map-syntax`, a write error, a pager set in `$PAGER` that fails to start); and 2 when the command line, or an environment variable standing in for an option, is rejected before anything runs (an unknown option, an invalid value such as `--max-size=1.5K` or `--color=sometimes`).
+- The exit status is 0 on success, also when `hl` warns and goes on with a fallback (an unknown theme, an invalid entry in the configuration file, a line that takes too long to highlight); 1 when something fails while running (a file that can't be opened or read, an unknown language given to `-l` or `--map-syntax`, a write error, a pager set in `$PAGER` that fails to start); and 2 when the command line, or an environment variable standing in for an option, is rejected before anything runs (an unknown option, an invalid value such as `--max-size=1.5K` or `--color=sometimes`, two commands such as `--list-themes --man`).

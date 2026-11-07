@@ -16,6 +16,8 @@ pub struct Dirs {
     /// `~/.config/hl`. Unlike the config file, it does not follow
     /// `HL_CONFIG`.
     pub config: Option<PathBuf>,
+    /// The config file named by `HL_CONFIG`, unless it is unset or empty.
+    pub config_file: Option<PathBuf>,
     /// `$XDG_CACHE_HOME/hl`, else `%LOCALAPPDATA%\hl` on Windows, else
     /// `~/.cache/hl`.
     pub cache: Option<PathBuf>,
@@ -55,6 +57,9 @@ impl Dirs {
     fn from_getenv(getenv: impl Fn(&str) -> Option<OsString>, windows: bool) -> Self {
         Self {
             config: lookup(&getenv, &CONFIG, windows),
+            config_file: getenv("HL_CONFIG")
+                .filter(|p| !p.is_empty())
+                .map(PathBuf::from),
             cache: lookup(&getenv, &CACHE, windows),
         }
     }
@@ -84,13 +89,13 @@ pub struct Config {
 }
 
 impl Config {
-    /// Reads the config file from `HL_CONFIG`, else from the config
-    /// directory in `dirs`. A missing file at the default location is not
-    /// an error; any other problem goes to `report` and yields no values, so
+    /// Reads the config file named by `HL_CONFIG` (`dirs.config_file`),
+    /// else the one in the config directory in `dirs`. A missing file at the default location is
+    /// not an error; any other problem goes to `report` and yields no values, so
     /// a broken config never stops `hl` from printing.
     pub fn load(dirs: &Dirs, report: impl FnMut(Warning)) -> Option<Self> {
         Self::read(
-            path(env::var_os("HL_CONFIG"), dirs.config.as_deref())?,
+            path(dirs.config_file.as_deref(), dirs.config.as_deref())?,
             report,
         )
     }
@@ -134,12 +139,11 @@ impl Config {
     }
 }
 
-/// The config file and whether it was given explicitly: `hl_config` (the
-/// value of `HL_CONFIG`) unless it is empty, else `config.toml` in
-/// `config_dir`.
-fn path(hl_config: Option<OsString>, config_dir: Option<&Path>) -> Option<(PathBuf, bool)> {
-    if let Some(path) = hl_config.filter(|p| !p.is_empty()) {
-        return Some((path.into(), true));
+/// The config file and whether it was given explicitly: `hl_config` (from
+/// `HL_CONFIG`) if set, else `config.toml` in `config_dir`.
+fn path(hl_config: Option<&Path>, config_dir: Option<&Path>) -> Option<(PathBuf, bool)> {
+    if let Some(path) = hl_config {
+        return Some((path.to_path_buf(), true));
     }
     Some((config_dir?.join("config.toml"), false))
 }
@@ -266,28 +270,51 @@ mod tests {
     }
 
     #[test]
+    fn hl_config_names_the_file() {
+        let dirs = dirs_with(&[("HL_CONFIG", abs("/x/my.toml"))]);
+        assert_eq!(dirs.config_file, Some(p("/x/my.toml")));
+        for vars in [vec![], vec![("HL_CONFIG", String::new())]] {
+            assert_eq!(dirs_with(&vars).config_file, None, "{vars:?}");
+        }
+    }
+
+    #[test]
     fn hl_config_names_the_file_explicitly() {
         let dir = Path::new("/c/hl");
+        let file = Path::new("/x/my.toml");
         assert_eq!(
-            path(Some("/x/my.toml".into()), Some(dir)),
+            path(Some(file), Some(dir)),
             Some((PathBuf::from("/x/my.toml"), true))
         );
         assert_eq!(
-            path(Some("/x/my.toml".into()), None),
+            path(Some(file), None),
             Some((PathBuf::from("/x/my.toml"), true))
         );
     }
 
     #[test]
-    fn empty_hl_config_counts_as_unset() {
+    fn uses_the_config_dir_without_hl_config() {
         let dir = Path::new("/c/hl");
-        for hl_config in [None, Some(OsString::new())] {
-            assert_eq!(
-                path(hl_config, Some(dir)),
-                Some((PathBuf::from("/c/hl/config.toml"), false))
-            );
-        }
-        assert_eq!(path(Some(OsString::new()), None), None);
+        assert_eq!(
+            path(None, Some(dir)),
+            Some((PathBuf::from("/c/hl/config.toml"), false))
+        );
+        assert_eq!(path(None, None), None);
+    }
+
+    #[test]
+    fn load_reads_the_file_named_by_hl_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("my.toml");
+        fs::write(&file, "color = \"never\"\n").unwrap();
+        let dirs = Dirs {
+            config: Some(dir.path().join("nonexistent")),
+            config_file: Some(file.clone()),
+            cache: None,
+        };
+        let config = Config::load(&dirs, |w| panic!("{w:?}")).unwrap();
+        assert_eq!(config.path, file);
+        assert_eq!(config.entries.len(), 1);
     }
 
     #[test]

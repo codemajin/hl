@@ -1,5 +1,4 @@
 use std::{
-    env,
     error::Error as _,
     ffi::{OsStr, OsString},
     fmt::Write as _,
@@ -8,7 +7,7 @@ use std::{
 };
 
 use clap::{
-    Command, CommandFactory, FromArgMatches, Parser, ValueEnum,
+    ArgGroup, ArgMatches, Command, CommandFactory, FromArgMatches, Parser, ValueEnum,
     error::{ContextKind, ContextValue, ErrorKind},
     parser::ValueSource,
 };
@@ -66,6 +65,9 @@ pub enum ColorDepth {
 #[derive(Debug, Parser)]
 #[expect(clippy::struct_excessive_bools, reason = "clap flags")]
 #[command(name = "hl", version, about)]
+// The commands that print something other than the inputs and exit
+// (`--list-themes`, `--man`, ...) are taken one at a time.
+#[command(group(ArgGroup::new("info").multiple(false)))]
 pub struct Args {
     /// Files to print. Reads stdin when omitted or when FILE is "-".
     #[arg(value_name = "FILE")]
@@ -194,28 +196,30 @@ pub struct Args {
     strip_ansi: StripAnsi,
 
     /// List available themes and exit.
-    #[arg(long)]
+    #[arg(long, group = "info")]
     pub list_themes: bool,
 
     /// List supported languages and exit.
-    #[arg(long)]
+    #[arg(long, group = "info")]
     pub list_languages: bool,
 
     /// Cache the custom syntaxes in the config directory so that they load
     /// fast, and exit. Run it again after changing them.
-    #[arg(long, conflicts_with = "clear_cache")]
+    // The group already makes them conflict; the zsh completion, which
+    // ignores groups, still keeps this pair apart.
+    #[arg(long, group = "info", conflicts_with = "clear_cache")]
     pub build_cache: bool,
 
     /// Remove the cache made by --build-cache and exit.
-    #[arg(long)]
+    #[arg(long, group = "info")]
     pub clear_cache: bool,
 
     /// Print the completion script for SHELL and exit.
-    #[arg(long, value_enum, value_name = "SHELL")]
+    #[arg(long, value_enum, value_name = "SHELL", group = "info")]
     pub completions: Option<Shell>,
 
     /// Print the man page (roff) and exit.
-    #[arg(long)]
+    #[arg(long, group = "info")]
     pub man: bool,
 }
 
@@ -305,72 +309,70 @@ struct ConfigExtras {
     mappings: Vec<SyntaxMapping>,
 }
 
-/// Parses the command line, with `config` supplying the defaults.
+/// Parses `argv` (the program name first), with `config` supplying the
+/// defaults and `getenv` the environment variables of the options.
 ///
-/// Config values replace the built-in defaults of their options, so clap
-/// itself gives the precedence: command line, environment, config file,
-/// built-in default.
+/// The precedence is: command line, environment, config file, built-in
+/// default. clap reads the environment itself when it builds the arguments,
+/// so the variables are applied here instead: each one that the command
+/// line does not replace becomes the default of its option.
 ///
-/// An invalid value is a usage error (exit status 2). When it comes from an
-/// environment variable, the error names the variable instead of the
-/// option, which the user did not write.
+/// An invalid value is a usage error (exit status 2, by `clap::Error::exit`
+/// in main). When it comes from an environment variable, the error names
+/// the variable instead of the option, which the user did not write. When
+/// several variables are invalid, the first in the order of the options is
+/// reported.
 ///
 /// The entries of the config file that are ignored go to `report`.
-pub fn parse_with(config: Option<&Config>, mut report: impl FnMut(Warning)) -> Args {
+pub fn parse_with(
+    config: Option<&Config>,
+    argv: impl IntoIterator<Item = impl Into<OsString>>,
+    getenv: impl Fn(&str) -> Option<OsString>,
+    mut report: impl FnMut(Warning),
+) -> Result<Args, clap::Error> {
+    let argv: Vec<OsString> = argv.into_iter().map(Into::into).collect();
     let (cmd, extras) = match config {
         Some(config) => apply_config(Args::command(), config, &mut report),
         None => (Args::command(), ConfigExtras::default()),
     };
-    let mut matches = cmd
-        .clone()
-        .try_get_matches()
-        .unwrap_or_else(|e| env_error(&cmd, e).exit());
-    let mut args = Args::from_arg_matches_mut(&mut matches).unwrap_or_else(|e| e.exit());
-    args.apply_extras(extras);
-    args
-}
-
-/// Parses `argv` (without the program name) like the command line, but
-/// ignores the `HL_*` variables, so that the developer's environment can't
-/// change what the unit tests see.
-#[cfg(test)]
-pub fn parse_without_env(argv: &[&str]) -> Args {
-    let matches = without_env(Args::command())
-        .try_get_matches_from(["hl"].iter().chain(argv))
-        .unwrap();
-    Args::from_arg_matches(&matches).unwrap()
-}
-
-/// `cmd` without the environment variables of its options.
-fn without_env(cmd: Command) -> Command {
-    cmd.mut_args(|arg| arg.env(None))
-}
-
-/// The error to report for `err`, an error from parsing the command line
-/// with `cmd`. If the value of an environment variable caused it, this is an
-/// error naming the variable; otherwise it is `err` itself.
-fn env_error(cmd: &Command, err: clap::Error) -> clap::Error {
-    if !matches!(
-        err.kind(),
-        ErrorKind::ValueValidation | ErrorKind::InvalidValue
-    ) {
-        return err;
-    }
-    // The config values and the built-in defaults are valid, so if the
-    // command line parses without the environment, a variable is to blame.
-    let probe = without_env(cmd.clone());
-    let Ok(matches) = probe.clone().try_get_matches() else {
-        return err;
+    let parser = without_env(cmd.clone());
+    let matches = match parser.clone().try_get_matches_from(&argv) {
+        Ok(matches) => matches,
+        // `cmd` still has the variables, which the help shows. clap stops
+        // at `--help` before it reads them, so their values don't matter.
+        Err(e) if matches!(e.kind(), ErrorKind::DisplayHelp | ErrorKind::DisplayVersion) => {
+            return Err(cmd.try_get_matches_from(&argv).err().unwrap_or(e));
+        }
+        Err(e) => return Err(e),
     };
-    for arg in cmd.get_arguments() {
-        let (Some(name), Some(long)) = (arg.get_env(), arg.get_long()) else {
+    let parser = apply_env(parser, &matches, getenv)?;
+    let mut matches = parser.try_get_matches_from(&argv)?;
+    let mut parsed = Args::from_arg_matches_mut(&mut matches)?;
+    parsed.apply_extras(extras);
+    Ok(parsed)
+}
+
+/// `cmd` with the values that `getenv` gives the environment variables of
+/// the options as their defaults, except for the options in `matches`, the
+/// command line parsed with `cmd`. An invalid value is an error naming the
+/// variable.
+fn apply_env(
+    mut cmd: Command,
+    matches: &ArgMatches,
+    getenv: impl Fn(&str) -> Option<OsString>,
+) -> Result<Command, clap::Error> {
+    // Checks each value on its own, so that an error names its variable.
+    let probe = without_env(Args::command());
+    for arg in Args::command().get_arguments() {
+        let (Some(name), Some(long)) = (arg.get_env().and_then(OsStr::to_str), arg.get_long())
+        else {
             continue;
         };
         // A variable is used only when the command line lacks the option.
         if matches.value_source(arg.get_id().as_str()) == Some(ValueSource::CommandLine) {
             continue;
         }
-        let Some(value) = env::var_os(name) else {
+        let Some(value) = getenv(name) else {
             continue;
         };
         let mut option = OsString::from(format!("--{long}="));
@@ -380,22 +382,24 @@ fn env_error(cmd: &Command, err: clap::Error) -> clap::Error {
             .try_get_matches_from([OsString::from("hl"), option])
         {
             let message = format!("{}\n", env_message(name, &value, &e));
-            return clap::Error::raw(e.kind(), message).with_cmd(cmd);
+            return Err(clap::Error::raw(e.kind(), message).with_cmd(&cmd));
         }
+        cmd = cmd.mut_arg(arg.get_id(), |arg| arg.default_value(value));
     }
-    err
+    Ok(cmd)
+}
+
+/// `cmd` without the environment variables of its options.
+fn without_env(cmd: Command) -> Command {
+    cmd.mut_args(|arg| arg.env(None))
 }
 
 /// The message for the invalid `value` of the environment variable `name`,
 /// with the reason or the possible values from `err`, the error for the
 /// same value given to the option.
-fn env_message(name: &OsStr, value: &OsStr, err: &clap::Error) -> String {
+fn env_message(name: &str, value: &OsStr, err: &clap::Error) -> String {
     let value = value.to_string_lossy();
-    let mut message = format!(
-        "invalid value '{}' for {}",
-        escape_controls(&value),
-        name.to_string_lossy()
-    );
+    let mut message = format!("invalid value '{}' for {name}", escape_controls(&value));
     if let Some(reason) = err.source() {
         let _ = write!(message, ": {reason}");
     }
@@ -677,32 +681,48 @@ mod tests {
 
     use super::*;
 
-    /// Parses `argv`. Like `args_with`, it ignores the `HL_*` variables, so
-    /// that the developer's environment can't change the result; the
-    /// integration tests check how they are read.
-    fn args(argv: &[&str]) -> Args {
-        parse_without_env(argv)
-    }
-
-    /// Parses `argv` with `config` applied, as `parse_with` does, but
-    /// without the environment, and returns the messages of the warnings
-    /// about the config too.
-    fn parse_config(config: &Config, argv: &[&str]) -> (Args, Vec<String>) {
+    /// Parses `argv` as `parse_with` does in main, with `config` applied and
+    /// `env` as the only environment variables, so that the developer's
+    /// environment can't change the result. Returns the messages of the
+    /// warnings about the config too.
+    fn parse(
+        config: Option<&Config>,
+        env: &[(&str, &str)],
+        argv: &[&str],
+    ) -> Result<(Args, Vec<String>), clap::Error> {
         let mut warnings = Vec::new();
-        let (cmd, extras) = apply_config(Args::command(), config, &mut |w| warnings.push(w));
-        let matches = without_env(cmd)
-            .try_get_matches_from(["hl"].iter().chain(argv))
-            .unwrap();
-        let mut parsed = Args::from_arg_matches(&matches).unwrap();
-        parsed.apply_extras(extras);
+        let getenv = |name: &str| {
+            env.iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, value)| OsString::from(value))
+        };
+        let parsed = parse_with(config, ["hl"].iter().chain(argv), getenv, |w| {
+            warnings.push(w);
+        })?;
         let messages = warnings
             .into_iter()
-            .map(|w| match w {
-                Warning::File { path, message } if path == config.path => message,
-                w => panic!("not a warning about the config file: {w:?}"),
+            .map(|w| match (w, config) {
+                (Warning::File { path, message }, Some(config)) if path == config.path => message,
+                (w, _) => panic!("not a warning about the config file: {w:?}"),
             })
             .collect();
-        (parsed, messages)
+        Ok((parsed, messages))
+    }
+
+    /// Parses `argv` without a config or the environment.
+    fn args(argv: &[&str]) -> Args {
+        args_in(&[], argv)
+    }
+
+    /// Parses `argv` with only the environment variables `env`.
+    fn args_in(env: &[(&str, &str)], argv: &[&str]) -> Args {
+        parse(None, env, argv).unwrap().0
+    }
+
+    /// Parses `argv` with `config` applied, without the environment, and
+    /// returns the messages of the warnings about the config too.
+    fn parse_config(config: &Config, argv: &[&str]) -> (Args, Vec<String>) {
+        parse(Some(config), &[], argv).unwrap()
     }
 
     /// `parse_config` for a config without bad entries.
@@ -710,6 +730,15 @@ mod tests {
         let (parsed, warnings) = parse_config(config, argv);
         assert_eq!(warnings, Vec::<String>::new());
         parsed
+    }
+
+    /// The error from parsing `argv` with only the environment variables
+    /// `env`.
+    fn error_in(env: &[(&str, &str)], argv: &[&str]) -> clap::Error {
+        match parse(None, env, argv) {
+            Ok((parsed, _)) => panic!("{env:?} {argv:?} parsed: {parsed:?}"),
+            Err(e) => e,
+        }
     }
 
     fn config(entries: &str) -> Config {
@@ -724,17 +753,147 @@ mod tests {
     }
 
     #[test]
-    fn build_cache_and_clear_cache_conflict() {
-        for argv in [
-            ["hl", "--build-cache", "--clear-cache"],
-            ["hl", "--clear-cache", "--build-cache"],
-        ] {
-            let err = without_env(Args::command())
-                .try_get_matches_from(argv)
-                .err()
-                .unwrap();
-            assert_eq!(err.kind(), ErrorKind::ArgumentConflict, "{argv:?}");
+    fn info_commands_conflict() {
+        let info = [
+            vec!["--list-themes"],
+            vec!["--list-languages"],
+            vec!["--build-cache"],
+            vec!["--clear-cache"],
+            vec!["--completions", "bash"],
+            vec!["--man"],
+        ];
+        for one in &info {
+            assert!(parse(None, &[], one).is_ok(), "{one:?}");
+            for other in info.iter().filter(|other| *other != one) {
+                let argv = [&one[..], &other[..]].concat();
+                let err = error_in(&[], &argv);
+                assert_eq!(err.kind(), ErrorKind::ArgumentConflict, "{argv:?}");
+            }
         }
+    }
+
+    #[test]
+    fn returns_command_line_errors() {
+        let err = error_in(&[], &["--color=sometimes"]);
+        assert_eq!(err.kind(), ErrorKind::InvalidValue);
+        assert!(err.to_string().contains("'--color <WHEN>'"), "{err}");
+    }
+
+    #[test]
+    fn command_line_then_env_then_config_then_default() {
+        let config = config(
+            r#"
+            max-size = "1K"
+            color-depth = "256"
+            "#,
+        );
+        let env = [("HL_MAX_SIZE", "2K"), ("HL_COLOR_DEPTH", "truecolor")];
+        let argv = ["--max-size=3K", "--color-depth=auto"];
+        let detected = || Depth::TrueColor;
+        let check = |config: Option<&Config>, env: &[_], argv: &[_], size, depth| {
+            let (parsed, warnings) = parse(config, env, argv).unwrap();
+            assert_eq!(warnings, Vec::<String>::new());
+            assert_eq!(parsed.limits().max_size, Some(size), "{env:?} {argv:?}");
+            assert_eq!(parsed.color_depth, depth, "{env:?} {argv:?}");
+        };
+        check(Some(&config), &env, &argv, 3 << 10, ColorDepth::Auto);
+        check(Some(&config), &env, &[], 2 << 10, ColorDepth::TrueColor);
+        check(Some(&config), &[], &[], 1 << 10, ColorDepth::Ansi256);
+        check(None, &[], &[], 512 << 10, ColorDepth::Auto);
+        assert_eq!(args_in(&env, &argv).depth(detected), Depth::TrueColor);
+    }
+
+    #[test]
+    fn env_sets_the_theme() {
+        assert_eq!(args_in(&[("HL_THEME", "Nord")], &[]).theme, "Nord");
+        assert_eq!(
+            args_in(&[("HL_THEME", "Nord")], &["--theme=Dracula"]).theme,
+            "Dracula"
+        );
+    }
+
+    #[test]
+    fn invalid_env_value_names_the_variable() {
+        let err = error_in(&[("HL_MAX_SIZE", "abc")], &[]);
+        assert_eq!(err.kind(), ErrorKind::ValueValidation);
+        assert!(
+            err.to_string()
+                .starts_with("error: invalid value 'abc' for HL_MAX_SIZE: not a size"),
+            "{err}"
+        );
+        let err = error_in(&[("HL_COLOR_DEPTH", "16")], &[]);
+        assert_eq!(err.kind(), ErrorKind::InvalidValue);
+        assert!(
+            err.to_string().contains(
+                "invalid value '16' for HL_COLOR_DEPTH (possible values: auto, truecolor, 256)"
+            ),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn env_value_replaced_by_the_command_line_is_not_checked() {
+        let args = args_in(&[("HL_MAX_SIZE", "abc")], &["--max-size", "1K"]);
+        assert_eq!(args.limits().max_size, Some(1 << 10));
+    }
+
+    /// The variables are checked in the order of the options, and the first
+    /// invalid one that the command line does not replace is reported.
+    #[test]
+    fn reports_the_first_invalid_env_value() {
+        for (env, argv, name) in [
+            (
+                [("HL_MAX_SIZE", "1K"), ("HL_COLOR_DEPTH", "16")],
+                &[][..],
+                "HL_COLOR_DEPTH",
+            ),
+            (
+                [("HL_MAX_SIZE", "abc"), ("HL_COLOR_DEPTH", "16")],
+                &["--max-size", "1K"],
+                "HL_COLOR_DEPTH",
+            ),
+            (
+                [("HL_MAX_SIZE", "abc"), ("HL_COLOR_DEPTH", "16")],
+                &[],
+                "HL_MAX_SIZE",
+            ),
+            (
+                [("HL_COLOR_DEPTH", "16"), ("HL_MAX_SIZE", "abc")],
+                &[],
+                "HL_MAX_SIZE",
+            ),
+        ] {
+            let message = error_in(&env, argv).to_string();
+            let invalid = |var: &str| message.contains(&format!("for {var}"));
+            assert!(invalid(name), "{env:?} {argv:?}: {message}");
+            assert_eq!(
+                message.matches("invalid value").count(),
+                1,
+                "{env:?} {argv:?}: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn command_line_errors_come_before_env_errors() {
+        let err = error_in(&[("HL_MAX_SIZE", "abc")], &["--color=sometimes"]);
+        assert_eq!(err.kind(), ErrorKind::InvalidValue);
+        let message = err.to_string();
+        assert!(message.contains("'--color <WHEN>'"), "{message}");
+        assert!(!message.contains("HL_MAX_SIZE"), "{message}");
+    }
+
+    #[test]
+    fn help_shows_the_variables_and_the_config_defaults() {
+        let config = config(r#"max-size = "1K""#);
+        // An invalid variable does not stop the help.
+        let err = parse(Some(&config), &[("HL_MAX_SIZE", "abc")], &["--help"])
+            .err()
+            .unwrap();
+        assert_eq!(err.kind(), ErrorKind::DisplayHelp);
+        let help = err.to_string();
+        assert!(help.contains("[env: HL_MAX_SIZE"), "{help}");
+        assert!(help.contains("[default: 1K]"), "{help}");
     }
 
     #[test]
@@ -865,6 +1024,28 @@ mod tests {
                 "invalid value '1' for 'paging', ignoring it",
             ]
         );
+    }
+
+    #[test]
+    fn config_sizes_must_be_whole_and_not_negative() {
+        for (entry, warning) in [
+            (
+                "max-size = -1",
+                "invalid value '-1' for 'max-size', ignoring it",
+            ),
+            (
+                "max-size = 1.5",
+                "'max-size' must be a string or an integer, ignoring it",
+            ),
+            (
+                r#"max-size = "1.5K""#,
+                "invalid value '1.5K' for 'max-size', ignoring it",
+            ),
+        ] {
+            let (args, warnings) = parse_config(&config(entry), &[]);
+            assert_eq!(warnings, [warning], "{entry}");
+            assert_eq!(args.limits().max_size, Some(512 << 10), "{entry}");
+        }
     }
 
     #[test]
